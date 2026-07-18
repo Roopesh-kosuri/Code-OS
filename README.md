@@ -166,6 +166,10 @@ See **[CONTRIBUTING.md](./CONTRIBUTING.md)**. PRs need to pass CI (typecheck, bu
 
 This project is licensed under the MIT License — see [LICENSE](./LICENSE).
 
+
+🔗 Links
+LinkedIn: Roopesh Ram Varma Kosuri
+X (Twitter): @KosuriRoopesh
 <!--
 ## 🔗 Links
 - Live demo:
