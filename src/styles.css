@@ -1,0 +1,220 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, Segoe UI, system-ui, sans-serif;
+  background: var(--bg-surface-950);
+  color: var(--text-100);
+
+  /* Color Variables - Default Dark */
+  --bg-surface-950: #101215;
+  --bg-surface-900: #15181d;
+  --bg-surface-850: #1b2027;
+  --bg-surface-800: #222831;
+  --bg-surface-700: #303843;
+  --text-100: #f1f5f9;
+  --text-200: #e2e8f0;
+  --text-300: #cbd5e1;
+  --text-400: #94a3b8;
+  --text-500: #64748b;
+  --text-primary: #f1f5f9;
+  --accent-500: #45b3e7;
+  --accent-600: #208cc8;
+  --success: #42c77b;
+  --warning: #f3b44e;
+  --danger: #e25c5c;
+}
+
+/* Light Theme override */
+.light {
+  color-scheme: light;
+  --bg-surface-950: #ffffff;
+  --bg-surface-900: #f6f8fa;
+  --bg-surface-850: #ffffff;
+  --bg-surface-800: #eaeef2;
+  --bg-surface-700: #d0d7de;
+  --text-100: #1f2328;
+  --text-200: #24292f;
+  --text-300: #3f4e5a;
+  --text-400: #57606a;
+  --text-500: #6e7781;
+  --text-primary: #1f2328;
+  --accent-500: #208cc8;
+  --accent-600: #1970a1;
+  --success: #1a7f37;
+  --warning: #9a6700;
+  --danger: #cf222e;
+}
+
+/* Crimson Theme override */
+.crimson {
+  color-scheme: dark;
+  --bg-surface-950: #150808;
+  --bg-surface-900: #1f0d0d;
+  --bg-surface-850: #2a1212;
+  --bg-surface-800: #361717;
+  --bg-surface-700: #4d2020;
+  --text-100: #f2e8e6;
+  --text-200: #e5d4d0;
+  --text-300: #cca7a0;
+  --text-400: #ab7e75;
+  --text-500: #7d544c;
+  --text-primary: #f2e8e6;
+  --accent-500: #e0483e;
+  --accent-600: #b3322a;
+  --success: #42c77b;
+  --warning: #f3b44e;
+  --danger: #e0483e;
+}
+
+/* Navy Theme override */
+.navy {
+  color-scheme: dark;
+  --bg-surface-950: #0a0e1a;
+  --bg-surface-900: #101627;
+  --bg-surface-850: #172037;
+  --bg-surface-800: #1f2a47;
+  --bg-surface-700: #2e3d64;
+  --text-100: #e8ecf5;
+  --text-200: #d3dbe9;
+  --text-300: #adbcd7;
+  --text-400: #869abf;
+  --text-500: #5f769d;
+  --text-primary: #e8ecf5;
+  --accent-500: #3b82f6;
+  --accent-600: #2563eb;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+}
+
+/* Void Theme override */
+.void {
+  color-scheme: dark;
+  --bg-surface-950: #000000;
+  --bg-surface-900: #0a0a0a;
+  --bg-surface-850: #101010;
+  --bg-surface-800: #161616;
+  --bg-surface-700: #262626;
+  --text-100: #e4e4e7;
+  --text-200: #d4d4d8;
+  --text-300: #a1a1aa;
+  --text-400: #71717a;
+  --text-500: #52525b;
+  --text-primary: #e4e4e7;
+  --accent-500: #a1a1aa;
+  --accent-600: #71717a;
+  --success: #3f3f46;
+  --warning: #52525b;
+  --danger: #71717a;
+}
+
+/* Violet Theme override */
+.violet {
+  color-scheme: dark;
+  --bg-surface-950: #120c1a;
+  --bg-surface-900: #1c1428;
+  --bg-surface-850: #261c36;
+  --bg-surface-800: #322547;
+  --bg-surface-700: #493666;
+  --text-100: #ede9f5;
+  --text-200: #ded6ee;
+  --text-300: #c4b5e0;
+  --text-400: #a691cd;
+  --text-500: #7b63a6;
+  --text-primary: #ede9f5;
+  --accent-500: #a855f7;
+  --accent-600: #9333ea;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+}
+
+/* Cyberpunk Theme override */
+.cyberpunk {
+  color-scheme: dark;
+  --bg-surface-950: #080b12;
+  --bg-surface-900: #0f141c;
+  --bg-surface-850: #161e2b;
+  --bg-surface-800: #1e293a;
+  --bg-surface-700: #2f3f58;
+  --text-100: #dcf1f5;
+  --text-200: #bee1e8;
+  --text-300: #9accd6;
+  --text-400: #72abb7;
+  --text-500: #4b7e8a;
+  --text-primary: #dcf1f5;
+  --accent-500: #00e5ff;
+  --accent-600: #00b8cc;
+  --success: #00ffd8;
+  --warning: #ffdd00;
+  --danger: #ff2e88;
+}
+
+.cyberpunk .cyberpunk-glow {
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.35);
+  border-color: #00e5ff !important;
+}
+
+.cyberpunk .cyberpunk-text-glow {
+  text-shadow: 0 0 4px rgba(0, 229, 255, 0.6);
+}
+
+.light .text-white {
+  color: #1f2328 !important;
+}
+
+/* Form element fixes for light mode */
+.light input,
+.light textarea,
+.light select {
+  background-color: #ffffff !important;
+  color: #1f2328 !important;
+  border-color: #d0d7de !important;
+}
+
+.light input::placeholder,
+.light textarea::placeholder {
+  color: #8c959f !important;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1080px;
+  min-height: 720px;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--bg-surface-700);
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-surface-900);
+}
+
+/* Remove native browser dropdown arrow globally — custom chevrons are used */
+select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}

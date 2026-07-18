@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-electron/
+.venv/
+__pycache__/
+*.pyc
+.code-os/
+.env
+*.log
+/project-workspace/
+*.db
+*.sqlite
+*.sqlite3
+scratch_test_workspace/

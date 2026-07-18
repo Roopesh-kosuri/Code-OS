@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  code-os:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+      - "8000:8000"
+    volumes:
+      - code-os-data:/workspace-data
+      - ./project-workspace:/project-workspace
+    environment:
+      - CODE_OS_DATA_DIR=/workspace-data/.code-os
+      - CODE_OS_HOME=/workspace-data/.code-os
+    restart: unless-stopped
+
+volumes:
+  code-os-data:
