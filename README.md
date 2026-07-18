@@ -15,7 +15,7 @@
 -->
 
 <!-- Add demo GIF once available: ![Demo](docs/demo.gif) -->
-
+CODE OS website :- https://roopesh-kosuri.github.io/codeoswebsite/
 **[Getting Started](#-getting-started)** · **[Features](#-what-it-can-do)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)**
 
 </div>
