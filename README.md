@@ -164,7 +164,7 @@ See **[CONTRIBUTING.md](./CONTRIBUTING.md)**. PRs need to pass CI (typecheck, bu
 
 ## 📄 License
 
-<!-- This project is licensed under the MIT License — see [LICENSE](./LICENSE). -->
+This project is licensed under the MIT License — see [LICENSE](./LICENSE).
 
 <!--
 ## 🔗 Links
