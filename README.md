@@ -63,11 +63,28 @@ cd code-os
 
 npm install
 pip install -r backend/requirements.txt
-
-npm run dev
 ```
 
-That's it — Electron, the Vite dev server, and the FastAPI backend all start together. First launch walks you through a quick setup: accept the terms, optionally take the guided tour, then open your first folder and add your API key(s) under **Settings → AI Providers**.
+> The backend's terminal dependency is platform-specific and installs automatically for your OS: `pywinpty` on Windows, `ptyprocess` on macOS/Linux. You don't need to do anything extra — `pip install` picks the right one.
+
+**Run everything together (recommended):**
+```bash
+npm run dev
+```
+This starts the Vite dev server, the FastAPI backend, and Electron all at once.
+
+**Or run backend/frontend separately** (useful for API testing or browser-only UI work without Electron):
+```bash
+# Terminal 1 — backend only
+cd backend
+uvicorn app.main:app --reload --port 8000
+
+# Terminal 2 — frontend only (browser mode, no Electron)
+npm run dev:web
+```
+Then open `http://127.0.0.1:5173` in your browser. In browser mode, the terminal panel automatically uses the WebSocket/PTY fallback instead of Electron's native PTY.
+
+First launch walks you through a quick setup: accept the terms, optionally take the guided tour, then open your first folder and add your API key(s) under **Settings → AI Providers**. No manual database setup needed — the SQLite database initializes itself on first run.
 
 **Want a packaged installer instead?**
 ```bash
@@ -114,7 +131,7 @@ Dark, Light, Crimson, Navy, Void, Violet, and a proper dual-accent **Cyberpunk**
 
 ## 🏗️ Architecture
 
-```mermaid
+\`\`\`mermaid
 flowchart TD
     A["Electron Main Process (Node.js)<br/>native PTYs · window · backend lifecycle"]
     B["React Frontend<br/>Monaco · panels · Zustand state"]
@@ -124,7 +141,7 @@ flowchart TD
     A -- IPC --> B
     B -- "HTTP / SSE / WebSocket" --> C
     C -- aiosqlite --> D
-```
+\`\`\`
 
 *(Diagram renders natively on GitHub.)*
 
@@ -133,7 +150,8 @@ flowchart TD
 | Desktop | Electron 33 |
 | Frontend | React 18 · TypeScript · Zustand · Tailwind · Monaco · xterm.js |
 | Backend | Python · FastAPI · Uvicorn · aiosqlite |
-| Terminal | node-pty (Electron) / pywinpty + ptyprocess (fallback) |
+| Terminal | node-pty (Electron) / pywinpty on Windows + ptyprocess on macOS/Linux (WebSocket fallback) |
+| Git | GitPython |
 | AI | Ollama + OpenAI · Anthropic · Gemini · Groq · DeepSeek · Mistral · OpenRouter · NVIDIA NIM |
 | Security | Fernet-encrypted keys · server-side trust enforcement |
 | CI/CD | GitHub Actions — tests + build on every push, multi-platform installers on release |
