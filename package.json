@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "author": "Roopesh Kosuri",
-  "license": "MIT",
+  "license": "PolyForm Noncommercial License 1.0.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/Roopesh-kosuri/exoshield-ai.git"
