@@ -10,7 +10,8 @@ To set up the project locally, run:
 
 ```bash
 # Clone the repository and navigate to root
-cd exoshield-ai
+git clone https://github.com/roopesh-kosuri/code-os.git
+cd code-os
 
 # Install frontend dependencies (including electron-builder)
 npm install
@@ -20,6 +21,7 @@ pip install -r backend/requirements.txt
 ```
 
 Start the local server suite (Vite + FastAPI + Electron) with:
+
 ```bash
 npm run dev
 ```
