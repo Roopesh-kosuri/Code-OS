@@ -4,11 +4,11 @@
 
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
 
-[![CI](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
-[![License: MIT](./docs/badges/license.svg)](./LICENSE)
-![Platform](./docs/badges/platform.svg)
-![Made with Electron](./docs/badges/electron.svg)
-![FastAPI](./docs/badges/fastapi.svg)
+[![CI/CD](./badges/cicd.svg)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
+[![License: MIT](./badges/license.svg)](./LICENSE)
+![Platform](./badges/platform.svg)
+![Made with Electron](./badges/electron.svg)
+![FastAPI](./badges/fastapi.svg)
 
 <br>
 
