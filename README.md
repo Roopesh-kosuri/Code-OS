@@ -44,7 +44,7 @@ Everything runs on your machine. Your code never leaves it, except to whichever 
 ### Option A — Docker (fastest way to try it)
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/roopesh-kosuri/code-os.git
 cd code-os
 docker compose up
 ```
@@ -58,7 +58,7 @@ docker compose up
 **You'll need:** Node.js 20+, Python 3.11+, and (Windows only) Build Tools for Visual Studio for the native terminal. [Ollama](https://ollama.com) is optional, for local models.
 
 ```bash
-git clone <this-repo-url>
+git clone https://github.com/roopesh-kosuri/code-os.git
 cd code-os
 
 npm install
