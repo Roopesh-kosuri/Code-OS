@@ -1,6 +1,9 @@
 {
   "name": "code-os",
   "version": "0.1.0",
+  "engines": {
+    "node": ">=20"
+  },
   "description": "CODE OS Phase 1 - local-first AI development workspace",
   "private": true,
   "type": "module",
