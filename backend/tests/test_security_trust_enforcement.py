@@ -94,6 +94,9 @@ try:
     test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "read_file"}}, 200, "RESTRICTED MCP read_file (filesystem, allowed -> 200)")
     test_endpoint("/api/mcp/servers/custom_server/call", {"method": "tools/call", "params": {"name": "any_tool"}}, 403, "RESTRICTED MCP custom_server")
     
+    # Sleep to ensure SQLite's CURRENT_TIMESTAMP (1s resolution) registers a newer time for the trusted workspace
+    time.sleep(1.2)
+    
     print("\n--- Testing TRUSTED Workspace ---")
     test_endpoint("/api/workspaces/open", {"path": WORKSPACE_TRUSTED}, 200, "Open TRUSTED Workspace")
     test_endpoint("/api/files/write", {"workspace": WORKSPACE_TRUSTED, "path": f"{WORKSPACE_TRUSTED}/test.txt", "content": "hello"}, 200, "TRUSTED /api/files/write")
