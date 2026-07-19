@@ -4,8 +4,7 @@
 
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/roopesh-kosuri/Code-OS/ci.yml?style=for-the-badge&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/codecov/c/github/roopesh-kosuri/Code-OS?style=for-the-badge&logo=codecov&logoColor=white)](https://codecov.io/gh/roopesh-kosuri/Code-OS)
+[![CI](https://img.shields.io/github/actions/workflow/status/Roopesh-kosuri/Code-OS/ci.yml?style=for-the-badge&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](./LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational?style=for-the-badge)
 ![Made with Electron](https://img.shields.io/badge/Electron-33-47848F?style=for-the-badge&logo=electron&logoColor=white)
