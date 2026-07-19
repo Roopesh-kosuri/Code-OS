@@ -16,7 +16,7 @@
 
 [![Watch the demo](https://img.youtube.com/vi/2LZ2V9nhz34/maxresdefault.jpg)](https://www.youtube.com/watch?v=2LZ2V9nhz34)
 
-🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/codeoswebsite/)
+🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/websitecodeos/)
 
 **[Getting Started](#-getting-started)** · **[Features](#-what-it-can-do)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
 
