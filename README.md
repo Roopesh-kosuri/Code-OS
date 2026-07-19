@@ -1,22 +1,27 @@
-<!-- ![CODE OS](docs/logocodeos.png) -->
-
 <div align="center">
+
+<img src="docs/logocodeos.png" alt="CODE OS logo" width="180">
 
 # CODE OS
 
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
 
-<!-- Add badges once live:
-[![CI](https://github.com/YOUR_USERNAME/Code-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/Code-OS/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational)
-![Made with Electron](https://img.shields.io/badge/Electron-33-47848F?logo=electron&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-Python-009688?logo=fastapi&logoColor=white)
--->
+[![CI](https://img.shields.io/github/actions/workflow/status/roopesh-kosuri/Code-OS/ci.yml?style=for-the-badge&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/codecov/c/github/roopesh-kosuri/Code-OS?style=for-the-badge&logo=codecov&logoColor=white)](https://codecov.io/gh/roopesh-kosuri/Code-OS)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](./LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational?style=for-the-badge)
+![Made with Electron](https://img.shields.io/badge/Electron-33-47848F?style=for-the-badge&logo=electron&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Python-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 
-<!-- Add demo GIF once available: ![Demo](docs/demo.gif) -->
-CODE OS website :- https://roopesh-kosuri.github.io/codeoswebsite/
-**[Getting Started](#-getting-started)** · **[Features](#-what-it-can-do)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)**
+<br>
+
+### ▶️ Demo
+
+[![Watch the demo](https://img.youtube.com/vi/2LZ2V9nhz34/maxresdefault.jpg)](https://www.youtube.com/watch?v=2LZ2V9nhz34)
+
+🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/codeoswebsite/)
+
+**[Getting Started](#-getting-started)** · **[Features](#-what-it-can-do)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
 
 </div>
 
@@ -73,6 +78,8 @@ npm run package
 ```
 Builds a `.exe` (Windows), `.dmg` (macOS), or `.AppImage`/`.deb` (Linux) via `electron-builder`.
 
+> ℹ️ The packaged installer still expects Python on the host machine — a fully bundled standalone backend (no separate Python install needed) is on the roadmap for an upcoming release.
+
 ---
 
 ## 🧩 What It Can Do
@@ -110,21 +117,19 @@ Dark, Light, Crimson, Navy, Void, Violet, and a proper dual-accent **Cyberpunk**
 
 ## 🏗️ Architecture
 
+```mermaid
+flowchart TD
+    A["Electron Main Process (Node.js)<br/>native PTYs · window · backend lifecycle"]
+    B["React Frontend<br/>Monaco · panels · Zustand state"]
+    C["FastAPI Backend (Python)<br/>files · git · search · indexing · AI orchestration"]
+    D[("SQLite<br/>workspaces · settings · encrypted keys · index · jobs · history")]
+
+    A -- IPC --> B
+    B -- "HTTP / SSE / WebSocket" --> C
+    C -- aiosqlite --> D
 ```
-Electron Main Process (Node.js)
-   │  native PTYs · window · backend lifecycle
-   │  IPC
-   ▼
-React Frontend
-   │  Monaco · panels · Zustand state
-   │  HTTP / SSE / WebSocket
-   ▼
-FastAPI Backend (Python)
-   │  files · git · search · indexing · AI orchestration
-   │  aiosqlite
-   ▼
-SQLite  →  workspaces · settings · encrypted keys · index · jobs · history
-```
+
+*(Diagram renders natively on GitHub.)*
 
 | Layer | Tech |
 |---|---|
@@ -142,38 +147,47 @@ SQLite  →  workspaces · settings · encrypted keys · index · jobs · histor
 
 Every untrusted workspace runs in **Restricted Mode**, blocked at the API layer — not just hidden buttons. Every shell command needs explicit approval. API keys are encrypted at rest, never logged in plaintext, and spawned processes get their environment sanitized of anything credential-shaped.
 
+A formal third-party security audit hasn't happened yet — **planned for Q3 2026 in collaboration with external auditors** as part of an upcoming hardening release, and it'll be linked here the moment it's done.
+
 Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)**
 
 ---
 
 ## 📊 Project Status
 
-This is real, working software — not a mockup. In the interest of not overselling it:
+This is real, working software — actively developed and hardened through iterative testing, not a mockup. Community feedback is shaping upcoming releases:
 
-✅ **Solid & verified:** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent system + Duo Loop (including background job persistence), workspace trust enforcement swept across every route, a real automated test suite.
+✅ **Solid & verified:** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent system + Duo Loop (including background job persistence), workspace trust enforcement swept across every route, a real automated test suite, CI/CD running on every push via GitHub Actions.
 
-🚧 **Known gaps, stated plainly:** the plugin/extension system currently discovers extensions but can't execute them yet; packaged installers still need Python on the host machine (a bundled standalone backend is planned); no formal third-party security audit has been done.
+🛠️ **Coming in an upcoming update:** the plugin/extension system currently discovers extensions but can't execute them yet — full execution support is next up. A bundled standalone backend (so the installer no longer needs a separate Python install) is also in progress, and a formal third-party security audit is **planned for Q3 2026 in collaboration with external auditors**.
 
 Built iteratively, hardened by actually testing behavior — not by assuming code that compiles is code that works.
 
 ---
 
+## 📚 Documentation
+
+All project docs in one place, so you don't have to go hunting:
+
+| Doc | What's in it |
+|---|---|
+| **[ARCHITECTURE.md](./ARCHITECTURE.md)** | Full system design, data flow, and component breakdown |
+| **[SECURITY.md](./SECURITY.md)** | Threat model, Restricted Mode enforcement, disclosure process |
+| **[ROADMAP.md](./ROADMAP.md)** | What's shipped, what's in progress, what's next |
+| **[CONTRIBUTING.md](./CONTRIBUTING.md)** | How to set up, branch, and submit PRs |
+
+---
+
 ## 🤝 Contributing
 
-See **[CONTRIBUTING.md](./CONTRIBUTING.md)**. PRs need to pass CI (typecheck, build, backend test suite) before merge.
+Bug reports, feature ideas, and pull requests are genuinely welcome — particularly around **plugin execution, new AI provider integrations, security hardening, UI themes, and testing improvements**, but any contribution counts. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** to get set up. PRs need to pass CI (typecheck, build, backend test suite) before merge.
 
 ## 📄 License
 
 This project is licensed under the MIT License — see [LICENSE](./LICENSE).
 
+---
 
-🔗 Links
-LinkedIn: Roopesh Ram Varma Kosuri
-
-
-X (Twitter): @KosuriRoopesh
-<!--
-## 🔗 Links
-- Live demo:
-- Video walkthrough:
--->
+🔗 **Links**
+LinkedIn: [Roopesh Ram Varma Kosuri](https://www.linkedin.com/in/roopesh-ram-varma-kosuri-28186a37b/)
+X (Twitter): [@KosuriRoopesh](https://x.com/KosuriRoopesh)
