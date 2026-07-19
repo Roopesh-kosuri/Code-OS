@@ -1,7 +1,5 @@
 <div align="center">
 
-<img src="docs/logocodeos.png" alt="CODE OS logo" width="180">
-
 # CODE OS
 
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
