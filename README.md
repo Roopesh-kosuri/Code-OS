@@ -4,11 +4,11 @@
 
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
 
-[![CI](https://img.shields.io/github/actions/workflow/status/Roopesh-kosuri/Code-OS/ci.yml?style=for-the-badge&label=CI%2FCD&logo=githubactions&logoColor=white)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](./LICENSE)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-informational?style=for-the-badge)
-![Made with Electron](https://img.shields.io/badge/Electron-33-47848F?style=for-the-badge&logo=electron&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-Python-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+[![CI](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml/badge.svg)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
+[![License: MIT](./docs/badges/license.svg)](./LICENSE)
+![Platform](./docs/badges/platform.svg)
+![Made with Electron](./docs/badges/electron.svg)
+![FastAPI](./docs/badges/fastapi.svg)
 
 <br>
 
