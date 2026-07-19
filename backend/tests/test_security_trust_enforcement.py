@@ -26,6 +26,7 @@ os.makedirs(WORKSPACE_TRUSTED, exist_ok=True)
 os.makedirs(WORKSPACE_RESTRICTED, exist_ok=True)
 
 # Setup DB trust states
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 conn = sqlite3.connect(DB_PATH)
 c = conn.cursor()
 c.execute("CREATE TABLE IF NOT EXISTS workspace_trust (path TEXT PRIMARY KEY, trusted INTEGER NOT NULL DEFAULT 0, trust_level TEXT, trusted_at TEXT)")
@@ -51,16 +52,19 @@ def test_endpoint(endpoint: str, payload: dict, expected_status: int, name: str)
         response = urllib.request.urlopen(req)
         status = response.getcode()
         body = response.read().decode("utf-8")
-        print(f"[{status}] {name} - SUCCESS (Expected {expected_status})")
+        if status == expected_status:
+            print(f"[{status}] {name} - SUCCESS (Expected {expected_status})")
+        else:
+            raise AssertionError(f"[{status}] {name} - FAILED (Expected {expected_status}, got {status}, Response: {body})")
     except urllib.error.HTTPError as e:
         status = e.code
         body = e.read().decode("utf-8")
         if status == expected_status:
             print(f"[{status}] {name} - PASSED (Expected {expected_status}, Response: {body})")
         else:
-            print(f"[{status}] {name} - FAILED (Expected {expected_status}, got {status}, Response: {body})")
+            raise AssertionError(f"[{status}] {name} - FAILED (Expected {expected_status}, got {status}, Response: {body})")
     except Exception as e:
-        print(f"[ERROR] {name} - Failed to connect: {e}")
+        raise AssertionError(f"[ERROR] {name} - Failed to execute request: {e}")
 
 try:
     print("\n--- Testing RESTRICTED Workspace ---")
@@ -87,7 +91,7 @@ try:
     
     # MCP Calls
     test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 403, "RESTRICTED MCP write_file (filesystem)")
-    test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "read_file"}}, 500, "RESTRICTED MCP read_file (filesystem, allowed -> 500)")
+    test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "read_file"}}, 200, "RESTRICTED MCP read_file (filesystem, allowed -> 200)")
     test_endpoint("/api/mcp/servers/custom_server/call", {"method": "tools/call", "params": {"name": "any_tool"}}, 403, "RESTRICTED MCP custom_server")
     
     print("\n--- Testing TRUSTED Workspace ---")
@@ -105,7 +109,7 @@ try:
     
     # Terminals (allowed, but might return 500 if terminal shell creation fails or 200/201 if successful)
     # MCP Calls
-    test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 500, "TRUSTED MCP write_file (filesystem, allowed -> 500)")
+    test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 200, "TRUSTED MCP write_file (filesystem, allowed -> 200)")
 
 finally:
     print("\nShutting down server...")
