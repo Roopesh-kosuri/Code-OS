@@ -1,13 +1,11 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
-import isDev from "electron-is-dev";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+const isDev = !app.isPackaged;
 import { execFileSync } from "node:child_process";
 import { BackendProcess } from "./services/backendProcess.js";
 import * as pty from "node-pty";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const backend = new BackendProcess();
 let mainWindow: BrowserWindow | null = null;
 
