@@ -9,12 +9,12 @@
   "license": "PolyForm Noncommercial License 1.0.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Roopesh-kosuri/exoshield-ai.git"
+    "url": "https://github.com/Roopesh-kosuri/code-os.git"
   },
   "bugs": {
-    "url": "https://github.com/Roopesh-kosuri/exoshield-ai/issues"
+    "url": "https://github.com/Roopesh-kosuri/code-os/issues"
   },
-  "homepage": "https://github.com/Roopesh-kosuri/exoshield-ai#readme",
+  "homepage": "https://github.com/Roopesh-kosuri/code-os#readme",
   "engines": {
     "node": ">=20",
     "npm": ">=10"
