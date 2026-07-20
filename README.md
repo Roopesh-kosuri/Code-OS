@@ -150,19 +150,21 @@ Dark, Light, Crimson, Navy, Void, Violet, and a proper dual-accent **Cyberpunk**
 
 ## 🏗️ Architecture
 
-\`\`\`mermaid
-flowchart TD
-    A["Electron Main Process (Node.js)<br/>native PTYs · window · backend lifecycle"]
-    B["React Frontend<br/>Monaco · panels · Zustand state"]
-    C["FastAPI Backend (Python)<br/>files · git · search · indexing · AI orchestration"]
-    D[("SQLite<br/>workspaces · settings · encrypted keys · index · jobs · history")]
-
-    A -- IPC --> B
-    B -- "HTTP / SSE / WebSocket" --> C
-    C -- aiosqlite --> D
-\`\`\`
-
-*(Diagram renders natively on GitHub.)*
+```
+Electron Main Process (Node.js)
+   │  native PTYs · window · backend lifecycle
+   │  IPC
+   ▼
+React Frontend
+   │  Monaco · panels · Zustand state
+   │  HTTP / SSE / WebSocket
+   ▼
+FastAPI Backend (Python)
+   │  files · git · search · indexing · AI orchestration
+   │  aiosqlite
+   ▼
+SQLite  →  workspaces · settings · encrypted keys · index · jobs · history
+```
 
 | Layer | Tech |
 |---|---|
