@@ -1,6 +1,6 @@
 <div align="center">
 
-# CODE OS
+# CODE-OS
 
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
 
