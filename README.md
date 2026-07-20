@@ -41,7 +41,9 @@ Everything runs on your machine. Your code never leaves it, except to whichever 
 
 ## 🚀 Getting Started
 
-### Option A — Docker (fastest way to try it)
+### Option A — Docker (fastest way to try it, nothing to install locally)
+
+The only thing you need on your machine is **Docker** itself — Node.js and Python are bundled inside the container, so you don't need either installed locally.
 
 ```bash
 git clone https://github.com/roopesh-kosuri/code-os.git
@@ -50,12 +52,24 @@ docker compose up
 ```
 
 → Frontend at `http://localhost:5173` · Backend at `http://localhost:8000`
+→ Verify it's healthy: visit `http://localhost:8000/health` — should return `{"status": "ok"}`
 
 > Docker runs CODE OS in browser mode — you get the full AI/agent experience, with a WebSocket-based terminal fallback instead of Electron's native PTY. For the complete desktop experience, use Option B.
 
 ### Option B — Full Desktop App
 
-**You'll need:** Node.js 20+, Python 3.11+, and (Windows only) Build Tools for Visual Studio for the native terminal. [Ollama](https://ollama.com) is optional, for local models.
+Unlike Docker, this requires a few things installed **on your machine first** — these are language runtimes CODE OS depends on, not something CODE OS can install for itself (no project can bootstrap its own runtime — `npm` ships with Node, `pip` ships with Python, so both need to already exist before either can be used).
+
+**1. Install these first, manually, before anything else:**
+- **Node.js 20+** — [nodejs.org](https://nodejs.org)
+- **Python 3.11+** — [python.org](https://python.org)
+- **Git**
+- **OS-specific build tools** (required to compile `node-pty`'s native terminal module):
+  - **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — select the "Desktop development with C++" workload, and make sure Python is on your system `PATH`
+  - **macOS**: run `xcode-select --install` in a terminal
+  - **Linux (Ubuntu/Debian)**: `sudo apt-get update && sudo apt-get install -y build-essential make python3`
+
+**2. Once those exist, everything else is automatic:**
 
 ```bash
 git clone https://github.com/roopesh-kosuri/code-os.git
@@ -65,13 +79,13 @@ npm install
 pip install -r backend/requirements.txt
 ```
 
-> The backend's terminal dependency is platform-specific and installs automatically for your OS: `pywinpty` on Windows, `ptyprocess` on macOS/Linux. You don't need to do anything extra — `pip install` picks the right one.
+> The backend's terminal dependency is platform-specific and installs automatically for your OS: `pywinpty` on Windows, `ptyprocess` on macOS/Linux — `pip install` picks the right one for you.
 
 **Run everything together (recommended):**
 ```bash
 npm run dev
 ```
-This starts the Vite dev server, the FastAPI backend, and Electron all at once.
+This starts the Vite dev server, the FastAPI backend, and Electron all at once. The Electron window should open automatically.
 
 **Or run backend/frontend separately** (useful for API testing or browser-only UI work without Electron):
 ```bash
@@ -82,9 +96,13 @@ uvicorn app.main:app --reload --port 8000
 # Terminal 2 — frontend only (browser mode, no Electron)
 npm run dev:web
 ```
-Then open `http://127.0.0.1:5173` in your browser. In browser mode, the terminal panel automatically uses the WebSocket/PTY fallback instead of Electron's native PTY.
+Then open `http://127.0.0.1:5173` in your browser.
+
+**Verify it's running:** visit `http://localhost:8000/health` — should return `{"status": "ok"}`.
 
 First launch walks you through a quick setup: accept the terms, optionally take the guided tour, then open your first folder and add your API key(s) under **Settings → AI Providers**. No manual database setup needed — the SQLite database initializes itself on first run.
+
+> **Using local models?** Install [Ollama](https://ollama.com) separately and run `ollama pull <model-name>` before selecting Ollama as your provider in Settings — this is optional and only needed if you want local (non-API) models.
 
 **Want a packaged installer instead?**
 ```bash
@@ -93,6 +111,7 @@ npm run package
 Builds a `.exe` (Windows), `.dmg` (macOS), or `.AppImage`/`.deb` (Linux) via `electron-builder`.
 
 > ℹ️ The packaged installer still expects Python on the host machine — a fully bundled standalone backend (no separate Python install needed) is on the roadmap for an upcoming release.
+> ℹ️ **macOS:** since installer builds aren't code-signed yet, Gatekeeper will block the `.app` on first open. Right-click → Open, or run `xattr -d com.apple.quarantine /Applications/CODE\ OS.app`.
 
 ---
 
@@ -199,7 +218,7 @@ Bug reports, feature ideas, and pull requests are genuinely welcome — particul
 
 ## 📄 License
 
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](./License.md) — free for personal, educational, and non-commercial use. For commercial use, please reach out first (see [Links](#-links) below).
+This project is licensed under the MIT License — see [LICENSE](./LICENSE).
 
 ---
 
