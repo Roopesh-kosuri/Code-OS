@@ -1,21 +1,11 @@
 import { lazy, Suspense, useState } from "react";
 import { Columns2, Replace, Save, SaveAll, Search, X, FolderOpen, Loader2 } from "lucide-react";
-import { loader } from "@monaco-editor/react";
+import * as monaco from "monaco-editor";
+import Editor, { loader } from "@monaco-editor/react";
 
-// ── Point Monaco loader at local node_modules instead of CDN ─────────────────
-// Without this, @monaco-editor/react tries to fetch workers from jsdelivr CDN
-// which fails in Electron/offline and causes infinite loading.
-// In Electron (file://) we use a relative path; in Vite dev we use /node_modules/.
-const isElectron = typeof window !== "undefined" && window.location.protocol === "file:";
-loader.config({
-  paths: {
-    vs: isElectron
-      ? "../node_modules/monaco-editor/min/vs"
-      : "/node_modules/monaco-editor/min/vs",
-  },
-});
-
-const Editor = lazy(() => import("@monaco-editor/react"));
+// Configure Monaco loader to use the bundled monaco instance directly.
+// This guarantees instant, offline loading in Electron production builds with zero CDN or node_modules path dependencies.
+loader.config({ monaco });
 
 
 import { CodeOsLogo } from "../../components/branding/CodeOsLogo";
@@ -75,14 +65,25 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
   const fontSize = useEditorStore((state) => state.fontSize);
   const tabSize = useEditorStore((state) => state.tabSize);
   const theme = useSettingsStore((state) => state.settings.theme);
-  const isLight = theme === "light" || (theme === "system" && typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: light)").matches);
+  const activeThemeName = (theme === "system" && typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: light)").matches)
+    ? "light"
+    : (theme || "dark");
+  const isLight = activeThemeName === "light";
+
+  const monacoTheme = activeThemeName === "light"
+    ? "vs"
+    : activeThemeName === "void"
+      ? "vs-void"
+      : activeThemeName === "cyberpunk"
+        ? "vs-cyberpunk"
+        : "vs-dark";
 
   const [editorInstance, setEditorInstance] = useState<any>(null);
   const [showInline, setShowInline] = useState(false);
   const [inlinePrompt, setInlinePrompt] = useState("");
 
   if (!file) {
-    return <div className="grid h-full place-items-center text-sm text-slate-500 bg-[#131418]">Select a file from the explorer.</div>;
+    return <div className="grid h-full place-items-center text-sm text-slate-500 bg-[var(--surface)]">Select a file from the explorer.</div>;
   }
 
   const effectiveLanguage = (!file.language || file.language === "plaintext")
@@ -117,6 +118,63 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
         "editor.inactiveSelectionBackground": "#00626e33",
       },
     });
+
+    monaco.editor.defineTheme("vs-void", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "", foreground: "f4f4f5", background: "000000" },
+        { token: "keyword", foreground: "e4e4e7", fontStyle: "bold" },
+        { token: "string", foreground: "eab308" },
+        { token: "comment", foreground: "52525b", fontStyle: "italic" },
+        { token: "function", foreground: "a1a1aa" },
+        { token: "variable", foreground: "d4d4d8" },
+        { token: "type", foreground: "f4f4f5" },
+        { token: "class", foreground: "f4f4f5" },
+        { token: "number", foreground: "a1a1aa" },
+        { token: "delimiter", foreground: "71717a" },
+      ],
+      colors: {
+        "editor.background": "#000000",
+        "editor.foreground": "#f4f4f5",
+        "editorCursor.foreground": "#a1a1aa",
+        "editor.lineHighlightBackground": "#101010",
+        "editorLineNumber.foreground": "#3f3f46",
+        "editorLineNumber.activeForeground": "#e4e4e7",
+        "editorGutter.background": "#000000",
+        "editor.selectionBackground": "#27272a88",
+        "editor.inactiveSelectionBackground": "#18181b55",
+      },
+    });
+
+    monaco.editor.defineTheme("vs-cyberpunk", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "", foreground: "dcf1f5", background: "080b12" },
+        { token: "keyword", foreground: "00e5ff", fontStyle: "bold" },
+        { token: "string", foreground: "ffdd00" },
+        { token: "comment", foreground: "4b7e8a", fontStyle: "italic" },
+        { token: "function", foreground: "ff007f" },
+        { token: "variable", foreground: "ff79c6" },
+        { token: "type", foreground: "00ffd8" },
+        { token: "class", foreground: "00e5ff" },
+        { token: "number", foreground: "ff007f" },
+        { token: "delimiter", foreground: "72abb7" },
+      ],
+      colors: {
+        "editor.background": "#080b12",
+        "editor.foreground": "#dcf1f5",
+        "editorCursor.foreground": "#00e5ff",
+        "editor.lineHighlightBackground": "#0f141c",
+        "editorLineNumber.foreground": "#2f3f58",
+        "editorLineNumber.activeForeground": "#00e5ff",
+        "editorGutter.background": "#080b12",
+        "editor.selectionBackground": "#00e5ff33",
+        "editor.inactiveSelectionBackground": "#ff007f22",
+      },
+    });
+
     monaco.editor.defineTheme("vs", {
       base: "vs",
       inherit: true,
@@ -143,16 +201,16 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
 
   const handleEditorDidMount = (editor: any, monaco: any) => {
     setEditorInstance(editor);
-    monaco.editor.setTheme(isLight ? "vs" : "vs-dark");
+    monaco.editor.setTheme(monacoTheme);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI, () => {
       setShowInline(true);
     });
   };
 
   return (
-    <div className={`relative h-full flex-1 ${isLight ? "bg-white" : "bg-[#131418]"}`}>
+    <div className="relative h-full flex-1 bg-[var(--surface)]">
       <Suspense fallback={
-        <div className="h-full flex items-center justify-center bg-[#131418]">
+        <div className="h-full flex items-center justify-center bg-[var(--surface)]">
           <div className="flex flex-col items-center gap-2">
             <Loader2 size={20} className="text-primary animate-spin" />
             <span className="text-[11px] text-on-surface-variant font-mono">Loading editor…</span>
@@ -163,7 +221,7 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
           path={file.path}
           language={effectiveLanguage}
           value={file.content}
-          theme={isLight ? "vs" : "vs-dark"}
+          theme={monacoTheme}
           beforeMount={handleBeforeMount}
           onMount={handleEditorDidMount}
           options={{

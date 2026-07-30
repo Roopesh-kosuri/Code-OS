@@ -318,21 +318,14 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeJob?.logs?.length]);
 
-  // 1. Generate task plan
-  const handleGeneratePlan = async () => {
-    if (!workspace || !requestText.trim()) return;
-    
-    // Block agent execution in restricted mode
-    const restrictedMode = useWorkspaceStore.getState().restrictedMode;
-    if (restrictedMode) {
-      alert("Agent execution is disabled in Restricted Mode. Switch to Trusted mode to enable autonomous agents.");
-      return;
-    }
-    
+  const [showDualCoderPrompt, setShowDualCoderPrompt] = useState(false);
+
+  // 1. Generate task plan execution
+  const _executeGeneratePlan = async () => {
     setLoading(true);
     try {
       const data = await api.post<{ tasks: Task[] }>("/api/agents/plan", {
-        workspace: workspace.path,
+        workspace: workspace!.path,
         user_request: requestText + (quickMode ? " --quick" : ""),
         provider_config: buildProviderConfig(),
       });
@@ -343,6 +336,25 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleGeneratePlan = async () => {
+    if (!workspace || !requestText.trim()) return;
+    
+    // Block agent execution in restricted mode
+    const restrictedMode = useWorkspaceStore.getState().restrictedMode;
+    if (restrictedMode) {
+      alert("Agent execution is disabled in Restricted Mode. Switch to Trusted mode to enable autonomous agents.");
+      return;
+    }
+    
+    const isSmallTask = quickMode || requestText.trim().length < 120;
+    if (isSmallTask) {
+      setShowDualCoderPrompt(true);
+      return;
+    }
+
+    await _executeGeneratePlan();
   };
 
   // 2. Start planned workflow

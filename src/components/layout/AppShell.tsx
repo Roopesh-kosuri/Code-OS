@@ -29,6 +29,8 @@ import { AgentConsole } from "../../features/ai/AgentConsole";
 import { PerformanceDashboard } from "../../features/diagnostics/PerformanceDashboard";
 import { DuoPanel } from "../../features/duo/DuoPanel";
 import { CodeVerifierPanel } from "../../features/verifier/CodeVerifierPanel";
+import { DualCoderPanel } from "../../features/dual_coder/DualCoderPanel";
+import { CoderAgentPanel } from "../../features/coder/CoderAgentPanel";
 import { WorkspaceTrustDialog } from "../../components/workspace/WorkspaceTrustDialog";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { SettingsModal } from "../settings/SettingsModal";
@@ -79,7 +81,7 @@ function ActivityBarButton({
 // ── Main AppShell ─────────────────────────────────────────────────────────────
 
 export function AppShell() {
-  const [activeTopView, setActiveTopView] = useState<"main" | "agent" | "duo" | "verifier" | "diagnostics" | "proposals">("main");
+  const [activeTopView, setActiveTopView] = useState<"main" | "agent" | "coder" | "duo" | "dual-coder" | "verifier" | "diagnostics" | "proposals">("main");
   const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
 
   const [activeSidebar, setActiveSidebar] = useState(() => {
@@ -147,6 +149,10 @@ export function AppShell() {
         setShowSidebar(true);
         localStorage.setItem("code-os:layout-show-sidebar", "true");
         localStorage.setItem("code-os:layout-active-sidebar", util);
+      }
+      if (action.startsWith("view.switchTopView:")) {
+        const topView = action.substring("view.switchTopView:".length) as any;
+        setActiveTopView(topView);
       }
     };
     window.addEventListener("code-os:menu", listener);
@@ -305,8 +311,16 @@ export function AppShell() {
           <AgentConsole />
         </div>
 
+        <div className={activeTopView === "coder" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <CoderAgentPanel />
+        </div>
+
         <div className={activeTopView === "duo" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
           <DuoPanel />
+        </div>
+
+        <div className={activeTopView === "dual-coder" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <DualCoderPanel />
         </div>
 
         <div className={activeTopView === "verifier" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>

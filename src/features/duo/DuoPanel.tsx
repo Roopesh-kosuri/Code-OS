@@ -129,7 +129,7 @@ function RoundCard({ round, isLatest }: { round: DuoRound; isLatest: boolean }) 
           )}
           {verdict && !verdict.approved && (
             <span className="flex items-center gap-1 font-label-caps text-label-caps text-error bg-error/10 border border-error/30 px-2 py-0.5 rounded-full">
-              <XCircle size={11} /> VERDICT: REJECTED ({verdict.issues.length} issue{verdict.issues.length !== 1 ? "s" : ""})
+              <XCircle size={11} /> VERDICT: REJECTED ({(verdict.issues?.length ?? 0)} issue{(verdict.issues?.length ?? 0) !== 1 ? "s" : ""})
             </span>
           )}
         </div>
@@ -184,7 +184,7 @@ function RoundCard({ round, isLatest }: { round: DuoRound; isLatest: boolean }) 
               {verdict.reasoning && (
                 <p className="font-body-base text-body-base text-on-surface-variant italic bg-surface-dim/40 p-2 rounded border border-outline-variant/10">{verdict.reasoning}</p>
               )}
-              {verdict.issues.length > 0 ? (
+              {verdict.issues && verdict.issues.length > 0 ? (
                 <div className="space-y-1.5 pt-1">
                   {verdict.issues.map((issue, idx) => (
                     <div

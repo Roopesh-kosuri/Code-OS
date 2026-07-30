@@ -23,7 +23,7 @@ def _format_ollama_error(exc: Exception) -> str:
             return "[Error: Rate limit reached for Ollama. Please wait 60 seconds before retrying.]"
         return f"[Error: Ollama provider returned status HTTP {code}.]"
     if isinstance(exc, (httpx.ConnectError, httpx.NetworkError)):
-        return "[Error: Could not connect to Ollama. Please check if Ollama service is running on 127.0.0.1:11434.]"
+        return "[Error: Could not connect to Ollama. Please check if Ollama service is running on 127.0.0.1:11434 or select/configure an API provider in Settings.]"
     logger.exception("Ollama provider error: %s", exc)
     return "[Error: An unexpected error occurred while communicating with Ollama.]"
 
@@ -85,30 +85,35 @@ class OllamaProvider(AIProvider):
             "options": {"temperature": temperature},
         }
         emitted = False
-        for attempt in range(self.max_retries + 1):
-            try:
-                timeout = httpx.Timeout(self.timeout_seconds, connect=min(15.0, self.timeout_seconds))
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:
-                        response.raise_for_status()
-                        async for line in response.aiter_lines():
-                            try:
-                                data = json.loads(line)
-                            except Exception:
-                                continue
-                            content = data.get("message", {}).get("content")
-                            if content:
-                                emitted = True
-                                yield content
-
-                return
-            except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
-                if emitted or attempt >= self.max_retries:
-                    logger.error("Ollama stream_chat error: %s", exc)
-                    yield _format_ollama_error(exc)
+        last_exc = None
+        for target_url in self._urls_to_try():
+            for attempt in range(self.max_retries + 1):
+                try:
+                    timeout = httpx.Timeout(self.timeout_seconds, connect=min(5.0, self.timeout_seconds))
+                    async with httpx.AsyncClient(timeout=timeout) as client:
+                        async with client.stream("POST", f"{target_url}/api/chat", json=payload) as response:
+                            response.raise_for_status()
+                            self.base_url = target_url
+                            async for line in response.aiter_lines():
+                                try:
+                                    data = json.loads(line)
+                                except Exception:
+                                    continue
+                                content = data.get("message", {}).get("content")
+                                if content:
+                                    emitted = True
+                                    yield content
                     return
-                await asyncio.sleep(0.5 * (attempt + 1))
-            except Exception as exc:
-                logger.exception("Unexpected error in Ollama stream_chat: %s", exc)
-                yield _format_ollama_error(exc)
-                return
+                except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
+                    last_exc = exc
+                    if emitted:
+                        logger.error("Ollama stream_chat error mid-stream: %s", exc)
+                        yield _format_ollama_error(exc)
+                        return
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(0.3)
+                    else:
+                        break
+
+        if last_exc:
+            yield _format_ollama_error(last_exc)

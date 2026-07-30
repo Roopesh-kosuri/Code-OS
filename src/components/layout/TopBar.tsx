@@ -45,7 +45,7 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
         
         {/* Navigation Links */}
         <nav className="hidden lg:flex items-center gap-1 border-l border-[var(--outline-variant)]/20 pl-6 h-5">
-          {["main", "agent", "duo", "verifier", "diagnostics", "proposals"].map((v) => (
+          {["main", "agent", "coder", "duo", "dual-coder", "verifier", "diagnostics", "proposals"].map((v) => (
             <button
               key={v}
               onClick={() => onViewChange(v)}
@@ -55,7 +55,7 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
                   : "text-[var(--on-surface-variant)] hover:text-[var(--on-surface)] hover:bg-[var(--outline-variant)]/10"
               }`}
             >
-              {v}
+              {v === "dual-coder" ? "Dual Coder" : v === "coder" ? "Coder" : v}
             </button>
           ))}
           <button

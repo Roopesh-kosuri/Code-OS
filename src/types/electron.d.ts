@@ -24,6 +24,7 @@ export type CodeOSDesktopApi = {
    * Authorization headers.  Call once at startup and keep in memory only.
    */
   getSessionToken: () => Promise<string | null>;
+  getBackendStatus?: () => Promise<{ running: boolean; error: string | null; token: string | null }>;
 };
 
 declare global {

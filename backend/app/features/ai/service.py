@@ -51,6 +51,9 @@ _DEFAULT_SYSTEM_PROMPT = """You are CODE OS, a powerful agentic AI coding assist
 <new updated code>
 >>>>
 - CRITICAL: If you are creating a brand new file (file does not exist on disk), you MUST leave the ORIGINAL section completely empty (i.e. nothing between '<<<< ORIGINAL' and '===='). Do not invent placeholder content.
+- If the user asks about security vulnerabilities, code auditing, or "is my code safe to publish?", inform them that CODE OS has a dedicated Code Verification Agent ('verifier' top tab) for multi-pass security auditing, risk scoring, and report export.
+- If the user asks about quick task execution, lightweight editing, or comparing two models side-by-side on small tasks, inform them that CODE OS has a dedicated Dual Coder tool ('dual-coder' top tab).
+- If the user asks about medium-complexity tasks, fast single-model coding without heavyweight planning, or Duo-Loop-speed code generation with test verification, inform them that CODE OS has a dedicated Coder Agent ('coder' top tab).
 - Always be precise and follow the style and guidelines of the existing codebase.
 """
 
@@ -58,6 +61,21 @@ PROPOSAL_RE = re.compile(
     r"\[PROPOSAL:\s*(?P<path>[^\]]+)\]\s*<<<<(?: ORIGINAL)?\r?\n?(?P<original>.*?)====\r?\n?(?P<updated>.*?)\r?\n?>{3,}",
     re.DOTALL
 )
+
+
+def parse_proposals_from_llm(raw_text: str) -> tuple[list[FileChange], str]:
+    """Parse raw LLM output for [PROPOSAL: ...] blocks and return FileChange list + summary."""
+    changes = []
+    for match in PROPOSAL_RE.finditer(raw_text):
+        path = match.group("path").strip()
+        original = match.group("original")
+        updated = match.group("updated")
+        changes.append(FileChange(path=path, original=original, updated=updated))
+    
+    clean_summary = PROPOSAL_RE.sub("", raw_text).strip()
+    if len(clean_summary) > 200:
+        clean_summary = clean_summary[:200] + "..."
+    return changes, clean_summary or "Proposed code modifications"
 
 
 def _provider_resilience(settings: dict[str, str], provider_id: str) -> tuple[float, int]:
@@ -80,9 +98,6 @@ def _provider_resilience(settings: dict[str, str], provider_id: str) -> tuple[fl
 async def provider_for(request: ChatRequest):
     settings = await list_settings()
     if request.provider == "auto":
-        last_msg = request.messages[-1].content.strip() if request.messages else ""
-        is_reasoning_task = any(last_msg.startswith(cmd) for cmd in ["/fix", "/refactor", "/review", "/optimize"])
-
         # Check API keys in priority order for auto-routing
         _KEY_PRIORITY = ["openai-compatible", "openai", "groq", "anthropic", "gemini",
                          "deepseek", "mistral", "openrouter", "nvidia-nim"]
@@ -92,10 +107,9 @@ async def provider_for(request: ChatRequest):
                 api_key_id = kid
                 break
 
-        if api_key_id and is_reasoning_task:
+        if api_key_id:
             request.provider = "openai-compatible"
             request.api_key_provider = api_key_id
-            # Use the stored base URL for the matched provider, or sensible default
             _DEFAULT_URLS = {
                 "openai-compatible": "https://api.openai.com/v1",
                 "openai": "https://api.openai.com/v1",

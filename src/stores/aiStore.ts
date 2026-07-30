@@ -62,11 +62,11 @@ type AIState = {
 let activeController: AbortController | null = null;
 
 export const useAIStore = create<AIState>((set, get) => ({
-  preset: "ollama",
-  provider: "ollama",
+  preset: "auto",
+  provider: "auto",
   apiKeyProvider: null,
   model: "",
-  baseUrl: "http://127.0.0.1:11434",
+  baseUrl: "",
   messages: [],
   models: [],
   streaming: false,

@@ -111,19 +111,9 @@ try:
     # Git Mutation
     _run_endpoint_test("/api/git/commit", {"workspace": WORKSPACE_RESTRICTED, "message": "commit message"}, 403, "RESTRICTED /api/git/commit")
     
-    # MCP Calls
-<<<<<<< HEAD
-    test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 403, "RESTRICTED MCP write_file (filesystem)")
-    test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "read_file"}}, 200, "RESTRICTED MCP read_file (filesystem, allowed -> 200)")
-    test_endpoint("/api/mcp/servers/custom_server/call", {"method": "tools/call", "params": {"name": "any_tool"}}, 403, "RESTRICTED MCP custom_server")
-=======
     _run_endpoint_test("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 403, "RESTRICTED MCP write_file (filesystem)")
     _run_endpoint_test("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "read_file"}}, 200, "RESTRICTED MCP read_file (filesystem, allowed -> 200)")
     _run_endpoint_test("/api/mcp/servers/custom_server/call", {"method": "tools/call", "params": {"name": "any_tool"}}, 403, "RESTRICTED MCP custom_server")
-    
-    # Sleep to ensure SQLite's CURRENT_TIMESTAMP (1s resolution) registers a newer time for the trusted workspace
-    time.sleep(1.2)
->>>>>>> 4132f1f (Security patches and ui upgrade)
     
     # Sleep to ensure SQLite's CURRENT_TIMESTAMP (1s resolution) registers a newer time for the trusted workspace
     time.sleep(1.2)

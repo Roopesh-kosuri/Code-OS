@@ -6,12 +6,7 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "author": "Roopesh Kosuri",
-<<<<<<< HEAD
-  "license": "PolyForm-Noncommercial-1.0.0",
-=======
   "license": "MIT",
-
->>>>>>> 4132f1f (Security patches and ui upgrade)
   "repository": {
     "type": "git",
     "url": "https://github.com/Roopesh-kosuri/code-os.git"
@@ -28,11 +23,7 @@
     "dev": "concurrently -k \"npm:dev:backend\" \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:backend": "node scripts/dev-backend.js",
-<<<<<<< HEAD
-    "dev:electron": "wait-on http://127.0.0.1:5173 && npm run build:electron && electron .",
-=======
     "dev:electron": "wait-on http://127.0.0.1:5176 && npm run build:electron && electron .",
->>>>>>> 4132f1f (Security patches and ui upgrade)
     "build": "npm run typecheck && vite build && npm run build:electron",
     "package": "npm run build && electron-builder",
     "build:electron": "tsc -p electron/tsconfig.json && node -e \"require('fs').writeFileSync('dist-electron/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\"",
@@ -94,24 +85,34 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": [
+        "nsis",
+        "dir"
+      ]
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CODE OS",
+      "runAfterFinish": true,
+      "differentialPackage": false
     },
     "mac": {
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "dir"
+      ],
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "gatekeeperAssess": false
     },
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "dir"
       ],
       "category": "Development",
       "maintainer": "Roopesh Kosuri <roopesh@codeos.ai>"

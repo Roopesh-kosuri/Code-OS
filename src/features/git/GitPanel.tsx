@@ -70,16 +70,16 @@ export function GitPanel() {
                     await refresh();
                   }}
                 >
-                  {status.branches.map((branch) => <option key={branch} className="bg-surface-900 text-slate-200">{branch}</option>)}
+                  {(status?.branches || []).map((branch) => <option key={branch} className="bg-surface-900 text-slate-200">{branch}</option>)}
                 </select>
               </div>
             </div>
 
             {/* Staged Changes */}
-            {status.staged.length > 0 && (
+            {(status?.staged?.length ?? 0) > 0 && (
               <div className="mb-3">
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Staged Changes</div>
-                {status.staged.map((file) => (
+                {status!.staged.map((file) => (
                   <button
                     key={`staged-${file}`}
                     className="block w-full truncate border-b border-surface-800 py-1 text-left text-xs text-slate-400 hover:text-white"
@@ -96,10 +96,10 @@ export function GitPanel() {
             )}
 
             {/* Unstaged Changes */}
-            {status.unstaged.length > 0 && (
+            {(status?.unstaged?.length ?? 0) > 0 && (
               <div className="mb-3">
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Unstaged Changes</div>
-                {status.unstaged.map((file) => (
+                {status!.unstaged.map((file) => (
                   <button
                     key={`unstaged-${file}`}
                     className="block w-full truncate border-b border-surface-800 py-1 text-left text-xs text-slate-400 hover:text-white"
@@ -116,10 +116,10 @@ export function GitPanel() {
             )}
 
             {/* Untracked Files */}
-            {status.untracked.length > 0 && (
+            {(status?.untracked?.length ?? 0) > 0 && (
               <div className="mb-3">
                 <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Untracked Files</div>
-                {status.untracked.map((file) => (
+                {status!.untracked.map((file) => (
                   <button
                     key={`untracked-${file}`}
                     className="block w-full truncate border-b border-surface-800 py-1 text-left text-xs text-slate-400 hover:text-white"
@@ -135,9 +135,9 @@ export function GitPanel() {
               </div>
             )}
 
-            {!status.dirty ? <div className="text-slate-500">Working tree clean.</div> : null}
+            {!status?.dirty ? <div className="text-slate-500">Working tree clean.</div> : null}
             {diff ? <pre className="mt-3 max-h-28 overflow-auto rounded bg-surface-950 p-2 font-mono text-[11px] text-slate-300">{diff}</pre> : null}
-            {history.length ? (
+            {history?.length ? (
               <div className="mt-3 space-y-1">
                 <div className="text-xs uppercase tracking-wider text-slate-500">History</div>
                 {history.slice(0, 5).map((item) => (

@@ -8,6 +8,37 @@ import { useIndexStore } from "./stores/indexStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 
+function BackendStatusBanner() {
+  const [status, setStatus] = useState<{ running: boolean; error: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!window.codeOS?.getBackendStatus) return;
+    const check = async () => {
+      try {
+        const s = await window.codeOS?.getBackendStatus?.();
+        if (s) setStatus(s);
+      } catch { /* ignore */ }
+    };
+    void check();
+    const interval = setInterval(check, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!status || (status.running && !status.error)) return null;
+
+  return (
+    <div className="bg-amber-950/80 border-b border-amber-500/30 text-amber-200 px-4 py-2 text-xs flex items-center justify-between z-[9999] relative">
+      <div className="flex items-center gap-2">
+        <span className="font-semibold text-amber-400">⚠️ Backend Alert:</span>
+        <span>{status.error || "Attempting to connect to Python backend process on 127.0.0.1:8000..."}</span>
+      </div>
+      <div className="flex items-center gap-3">
+        <span className="text-[11px] opacity-75">Python 3.11+ required</span>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
   const restoreLastWorkspace = useWorkspaceStore((state) => state.restoreLastWorkspace);
@@ -35,38 +66,39 @@ export function App() {
 
   useEffect(() => {
     const root = document.documentElement;
-    // Clear all existing theme classes first
-    root.classList.remove("light", "dark", "crimson", "navy", "void", "violet", "cyberpunk");
-    
-    let appliedTheme = theme;
-    if (theme === "system") {
+    const themeClasses = ["light", "dark", "crimson", "navy", "void", "violet", "cyberpunk"];
+    root.classList.remove(...themeClasses);
+
+    let appliedTheme = theme || "dark";
+    if (appliedTheme === "system") {
       const systemIsLight = typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: light)").matches;
       appliedTheme = systemIsLight ? "light" : "dark";
     }
-    
-    if (appliedTheme === "light") {
-      root.classList.add("light");
-    } else {
+
+    root.classList.add(appliedTheme);
+    if (appliedTheme !== "light") {
       root.classList.add("dark");
     }
-    root.setAttribute("data-theme", appliedTheme || "dark");
+    root.setAttribute("data-theme", appliedTheme);
   }, [theme]);
 
   // Listen for system preference changes when theme is set to "system"
   useEffect(() => {
     if (theme !== "system") return;
-    
+
     const mediaQuery = window.matchMedia("(prefers-color-scheme: light)");
     const handleChange = () => {
       const root = document.documentElement;
-      root.classList.remove("light", "crimson", "navy", "void", "violet", "cyberpunk");
+      const themeClasses = ["light", "dark", "crimson", "navy", "void", "violet", "cyberpunk"];
+      root.classList.remove(...themeClasses);
       const applied = mediaQuery.matches ? "light" : "dark";
-      if (applied !== "dark") {
-        root.classList.add(applied);
+      root.classList.add(applied);
+      if (applied !== "light") {
+        root.classList.add("dark");
       }
       root.setAttribute("data-theme", applied);
     };
-    
+
     mediaQuery.addEventListener("change", handleChange);
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, [theme]);
@@ -124,6 +156,7 @@ export function App() {
 
   return (
     <>
+      <BackendStatusBanner />
       <AppShell />
       {!onboardingComplete && (
         <OnboardingWizard onClose={() => setOnboardingComplete(true)} />

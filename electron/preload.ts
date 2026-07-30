@@ -54,6 +54,8 @@ const api = {
   // keeps it in memory only.
   getSessionToken: (): Promise<string | null> =>
     ipcRenderer.invoke("session:getToken"),
+  getBackendStatus: (): Promise<{ running: boolean; error: string | null; token: string | null }> =>
+    ipcRenderer.invoke("backend:getStatus"),
 };
 
 contextBridge.exposeInMainWorld("codeOS", api);

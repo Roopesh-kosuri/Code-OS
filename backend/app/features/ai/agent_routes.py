@@ -216,5 +216,13 @@ async def save_security_audit_report(payload: SaveAuditReportRequest) -> dict:
         raise HTTPException(status_code=400, detail=f"Failed to save security report: {exc}")
 
 
+from .coder_mode_service import CoderModeRequest, execute_coder_mode
+
+@router.post("/coder-mode/execute")
+async def run_coder_mode(payload: CoderModeRequest) -> dict:
+    """Phase 3: Fast single-model Coder + Tester pipeline for medium tasks."""
+    return await execute_coder_mode(payload)
+
+
 
 

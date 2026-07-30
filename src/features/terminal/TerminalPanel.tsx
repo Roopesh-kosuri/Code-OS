@@ -23,23 +23,84 @@ let sessionIdCounter = 0;
 const sessions = new Map<string, TermSession>();
 let activeSessionId: string | null = null;
 
-function getTheme(isLight: boolean) {
+function getTheme(themeName: string) {
+  if (themeName === "light") {
+    return {
+      background: "#ffffff",
+      foreground: "#1f2328",
+      cursor: "#0969da",
+      selectionBackground: "#ddf4ff",
+      black: "#1f2328", red: "#cf222e", green: "#1a7f37", yellow: "#9a6700",
+      blue: "#0969da", magenta: "#8250df", cyan: "#1b7c83",
+      white: "#1f2328",
+      brightBlack: "#57606a", brightRed: "#cf222e", brightGreen: "#1a7f37",
+      brightYellow: "#9a6700", brightBlue: "#0969da", brightMagenta: "#8250df",
+      brightCyan: "#1b7c83", brightWhite: "#1f2328",
+    };
+  }
+  if (themeName === "void") {
+    return {
+      background: "#000000",
+      foreground: "#f4f4f5",
+      cursor: "#a1a1aa",
+      selectionBackground: "#27272a",
+      black: "#09090b", red: "#ef4444", green: "#22c55e", yellow: "#eab308",
+      blue: "#a1a1aa", magenta: "#d4d4d8", cyan: "#e4e4e7",
+      white: "#f4f4f5",
+      brightBlack: "#52525b", brightRed: "#ef4444", brightGreen: "#22c55e",
+      brightYellow: "#eab308", brightBlue: "#a1a1aa", brightMagenta: "#d4d4d8",
+      brightCyan: "#e4e4e7", brightWhite: "#ffffff",
+    };
+  }
+  if (themeName === "cyberpunk") {
+    return {
+      background: "#080b12",
+      foreground: "#dcf1f5",
+      cursor: "#00e5ff",
+      selectionBackground: "rgba(0, 229, 255, 0.25)",
+      black: "#05070d", red: "#ff2e88", green: "#00ffd8", yellow: "#ffdd00",
+      blue: "#00e5ff", magenta: "#ff007f", cyan: "#00e5ff",
+      white: "#dcf1f5",
+      brightBlack: "#4b7e8a", brightRed: "#ff2e88", brightGreen: "#00ffd8",
+      brightYellow: "#ffdd00", brightBlue: "#00e5ff", brightMagenta: "#ff79c6",
+      brightCyan: "#00f0ff", brightWhite: "#ffffff",
+    };
+  }
+  // Dark (default)
   return {
-    background: isLight ? "#ffffff" : "#101215",
-    foreground: isLight ? "#1f2328" : "#e2e8f0",
-    cursor: isLight ? "#1f2328" : "#45b3e7",
-    selectionBackground: isLight ? "#d0d7de" : "#303843",
-    black: "#1b2027", red: "#e25c5c", green: "#42c77b", yellow: "#f3b44e",
-    blue: "#45b3e7", magenta: "#c084fc", cyan: "#2dd4bf",
-    white: isLight ? "#1f2328" : "#e2e8f0",
-    brightBlack: "#64748b", brightRed: "#e25c5c", brightGreen: "#42c77b",
-    brightYellow: "#f3b44e", brightBlue: "#45b3e7", brightMagenta: "#c084fc",
-    brightCyan: "#2dd4bf", brightWhite: isLight ? "#1f2328" : "#f1f5f9",
+    background: "#131314",
+    foreground: "#e5e2e3",
+    cursor: "#00e5ff",
+    selectionBackground: "#00626e66",
+    black: "#1b2027", red: "#ffb4ab", green: "#64d99a", yellow: "#ffeac0",
+    blue: "#00daf3", magenta: "#d1bcff", cyan: "#c3f5ff",
+    white: "#e5e2e3",
+    brightBlack: "#849396", brightRed: "#ffb4ab", brightGreen: "#64d99a",
+    brightYellow: "#ffeac0", brightBlue: "#00daf3", brightMagenta: "#d1bcff",
+    brightCyan: "#c3f5ff", brightWhite: "#ffffff",
   };
 }
 
-function getActiveTheme(): boolean {
-  return document.documentElement.classList.contains("light");
+function safeGetTheme(themeName: string) {
+  try {
+    const t = getTheme(themeName);
+    if (t && t.background && t.foreground) return t;
+  } catch (e) {
+    console.warn("xterm getTheme failed, falling back to dark default:", e);
+  }
+  return getTheme("dark");
+}
+
+function getActiveThemeName(): string {
+  const root = document.documentElement;
+  const dataTheme = root.getAttribute("data-theme");
+  if (dataTheme && ["light", "void", "cyberpunk", "dark"].includes(dataTheme)) {
+    return dataTheme;
+  }
+  if (root.classList.contains("light")) return "light";
+  if (root.classList.contains("void")) return "void";
+  if (root.classList.contains("cyberpunk")) return "cyberpunk";
+  return "dark";
 }
 
 // ── Session management helpers ─────────────────────────────────────────
@@ -56,7 +117,11 @@ function detachSession(session: TermSession): void {
 function attachSession(session: TermSession, container: HTMLDivElement): void {
   session.container = container;
   container.innerHTML = "";
-  session.term.open(container);
+  if (session.term.element) {
+    container.appendChild(session.term.element);
+  } else {
+    session.term.open(container);
+  }
   requestAnimationFrame(() => { try { session.fitAddon.fit(); } catch { /* ignore */ } });
   const ro = new ResizeObserver(() => {
     if (session.container) { try { session.fitAddon.fit(); } catch { /* ignore */ } }
@@ -69,9 +134,9 @@ async function createElectronSession(workspacePath: string): Promise<TermSession
   const codeOS = window.codeOS!;
   const ptySessionId = await codeOS.terminalCreate(workspacePath);
   if (!ptySessionId) return null;
-  const isLight = getActiveTheme();
+  const themeName = getActiveThemeName();
   const term = new Terminal({
-    theme: getTheme(isLight), cursorBlink: true, cursorStyle: "block",
+    theme: safeGetTheme(themeName), cursorBlink: true, cursorStyle: "block",
     fontSize: 13, fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace",
     allowTransparency: false, cols: 80, rows: 24,
   });
@@ -96,9 +161,9 @@ async function createElectronSession(workspacePath: string): Promise<TermSession
 }
 
 function createWebSocketSession(workspacePath: string): TermSession {
-  const isLight = getActiveTheme();
+  const themeName = getActiveThemeName();
   const term = new Terminal({
-    theme: getTheme(isLight), cursorBlink: true, cursorStyle: "block",
+    theme: safeGetTheme(themeName), cursorBlink: true, cursorStyle: "block",
     fontSize: 13, fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace",
     allowTransparency: false, cols: 80, rows: 24,
   });
@@ -132,11 +197,11 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
   // Observe theme changes on <html>
   useEffect(() => {
     const observer = new MutationObserver(() => {
-      const isLight = getActiveTheme();
+      const themeName = getActiveThemeName();
       const target = activeSessionId ? sessions.get(activeSessionId) : undefined;
-      if (target) target.term.options.theme = getTheme(isLight);
+      if (target) target.term.options.theme = safeGetTheme(themeName);
     });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
     return () => observer.disconnect();
   }, []);
 

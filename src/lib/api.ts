@@ -62,7 +62,7 @@ function url(path: string, query?: RequestOptions["query"]): string {
   return target.toString();
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function request<T>(path: string, options: RequestOptions = {}, isRetry = false): Promise<T> {
   const token = await _ensureToken();
 
   const headers: Record<string, string> = {
@@ -80,6 +80,13 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   });
 
   if (!response.ok) {
+    if (response.status === 401 && !isRetry) {
+      _sessionToken = null;
+      _tokenFetchPromise = null;
+      await _ensureToken();
+      return request<T>(path, options, true);
+    }
+
     const body = await response.text();
     let message = body || response.statusText;
     try {

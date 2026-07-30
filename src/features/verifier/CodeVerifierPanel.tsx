@@ -104,9 +104,10 @@ export function CodeVerifierPanel() {
     md += `- Input Validation: ${rep.category_scores.validation}/100\n`;
     md += `- Resource Exhaustion (DoS): ${rep.category_scores.resource_limits}/100\n`;
     md += `- Auth & Web Vulnerabilities: ${rep.category_scores.auth_web}/100\n\n`;
-    md += `## Findings (${rep.findings.length})\n\n`;
+    const findingsList = rep.findings || [];
+    md += `## Findings (${findingsList.length})\n\n`;
 
-    rep.findings.forEach((f, idx) => {
+    findingsList.forEach((f, idx) => {
       md += `### ${idx + 1}. [${f.severity}] ${f.title} (${f.cwe_id || "CWE"})\n`;
       md += `- **File:** \`${f.file}\` (Line ${f.line})\n`;
       md += `- **Category:** ${f.category}\n`;
@@ -156,17 +157,17 @@ export function CodeVerifierPanel() {
 
   if (!currentWorkspace) {
     return (
-      <section className="flex h-full flex-col items-center justify-center p-4 text-center space-y-3 select-none bg-[#131314] text-on-surface">
+      <section className="flex h-full flex-col items-center justify-center p-4 text-center space-y-3 select-none bg-[var(--surface)] text-on-surface">
         <Shield size={32} className="text-slate-600 animate-pulse" />
         <span className="text-xs text-slate-400 font-mono">Open a workspace to access the Security Auditor Agent.</span>
       </section>
     );
   }
 
-  const filteredFindings = report?.findings.filter((f) => {
+  const filteredFindings = (report?.findings || []).filter((f) => {
     if (selectedSeverity === "ALL") return true;
     return f.severity === selectedSeverity;
-  }) || [];
+  });
 
   const getScoreColor = (score: number) => {
     if (score >= 90) return "text-emerald-400 border-emerald-500/40 bg-emerald-950/20";
@@ -177,15 +178,15 @@ export function CodeVerifierPanel() {
 
   const getSeverityBadge = (sev: string) => {
     switch (sev) {
-      case "CRITICAL": return "bg-rose-950/60 border-rose-600/50 text-rose-300 font-bold";
-      case "HIGH": return "bg-amber-950/60 border-amber-600/50 text-amber-300 font-bold";
-      case "MEDIUM": return "bg-yellow-950/40 border-yellow-700/40 text-yellow-300";
-      default: return "bg-slate-800/60 border-slate-700/50 text-slate-300";
+      case "CRITICAL": return <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded text-[10px] font-bold">CRITICAL</span>;
+      case "HIGH": return <span className="bg-orange-500/10 text-orange-400 border border-orange-500/30 px-2 py-0.5 rounded text-[10px] font-bold">HIGH</span>;
+      case "MEDIUM": return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded text-[10px] font-bold">MEDIUM</span>;
+      default: return <span className="bg-slate-500/10 text-slate-400 border border-slate-500/30 px-2 py-0.5 rounded text-[10px] font-bold">LOW</span>;
     }
   };
 
   return (
-    <main data-testid="code-verifier-panel" className="flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-6 bg-[#131314] text-on-surface h-full select-none font-mono">
+    <main data-testid="code-verifier-panel" className="flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-6 bg-[var(--surface)] text-on-surface h-full select-none font-mono">
       {/* Top Header */}
       <div className="flex justify-between items-center pb-4 border-b border-white/5 flex-wrap gap-3">
         <div className="flex items-center gap-3">
@@ -241,7 +242,7 @@ export function CodeVerifierPanel() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold uppercase tracking-wider">{report.risk_level} RISK</span>
-                <span className="text-[10px] text-slate-400">({report.findings.length} findings)</span>
+                <span className="text-[10px] text-slate-400">({report.findings?.length ?? 0} findings)</span>
               </div>
             </div>
 

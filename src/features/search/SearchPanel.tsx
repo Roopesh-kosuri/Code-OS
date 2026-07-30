@@ -72,11 +72,11 @@ export function SearchPanel() {
             <div className="truncate text-slate-500">{match.line ? `Line ${match.line}: ` : ""}{match.preview}</div>
           </button>
         ))}
-        {!matches.length ? <div className="p-2 text-sm text-slate-500">Search results appear here.</div> : null}
+        {!matches?.length ? <div className="p-2 text-sm text-slate-500">Search results appear here.</div> : null}
         <div className="px-2 pt-2">
           <Button
             variant="danger"
-            disabled={!workspace || !query || !matches.length}
+            disabled={!workspace || !query || !matches?.length}
             onClick={async () => {
               if (!workspace) return;
               const fileCount = new Set(matches.map((m) => m.path)).size;

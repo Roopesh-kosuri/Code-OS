@@ -101,28 +101,28 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* Liquid Glass OS Panel Common Styles (Surface 1) */
+/* Liquid Glass OS Panel Common Styles */
 .glass-panel {
-  background-color: rgba(19, 19, 20, 0.8);
+  background-color: var(--surface-container-low);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border-subtle);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
 }
 
 .glass-panel:hover {
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
 }
 
-/* High Elevation Glass Popover (Surface 2/3) */
+/* High Elevation Glass Popover */
 .glass-popover {
-  background-color: rgba(32, 31, 32, 0.9);
+  background-color: var(--surface-container);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
   box-shadow: 
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.15),
-    0 8px 32px 0 rgba(0, 229, 255, 0.05);
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.1),
+    0 8px 32px 0 rgba(0, 0, 0, 0.25);
 }
 
 /* Font Micro Label */
@@ -135,21 +135,21 @@
   text-transform: uppercase;
 }
 
-/* Syntax Highlighting Colors */
-.syn-keyword { color: #00e5ff; }
-.syn-string { color: #ffdf96; }
-.syn-comment { color: #849396; }
-.syn-function { color: #d1bcff; }
-.syn-variable { color: #e5e2e3; }
-.syn-operator { color: #bac9cc; }
+/* Syntax Highlighting Base Colors */
+.syn-keyword { color: var(--accent-primary); }
+.syn-string { color: var(--warning); }
+.syn-comment { color: var(--text-400); }
+.syn-function { color: var(--accent-secondary-light); }
+.syn-variable { color: var(--text-100); }
+.syn-operator { color: var(--text-300); }
 
-/* Light Theme override */
-.light {
+/* ── Light / White Theme (Clean High-Contrast Light Surface) ── */
+.light,
+[data-theme="light"] {
   color-scheme: light;
   background: #ffffff;
   color: #1f2328;
 
-  /* Stitch M3 light tokens */
   --surface: #ffffff;
   --surface-dim: #f6f8fa;
   --surface-bright: #ffffff;
@@ -175,6 +175,7 @@
   --secondary-fixed-dim: #8250df;
   --tertiary: #9a6700;
   --error: #cf222e;
+  --on-error: #ffffff;
 
   --surface-variant: #d0d7de;
   --background: #ffffff;
@@ -209,67 +210,143 @@
   --warning: #9a6700;
 }
 
-/* Light mode form elements */
+.light body,
+html.light,
+html[data-theme="light"] {
+  background: #f6f8fa !important;
+  color: #1f2328 !important;
+}
+
 .light input,
 .light textarea,
-.light select {
+.light select,
+[data-theme="light"] input,
+[data-theme="light"] textarea,
+[data-theme="light"] select {
   background-color: #ffffff !important;
   color: #1f2328 !important;
   border-color: #d0d7de !important;
 }
 
 .light input::placeholder,
-.light textarea::placeholder {
+.light textarea::placeholder,
+[data-theme="light"] input::placeholder,
+[data-theme="light"] textarea::placeholder {
   color: #8c959f !important;
 }
 
-/* Light mode body background */
-.light body,
-html.light {
-  background: #f6f8fa !important;
-  color: #1f2328 !important;
-}
-.light body,
-html.light {
-  background: radial-gradient(circle at 72% -24%, color-mix(in srgb, var(--accent-500) 6%, transparent), transparent 38rem),
-    #f6f8fa;
-}
-
-/* Void Theme override (True OLED Black) */
-.void {
+/* ── Void Theme (True OLED Near-Black, Austere Minimalism) ── */
+.void,
+[data-theme="void"] {
   color-scheme: dark;
+  background: #000000;
+  color: #f4f4f5;
+
+  --surface: #000000;
+  --surface-dim: #000000;
+  --surface-bright: #27272a;
+  --surface-container-lowest: #000000;
+  --surface-container-low: #080808;
+  --surface-container: #101010;
+  --surface-container-high: #181818;
+  --surface-container-highest: #27272a;
+  --on-surface: #f4f4f5;
+  --on-surface-variant: #a1a1aa;
+  --outline: #71717a;
+  --outline-variant: #27272a;
+  --surface-tint: #e4e4e7;
+  --primary: #e4e4e7;
+  --on-primary: #09090b;
+  --primary-container: #27272a;
+  --on-primary-container: #f4f4f5;
+  --primary-fixed-dim: #d4d4d8;
+  --secondary: #a1a1aa;
+  --on-secondary: #09090b;
+  --secondary-container: #18181b;
+  --on-secondary-container: #d4d4d8;
+  --secondary-fixed-dim: #a1a1aa;
+  --tertiary: #d4d4d8;
+  --error: #ef4444;
+  --on-error: #450a0a;
+
+  --surface-variant: #27272a;
+  --background: #000000;
+  --on-background: #f4f4f5;
+
   --surface-0: #000000;
   --surface-1: #080808;
   --surface-2: #101010;
   --surface-3: #181818;
-  --surface-highest: #262626;
+  --surface-highest: #27272a;
   --accent-primary: #a1a1aa;
-  --accent-primary-bright: #e4e4e7;
-  --accent-secondary: #52525b;
-  --accent-secondary-light: #71717a;
+  --accent-primary-bright: #f4f4f5;
+  --accent-secondary: #71717a;
+  --accent-secondary-light: #a1a1aa;
   --danger: #ef4444;
-  --border-subtle: rgba(38, 38, 38, 0.6);
+  --border-subtle: rgba(255, 255, 255, 0.08);
 
   --bg-surface-950: #000000;
   --bg-surface-900: #080808;
   --bg-surface-850: #101010;
   --bg-surface-800: #181818;
-  --bg-surface-700: #262626;
-  --text-100: #e4e4e7;
-  --text-200: #d4d4d8;
+  --bg-surface-700: #27272a;
+  --text-100: #f4f4f5;
+  --text-200: #e4e4e7;
   --text-300: #a1a1aa;
   --text-400: #71717a;
   --text-500: #52525b;
-  --text-primary: #e4e4e7;
-  --accent-500: var(--accent-primary);
+  --text-primary: #f4f4f5;
+  --accent-500: #a1a1aa;
   --accent-600: #71717a;
-  --success: #3f3f46;
-  --warning: #52525b;
+  --success: #22c55e;
+  --warning: #eab308;
 }
 
-/* Cyberpunk Theme override (Gazi Jarin Inspired Dual-Accent Neon) */
-.cyberpunk {
+.void body,
+html.void,
+html[data-theme="void"] {
+  background: #000000 !important;
+  color: #f4f4f5 !important;
+}
+
+/* ── Cyberpunk Theme (Signature Dual-Accent Cyan & Hot Magenta) ── */
+.cyberpunk,
+[data-theme="cyberpunk"] {
   color-scheme: dark;
+  background: #080b12;
+  color: #dcf1f5;
+
+  --surface: #080b12;
+  --surface-dim: #080b12;
+  --surface-bright: #2f3f58;
+  --surface-container-lowest: #05070d;
+  --surface-container-low: #0f141c;
+  --surface-container: #161e2b;
+  --surface-container-high: #1e293a;
+  --surface-container-highest: #2f3f58;
+  --on-surface: #dcf1f5;
+  --on-surface-variant: #9accd6;
+  --outline: #00e5ff;
+  --outline-variant: rgba(0, 229, 255, 0.25);
+  --surface-tint: #00e5ff;
+  --primary: #00e5ff;
+  --on-primary: #04161a;
+  --primary-container: rgba(0, 229, 255, 0.15);
+  --on-primary-container: #00e5ff;
+  --primary-fixed-dim: #00e5ff;
+  --secondary: #ff007f;
+  --on-secondary: #ffffff;
+  --secondary-container: rgba(255, 0, 127, 0.18);
+  --on-secondary-container: #ff79c6;
+  --secondary-fixed-dim: #ff79c6;
+  --tertiary: #ffdd00;
+  --error: #ff2e88;
+  --on-error: #ffffff;
+
+  --surface-variant: #1e293a;
+  --background: #080b12;
+  --on-background: #dcf1f5;
+
   --surface-0: #080b12;
   --surface-1: #0f141c;
   --surface-2: #161e2b;
@@ -293,15 +370,29 @@ html.light {
   --text-400: #72abb7;
   --text-500: #4b7e8a;
   --text-primary: #dcf1f5;
-  --accent-500: var(--accent-primary);
-  --accent-600: #00b8cc;
+  --accent-500: #00e5ff;
+  --accent-600: #ff007f;
   --success: #00ffd8;
   --warning: #ffdd00;
 }
 
-.cyberpunk .cyberpunk-glow {
-  box-shadow: 0 0 8px rgba(0, 229, 255, 0.35);
+.cyberpunk body,
+html.cyberpunk,
+html[data-theme="cyberpunk"] {
+  background: #080b12 !important;
+  color: #dcf1f5 !important;
+}
+
+.cyberpunk .cyberpunk-glow,
+[data-theme="cyberpunk"] .cyberpunk-glow {
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.4);
   border-color: #00e5ff !important;
+}
+
+.cyberpunk .cyberpunk-magenta-glow,
+[data-theme="cyberpunk"] .cyberpunk-magenta-glow {
+  box-shadow: 0 0 10px rgba(255, 0, 127, 0.4);
+  border-color: #ff007f !important;
 }
 
 .cyberpunk .cyberpunk-text-glow {

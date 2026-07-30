@@ -57,6 +57,7 @@ function findPythonCommand(): string {
 
 export class BackendProcess {
   private process: ChildProcessWithoutNullStreams | null = null;
+  lastError: string | null = null;
 
   /**
    * The session token emitted by the backend on startup.
@@ -90,10 +91,10 @@ export class BackendProcess {
       return;
     }
 
+    this.lastError = null;
+
     if (await this.isBackendHealthy()) {
       console.log("[backend] reusing existing backend on 127.0.0.1:8000");
-      // When reusing an existing backend we cannot capture the token from stdout.
-      // Read the token file that the backend wrote on startup instead.
       try {
         const fs = await import("node:fs");
         const os = await import("node:os");
@@ -109,7 +110,7 @@ export class BackendProcess {
       return;
     }
 
-    const projectRoot = isDev ? process.cwd() : path.dirname(app.getPath("exe"));
+    const projectRoot = isDev ? process.cwd() : process.resourcesPath;
     const args = ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "8000"];
 
     if (isDev) {
@@ -119,21 +120,34 @@ export class BackendProcess {
     let pythonCmd: string;
     try {
       pythonCmd = findPythonCommand();
-    } catch (err) {
+    } catch (err: any) {
+      this.lastError = err?.message || "Python >= 3.11 not found in system PATH";
+      console.error(`[backend] ${this.lastError}`);
       return;
     }
 
-    this.process = spawn(pythonCmd, args, {
-      cwd: projectRoot,
-      env: {
-        ...process.env,
-        CODE_OS_HOME: app.getPath("userData")
-      }
+    try {
+      this.process = spawn(pythonCmd, args, {
+        cwd: projectRoot,
+        env: {
+          ...process.env,
+          CODE_OS_HOME: app.getPath("userData"),
+          PYTHONPATH: projectRoot
+        }
+      });
+    } catch (err: any) {
+      this.lastError = `Failed to spawn Python process: ${err?.message || err}`;
+      console.error(`[backend] ${this.lastError}`);
+      return;
+    }
+
+    this.process.on("error", (err) => {
+      this.lastError = `Python process error: ${err.message}`;
+      console.error(`[backend] ${this.lastError}`);
     });
 
     this.process.stdout.on("data", (data: Buffer) => {
       const text = data.toString();
-      // Parse the session token line emitted by the backend auth module.
       for (const line of text.split("\n")) {
         const trimmed = line.trim();
         if (trimmed.startsWith("CODE_OS_SESSION_TOKEN=")) {
@@ -144,18 +158,24 @@ export class BackendProcess {
             console.log("[backend] session token captured from stdout");
           }
         } else {
-          // Forward all other stdout to the Electron console.
           console.log(`[backend] ${trimmed}`);
         }
       }
     });
 
     this.process.stderr.on("data", (data) => {
-      console.error(`[backend] ${data.toString().trim()}`);
+      const msg = data.toString().trim();
+      console.error(`[backend] ${msg}`);
+      if (msg.includes("Error:") || msg.includes("Traceback") || msg.includes("ModuleNotFoundError")) {
+        this.lastError = msg;
+      }
     });
 
     this.process.on("exit", (code) => {
       console.log(`[backend] exited with code ${code}`);
+      if (code !== 0 && code !== null) {
+        this.lastError = `Python backend exited unexpectedly with code ${code}`;
+      }
       this.process = null;
     });
   }

@@ -126,7 +126,22 @@ async function createWindow(): Promise<void> {
     await mainWindow.loadURL(devUrl);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
-    await mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    if (process.env.CODEOS_DEBUG === "1") {
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+    }
+    const indexPath = path.join(__dirname, "../dist/index.html");
+    try {
+      await mainWindow.loadFile(indexPath);
+    } catch (err: any) {
+      console.error("[main] Could not load dist/index.html:", err);
+      const fallbackHtml = `<!DOCTYPE html><html><body style="background:#101215;color:#f87171;font-family:sans-serif;padding:40px;line-height:1.6;">
+        <h2>CODE OS - App Load Failure</h2>
+        <p>Could not load packaged frontend bundle at: <code>${indexPath}</code></p>
+        <p style="color:#a1a1aa">${err?.message || err}</p>
+        <button onclick="location.reload()" style="background:#00e5ff;color:#000;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;font-weight:bold;margin-top:16px;">Retry</button>
+      </body></html>`;
+      await mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(fallbackHtml)}`);
+    }
   }
 }
 
@@ -335,23 +350,28 @@ ipcMain.handle("terminal:list", () => {
 
 ipcMain.handle("session:getToken", async () => {
   try {
-    return await backend.waitForToken(15_000);
+    return await backend.waitForToken(4_000);
   } catch (err) {
     console.error("[session] Could not obtain session token:", err);
     return null;
   }
 });
 
+ipcMain.handle("backend:getStatus", () => {
+  return {
+    running: !!backend.sessionToken,
+    error: backend.lastError,
+    token: backend.sessionToken,
+  };
+});
+
 app.whenReady().then(async () => {
   await backend.start();
-  // Wait for the backend to emit its session token before opening the window.
-  // This ensures the renderer can immediately call getSessionToken() without
-  // a race condition.
   try {
-    await backend.waitForToken(20_000);
+    await backend.waitForToken(4_000);
     console.log("[app] session token ready");
   } catch {
-    console.warn("[app] session token wait timed out; app will open anyway");
+    console.warn("[app] session token wait timed out; opening window anyway");
   }
   createMenu();
   await createWindow();

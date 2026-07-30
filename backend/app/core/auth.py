@@ -70,23 +70,31 @@ def generate_and_store_token() -> str:
     """
     global _SESSION_TOKEN
 
-    token = secrets.token_hex(32)  # 256 bits of randomness
-    _SESSION_TOKEN = token
-
     token_path = _token_file_path()
     token_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Reuse token across Uvicorn hot-reloads if available to prevent invalidating browser sessions
+    if token_path.exists():
+        try:
+            existing = token_path.read_text(encoding="utf-8").strip()
+            if len(existing) == 64 and all(c in "0123456789abcdefABCDEF" for c in existing):
+                _SESSION_TOKEN = existing
+                print(f"CODE_OS_SESSION_TOKEN={existing}", flush=True)
+                logger.info("auth: session token reloaded from %s", token_path)
+                return existing
+        except Exception:
+            pass
+
+    token = secrets.token_hex(32)  # 256 bits of randomness
+    _SESSION_TOKEN = token
 
     # Write with restrictive permissions (owner read/write only).
     token_path.write_text(token, encoding="utf-8")
     try:
         os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
     except OSError:
-        # Windows doesn't support POSIX chmod; the file is still private by
-        # default when written inside the user-specific app data directory.
         pass
 
-    # Print a parseable line that the Electron main process can capture from
-    # the backend's stdout stream.
     print(f"CODE_OS_SESSION_TOKEN={token}", flush=True)
     logger.info("auth: session token generated and stored at %s", token_path)
     return token
@@ -96,7 +104,6 @@ def get_token() -> str:
     """Return the active session token (must be called after startup)."""
     global _SESSION_TOKEN
     if _SESSION_TOKEN is None:
-        # Recover from the file if the module was imported in a separate process.
         path = _token_file_path()
         if path.exists():
             _SESSION_TOKEN = path.read_text(encoding="utf-8").strip()
@@ -107,29 +114,27 @@ def get_token() -> str:
 
 def _is_exempt(request: Request) -> bool:
     """Return True if the request does not require an auth token."""
-    # HTTP OPTIONS preflight requests sent by web browsers carry no auth headers
     if request.method == "OPTIONS":
         return True
     path = request.url.path
     if path in _UNAUTHENTICATED_PATHS:
         return True
-    # Websocket upgrade requests carry no Authorization header in the HTTP
-    # handshake (browsers don't allow custom headers on WS). We rely on the
-    # workspace trust check inside the terminal/WebSocket route instead.
     if request.headers.get("upgrade", "").lower() == "websocket":
         return True
     return False
 
 
+_CORS_AUTH_HEADERS = {
+    "WWW-Authenticate": "Bearer",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "*",
+    "Access-Control-Allow-Headers": "*",
+}
+
 
 async def require_token(request: Request, call_next: Callable) -> Response:
     """
     FastAPI middleware that enforces the session token on API requests.
-
-    GET requests to the unauthenticated allowlist are passed through.
-    All other requests must carry:
-
-        Authorization: Bearer <session-token>
     """
     if _is_exempt(request):
         return await call_next(request)
@@ -137,26 +142,23 @@ async def require_token(request: Request, call_next: Callable) -> Response:
     from fastapi.responses import JSONResponse
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
-
         return JSONResponse(
             status_code=401,
             content={"detail": "Missing or malformed Authorization header. Expected: Bearer <session-token>"},
-            headers={"WWW-Authenticate": "Bearer"},
+            headers=_CORS_AUTH_HEADERS,
         )
 
     provided_token = auth_header.removeprefix("Bearer ").strip()
     try:
         expected = get_token()
     except RuntimeError:
-        return JSONResponse(status_code=503, content={"detail": "Backend not fully initialised yet"})
+        return JSONResponse(status_code=503, content={"detail": "Backend not fully initialised yet"}, headers=_CORS_AUTH_HEADERS)
 
-    # Use secrets.compare_digest to prevent timing-based side-channel attacks.
     if not secrets.compare_digest(provided_token, expected):
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid session token"},
-            headers={"WWW-Authenticate": "Bearer"},
+            headers=_CORS_AUTH_HEADERS,
         )
 
     return await call_next(request)
-

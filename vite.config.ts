@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  base: "./",
   plugins: [react()],
   resolve: {
     alias: {
@@ -16,7 +17,7 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     port: 5176,
-    strictPort: true,
+    strictPort: false,
     fs: {
       // Allow Vite dev server to serve files from node_modules
       allow: ["..", path.resolve(__dirname, "node_modules/monaco-editor")],

@@ -285,80 +285,80 @@ export function OnboardingWizard({ onClose }: OnboardingWizardProps) {
       {/* Onboarding Dialog */}
       {currentStep === 0 ? (
         /* Welcome & Terms Modal (Center screen) */
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-surface-900 border border-surface-700/80 rounded-xl w-full max-w-md p-6 shadow-2xl z-95 space-y-4">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-surface-900/95 border border-surface-700/80 rounded-2xl w-full max-w-md p-6 shadow-2xl z-95 space-y-4 backdrop-blur-xl">
           <div className="flex flex-col items-center gap-3 text-center">
-            <CodeOsLogo className="w-full max-w-[340px] px-5 py-3" imageClassName="h-14 w-full" priority />
-            <div>
-              <h2 className="text-lg font-bold text-white leading-tight">Welcome</h2>
+            <CodeOsLogo className="w-full justify-center" />
+            <div className="pt-1">
+              <h2 className="text-lg font-bold text-white leading-tight">Welcome to CODE OS</h2>
               <p className="text-xs text-slate-400">Local-First AI Development Shell</p>
             </div>
           </div>
 
-          <div className="space-y-2 text-xs text-slate-350 leading-relaxed">
+          <div className="space-y-2 text-xs text-slate-300 leading-relaxed">
             <p>
               Automated pair-programming, terminals, and workspace indexers run entirely on your machine.
             </p>
-            <p className="text-amber-400 font-semibold bg-amber-950/30 border border-amber-900/30 p-2 rounded-md">
-              ⚠️ DISCLAIMER: Any lost code lines, file deletions, or system changes resulting from local AI execution will not be our responsibility, as this is a fully local execution model running on your hardware. Always commit your code.
-            </p>
+            <div className="text-amber-300/90 text-[11px] leading-snug font-medium bg-amber-950/40 border border-amber-500/30 p-2.5 rounded-lg shadow-inner">
+              ⚠️ <strong className="font-semibold text-amber-200">DISCLAIMER:</strong> Any lost code lines, file deletions, or system changes resulting from local AI execution will not be our responsibility, as this is a fully local execution model running on your hardware. Always commit your code.
+            </div>
           </div>
 
-          <div className="bg-surface-950 border border-surface-800 rounded-lg p-3 space-y-2 max-h-36 overflow-y-auto">
-            <h4 className="text-[10px] uppercase font-bold text-slate-500">Execution Terms</h4>
-            <ul className="space-y-1.5 text-[10px] text-slate-450 leading-relaxed">
-              <li className="flex gap-1.5">
-                <span className="text-accent-500 font-bold">1.</span>
+          <div className="bg-surface-950/90 border border-surface-800 rounded-xl p-3.5 space-y-2 max-h-36 overflow-y-auto">
+            <h4 className="text-[10px] uppercase font-bold tracking-wider text-slate-400">Execution Terms</h4>
+            <ul className="space-y-2 text-[11px] text-slate-300 leading-relaxed">
+              <li className="flex gap-2 items-start">
+                <span className="text-cyan-400 font-bold text-xs">1.</span>
                 <span>All code edits, index mappings, and chat weights run 100% locally.</span>
               </li>
-              <li className="flex gap-1.5">
-                <span className="text-accent-500 font-bold">2.</span>
+              <li className="flex gap-2 items-start">
+                <span className="text-cyan-400 font-bold text-xs">2.</span>
                 <span>Autonomous agents require explicit action approval before altering files or executing terminal shells.</span>
               </li>
-              <li className="flex gap-1.5">
-                <span className="text-accent-500 font-bold">3.</span>
+              <li className="flex gap-2 items-start">
+                <span className="text-cyan-400 font-bold text-xs">3.</span>
                 <span>Restricted mode is enabled by default for unverified or external workspace directories.</span>
               </li>
             </ul>
           </div>
 
           {/* Terms Checkbox */}
-          <div className="flex flex-col gap-3">
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+          <div className="flex flex-col gap-2.5 pt-1">
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
               <input
                 type="checkbox"
                 checked={acceptedTerms}
                 onChange={(e) => setAcceptedTerms(e.target.checked)}
-                className="mt-0.5 rounded text-accent-500 focus:ring-accent-500 bg-surface-950 border-surface-700 h-4 w-4"
+                className="mt-0.5 rounded text-cyan-500 focus:ring-cyan-500 focus:ring-offset-surface-900 bg-surface-950 border-surface-700 h-4 w-4 transition-all"
               />
-              <span className="text-xs text-slate-300 leading-normal">
+              <span className="text-xs text-slate-200 group-hover:text-white transition-colors leading-normal">
                 I agree to the Local Data Isolation &amp; Execution parameters.
               </span>
             </label>
-            <label className="flex items-start gap-2.5 cursor-pointer select-none">
+            <label className="flex items-start gap-2.5 cursor-pointer select-none group">
               <input
                 type="checkbox"
                 checked={optInTutorial}
                 onChange={(e) => setOptInTutorial(e.target.checked)}
                 disabled={!acceptedTerms}
-                className="mt-0.5 rounded text-accent-500 focus:ring-accent-500 bg-surface-950 border-surface-700 h-4 w-4 disabled:opacity-50"
+                className="mt-0.5 rounded text-cyan-500 focus:ring-cyan-500 focus:ring-offset-surface-900 bg-surface-950 border-surface-700 h-4 w-4 disabled:opacity-40 transition-all"
               />
-              <span className={`text-xs leading-normal ${acceptedTerms ? 'text-slate-300' : 'text-slate-500'}`}>
+              <span className={`text-xs leading-normal transition-colors ${acceptedTerms ? 'text-slate-300 group-hover:text-white' : 'text-slate-500'}`}>
                 Show me a guided tutorial of the workspace.
               </span>
             </label>
           </div>
 
-          <div className="flex justify-between items-center pt-2 border-t border-surface-800">
-            <button onClick={handleSkip} className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+          <div className="flex justify-between items-center pt-3 border-t border-surface-800/80">
+            <button onClick={handleSkip} className="text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors">
               Skip Intro
             </button>
             <Button
               variant="primary"
               disabled={!acceptedTerms}
               onClick={handleNext}
-              className="px-4 py-1.5 text-xs bg-accent-600 hover:bg-accent-500"
+              className="px-4 py-2 text-xs font-semibold bg-gradient-to-r from-cyan-600 to-accent-600 hover:from-cyan-500 hover:to-accent-500 shadow-md shadow-cyan-950/50 rounded-lg transition-all"
             >
-              {optInTutorial ? "Start Walkthrough" : "Ready to Code?"} <ChevronRight size={13} className="ml-1" />
+              {optInTutorial ? "Start Walkthrough" : "Ready to Code?"} <ChevronRight size={14} className="ml-1" />
             </Button>
           </div>
         </div>

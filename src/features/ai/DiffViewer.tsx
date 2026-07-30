@@ -219,7 +219,7 @@ export function DiffViewer() {
                 <PermissionGate
                   type="file-write"
                   details={`Apply edits proposed by the AI to workspace files.`}
-                  files={selectedProposal.changes.map((c) => c.path)}
+                  files={(selectedProposal.changes || []).map((c) => c.path)}
                   onApprove={() => handleApply(selectedProposal.id)}
                   onReject={() => handleReject(selectedProposal.id)}
                 />
@@ -234,7 +234,7 @@ export function DiffViewer() {
                       <Brain size={13} className="text-violet-400 shrink-0" />
                       <span className="flex-1">Implementation Plan</span>
                       <span className="text-[9px] font-mono text-violet-500 bg-violet-950/50 border border-violet-800/40 px-1.5 py-0.5 rounded">
-                        {selectedProposal.plan.files_to_touch.length} file{selectedProposal.plan.files_to_touch.length !== 1 ? "s" : ""}
+                        {(selectedProposal.plan.files_to_touch?.length ?? 0)} file{(selectedProposal.plan.files_to_touch?.length ?? 0) !== 1 ? "s" : ""}
                       </span>
                     </summary>
                     <div className="mt-3 space-y-3 border-t border-violet-800/30 pt-3 leading-relaxed">
@@ -263,7 +263,7 @@ export function DiffViewer() {
                         <p className="text-slate-300 text-[10px]">{selectedProposal.plan.approach}</p>
                       </div>
                       {/* Files targeted */}
-                      {selectedProposal.plan.files_to_touch.length > 0 && (
+                      {selectedProposal.plan.files_to_touch && selectedProposal.plan.files_to_touch.length > 0 && (
                         <div>
                           <div className="flex items-center gap-1.5 mb-1.5">
                             <FileCode size={10} className="text-slate-500" />
