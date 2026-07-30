@@ -40,7 +40,8 @@ export function RepoUnderstanding() {
 
   useEffect(() => {
     void fetchRepoData();
-    const interval = setInterval(() => void fetchRepoData(), 5000);
+    const interval = setInterval(() => void fetchRepoData(), 15000);
+
     return () => clearInterval(interval);
   }, [workspace?.path]);
 

@@ -230,18 +230,22 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
   const restrictedMode = useWorkspaceStore((state) => state.restrictedMode);
 
   return (
-    <section className="grid h-full min-h-0 grid-rows-[36px_minmax(0,1fr)] border-t border-surface-700 bg-surface-950">
-      <div className="flex items-center justify-between border-b border-surface-800 px-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-400">Terminal</span>
-          <div className="flex items-center gap-0.5 overflow-x-auto">
+    <section data-testid="terminal-panel" className="grid h-full min-h-0 grid-rows-[36px_minmax(0,1fr)] bg-surface-container/80 backdrop-blur-xl border-t border-outline-variant/30 glass-edge">
+
+      <div className="flex justify-between items-center px-4 h-9 border-b border-outline-variant/20 bg-surface-container-low/50 shrink-0 select-none">
+        <div className="flex items-center gap-4">
+          <button className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors">PROBLEMS</button>
+          <button className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors">OUTPUT</button>
+          <button className="font-label-caps text-label-caps text-primary-fixed-dim border-b border-primary-fixed-dim pb-0.5">TERMINAL</button>
+          
+          <div className="flex items-center gap-1 ml-2">
             {sessionList.map((session, index) => (
               <button
                 key={session.id}
-                className={`shrink-0 rounded px-2 py-1 text-xs transition-colors ${
+                className={`shrink-0 rounded px-2 py-0.5 font-label-caps text-label-caps transition-colors ${
                   session.id === activeSessionId
-                    ? "bg-surface-700 text-white"
-                    : "text-slate-400 hover:bg-surface-800 hover:text-slate-200"
+                    ? "bg-surface-container-high text-primary-fixed-dim"
+                    : "text-on-surface-variant/60 hover:bg-surface-bright/20 hover:text-on-surface"
                 }`}
                 onClick={() => handleSwitchTab(session)}
               >
@@ -249,16 +253,20 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
               </button>
             ))}
           </div>
-          {activeSessionId ? (
-            <span className="hidden lg:block max-w-[320px] truncate text-xs text-slate-500 ml-1">
-              {sessions.get(activeSessionId)?.cwd ?? ""}
-            </span>
-          ) : null}
         </div>
-        <div className="flex gap-1 shrink-0">
-          <IconButton label="New terminal" icon={<Plus size={15} />} onClick={handleNew} disabled={!workspace} />
-          <IconButton label="Kill terminal" icon={<Square size={15} />} onClick={handleKill} disabled={!activeSessionId} />
-          {onClose && <IconButton label="Collapse terminal" icon={<X size={15} />} onClick={onClose} />}
+
+        <div className="flex items-center gap-2">
+          <button className="text-on-surface-variant hover:text-on-surface" onClick={handleNew} title="New terminal">
+            <span className="material-symbols-outlined text-[16px]">add</span>
+          </button>
+          <button className="text-on-surface-variant hover:text-on-surface" onClick={handleKill} title="Kill terminal">
+            <span className="material-symbols-outlined text-[16px]">delete</span>
+          </button>
+          {onClose && (
+            <button className="text-on-surface-variant hover:text-on-surface ml-2" onClick={onClose} title="Collapse terminal">
+              <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
+            </button>
+          )}
         </div>
       </div>
       <div className="relative min-h-0 overflow-hidden" style={{ height: "100%" }}>
@@ -272,9 +280,9 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
           </div>
         )}
         {!workspace ? (
-          <div className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2 bg-surface-950 select-none">
-            <TermIcon size={22} className="text-slate-600 mb-1 animate-pulse" />
-            <span className="text-xs text-slate-500">Open a workspace to start terminal session.</span>
+          <div className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2 bg-surface-dim select-none">
+            <TermIcon size={22} className="text-on-surface-variant/60 dark:text-on-surface-variant/60 mb-1 animate-pulse" />
+            <span className="text-xs text-on-surface-variant/60 dark:text-on-surface-variant/60">Open a workspace to start terminal session.</span>
           </div>
         ) : (
           <div

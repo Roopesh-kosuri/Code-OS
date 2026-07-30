@@ -11,15 +11,16 @@ type WorkspaceTrustDialogProps = {
 };
 
 export function WorkspaceTrustDialog({ workspacePath, onTrust, onRestricted, onCancel }: WorkspaceTrustDialogProps) {
-  const [selected, setSelected] = useState<"trust" | "restricted" | null>(null);
+  const [selected, setSelected] = useState<"trust" | "restricted">("trust");
 
   const handleConfirm = () => {
     if (selected === "trust") {
       onTrust();
-    } else if (selected === "restricted") {
+    } else {
       onRestricted();
     }
   };
+
 
   const workspaceName = workspacePath.split(/[\\/]/).pop() || workspacePath;
 

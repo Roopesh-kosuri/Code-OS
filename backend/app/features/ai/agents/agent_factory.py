@@ -5,6 +5,7 @@ from .coder import CoderAgent
 from .reviewer import ReviewerAgent
 from .tester import TesterAgent
 from .documenter import DocumenterAgent
+from .auditor import AuditorAgent
 
 
 class AgentFactory:
@@ -17,6 +18,8 @@ class AgentFactory:
         
         if "coding" in role_lower or "coder" in role_lower:
             return CoderAgent(provider_config=provider_config)
+        elif "audit" in role_lower or "verifier" in role_lower or "security" in role_lower:
+            return AuditorAgent(provider_config=provider_config)
         elif "review" in role_lower:
             return ReviewerAgent(provider_config=provider_config)
         elif "testing" in role_lower or "tester" in role_lower or "qa" in role_lower:
@@ -24,7 +27,8 @@ class AgentFactory:
         elif "documentation" in role_lower or "documenter" in role_lower:
             return DocumenterAgent(provider_config=provider_config)
         else:
-            # For roles we haven't implemented yet, fall back to a generic base agent
-            # This maintains backward compatibility
-            from .base import BaseAgent as LegacyBaseAgent
-            return LegacyBaseAgent(role, provider_config=provider_config)
+            # Fall back to CoderAgent for unrecognized roles
+            import logging
+            logging.getLogger(__name__).warning("Unrecognized agent role '%s', defaulting to CoderAgent", role)
+            return CoderAgent(provider_config=provider_config)
+

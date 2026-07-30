@@ -1,9 +1,9 @@
 import logging
 from pathlib import Path
-from backend.app.core.paths import normalize_path
-from backend.app.features.git.service import status as git_status
-from backend.app.features.search.semantic_service import semantic_search
-from backend.app.db.database import get_connection
+from ...core.paths import normalize_workspace, ensure_within_workspace
+from ..git.service import status as git_status
+from ..search.semantic_service import semantic_search
+from ...db.database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +15,7 @@ async def gather_context(
     query: str | None = None,
     provider_config: dict | None = None
 ) -> dict:
-    workspace_path = str(normalize_path(workspace))
+    workspace_path = str(normalize_workspace(workspace))
     context = {
         "workspace": workspace_path,
         "active_file": None,
@@ -38,19 +38,23 @@ async def gather_context(
     semantic_limit = 15 if is_large else 5
     
     # 1. Gather active file content and selection
+    #    SECURITY: validate path is within workspace before reading.
     if active_path:
-        file_path = Path(active_path)
-        if file_path.is_file():
-            try:
-                content = file_path.read_text(encoding="utf-8", errors="ignore")
-                context["active_file"] = {
-                    "path": str(file_path),
-                    "name": file_path.name,
-                    "content": content[:active_file_limit],  # Truncate if extremely large to save token window
-                    "selection": selection
-                }
-            except OSError as exc:
-                logger.warning("context.gather failed to read active file %s: %s", active_path, exc)
+        try:
+            file_path = ensure_within_workspace(workspace, active_path)
+            if file_path.is_file():
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="ignore")
+                    context["active_file"] = {
+                        "path": str(file_path),
+                        "name": file_path.name,
+                        "content": content[:active_file_limit],
+                        "selection": selection
+                    }
+                except OSError as exc:
+                    logger.warning("context.gather failed to read active file %s: %s", active_path, exc)
+        except Exception as exc:
+            logger.warning("context.gather active_path rejected (outside workspace): %s: %s", active_path, exc)
 
     # 2. Gather git status
     try:
@@ -65,36 +69,39 @@ async def gather_context(
         context["git_status"] = {"status": "No git repository found"}
 
     # 3. Gather open tabs metadata
+    #    SECURITY: each tab path is validated within workspace before stat/access.
     if open_tabs:
         for tab in open_tabs:
-            tab_path = Path(tab)
-            if tab_path.is_file():
-                context["open_tabs"].append({
-                    "path": str(tab_path),
-                    "name": tab_path.name
-                })
+            try:
+                tab_path = ensure_within_workspace(workspace, tab)
+                if tab_path.is_file():
+                    context["open_tabs"].append({
+                        "path": str(tab_path),
+                        "name": tab_path.name
+                    })
+            except Exception:
+                logger.debug("context.gather tab rejected (outside workspace): %s", tab)
 
     # 4. Gather readme.md documentation
-    readme_path = Path(workspace_path) / "README.md"
-    if not readme_path.is_file():
-        # Check lowercase
-        readme_path = Path(workspace_path) / "readme.md"
-    if readme_path.is_file():
-        try:
-            context["readme"] = readme_path.read_text(encoding="utf-8", errors="ignore")[:readme_limit]
-        except OSError:
-            pass
+    #    README is always constructed from workspace root — not from client input.
+    ws = Path(workspace_path)
+    for readme_name in ("README.md", "readme.md"):
+        readme_path = ws / readme_name
+        if readme_path.is_file():
+            try:
+                context["readme"] = readme_path.read_text(encoding="utf-8", errors="ignore")[:readme_limit]
+            except OSError:
+                pass
+            break
 
     # 5. Gather project dependencies from database
-    db = await get_connection()
     try:
+        db = await get_db()
         dep_cursor = await db.execute("SELECT name, version FROM repo_dependencies WHERE workspace = ?", (workspace_path,))
         dep_rows = await dep_cursor.fetchall()
         context["dependencies"] = [{"name": r["name"], "version": r["version"]} for r in dep_rows]
     except Exception as exc:
         logger.warning("context.gather failed to query dependencies: %s", exc)
-    finally:
-        await db.close()
 
     # 6. Gather semantic search results if query is provided
     if query:

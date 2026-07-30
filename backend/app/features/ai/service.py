@@ -10,18 +10,25 @@ logger = logging.getLogger(__name__)
 
 from fastapi import HTTPException
 
-from backend.app.features.ai.providers.ollama import OllamaProvider
-from backend.app.features.ai.providers.openai_compatible import OpenAICompatibleProvider
-from backend.app.features.ai.schemas import ChatMessage, ChatRequest, EditProposalDto, EditProposalRequest, FileChange, ProviderHealth
-from backend.app.features.files.service import write_file
-from backend.app.features.settings.service import get_api_key
-from backend.app.db.database import get_connection
+from .providers.ollama import OllamaProvider
+from .providers.openai_compatible import OpenAICompatibleProvider
+from .schemas import ChatMessage, ChatRequest, EditProposalDto, EditProposalRequest, FileChange, ProviderHealth
+from ..files.service import write_file
+from ..settings.service import get_api_key
+from ...db.database import get_db
 
 MAX_ATTACHMENT_CHARS = 20_000
 
+KNOWN_PLACEHOLDERS = {
+    "no original", "empty file", "new file", "there is no original",
+    "create a new file", "n/a", "none", "file does not exist", "new file creation",
+    "# empty file", "// empty file", "<!-- empty file -->",
+}
+
+
 
 import re
-from backend.app.features.settings.service import list_settings
+from ..settings.service import list_settings
 
 SLASH_COMMAND_PROMPTS = {
     "/explain": "Explain the following code snippet in detail, analyzing its logic, inputs, outputs, and any potential issues or code style anomalies.",
@@ -119,14 +126,30 @@ async def provider_for(request: ChatRequest):
             request.base_url = settings.get("ollama.baseUrl") or "http://127.0.0.1:11434"
             request.model = settings.get("ollama.model") or request.model or "llama3"
 
+    _DEFAULT_MODELS = {
+        "openai-compatible": "gpt-4o",
+        "openai": "gpt-4o",
+        "anthropic": "claude-3-5-sonnet-latest",
+        "gemini": "gemini-2.5-flash",
+        "groq": "llama-3.3-70b-versatile",
+        "deepseek": "deepseek-chat",
+        "mistral": "mistral-large-latest",
+        "openrouter": "openai/gpt-4o",
+        "nvidia-nim": "meta/llama-3.3-70b-instruct",
+        "ollama": "llama3",
+    }
+
     if request.provider == "ollama":
+        if not request.model:
+            request.model = settings.get("ollama.model") or "llama3"
         timeout, retries = _provider_resilience(settings, "ollama")
         return OllamaProvider(request.base_url, timeout, retries)
+
     if request.provider == "openai-compatible":
         base_url = request.base_url or "https://api.openai.com/v1"
-        # Use api_key_provider if set; fall back to "openai-compatible" for
-        # backwards compat with existing stored keys
         key_id = request.api_key_provider or "openai-compatible"
+        if not request.model:
+            request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "gpt-4o")
         timeout, retries = _provider_resilience(settings, key_id)
         return OpenAICompatibleProvider(base_url, await get_api_key(key_id), timeout, retries)
 
@@ -143,15 +166,26 @@ async def provider_for(request: ChatRequest):
         "nvidia-nim":        ("https://integrate.api.nvidia.com/v1",                      "nvidia-nim"),
         "openai-compatible": ("https://api.openai.com/v1",                                "openai-compatible"),
     }
+    if request.provider == "anthropic":
+        from .providers.anthropic import AnthropicProvider
+        key_id = request.api_key_provider or "anthropic"
+        base_url = request.base_url or "https://api.anthropic.com/v1"
+        if not request.model:
+            request.model = settings.get("anthropic.model") or _DEFAULT_MODELS.get("anthropic", "claude-3-5-sonnet-latest")
+        timeout, retries = _provider_resilience(settings, "anthropic")
+        return AnthropicProvider(base_url, await get_api_key(key_id), timeout, retries)
+
     if request.provider in _NAMED_PROVIDERS:
         base_url, key_id = _NAMED_PROVIDERS[request.provider]
-        # Allow override base_url (e.g. self-hosted Groq proxy)
         base_url = request.base_url or base_url
         key_id = request.api_key_provider or key_id
+        if not request.model:
+            request.model = settings.get(f"{key_id}.model") or _DEFAULT_MODELS.get(key_id, "gpt-4o")
         timeout, retries = _provider_resilience(settings, key_id)
         return OpenAICompatibleProvider(base_url, await get_api_key(key_id), timeout, retries)
 
     raise HTTPException(status_code=400, detail="Unknown provider")
+
 
 
 
@@ -166,7 +200,7 @@ async def stream_chat(request: ChatRequest) -> AsyncIterator[str]:
         # Git intelligence: /commit diff aggregation
         if cmd == "/commit":
             try:
-                from backend.app.features.git.service import diff as git_diff
+                from ...git.service import diff as git_diff
                 workspace_dir = request.workspace or (request.attached_paths[0] if request.attached_paths else "")
                 if workspace_dir:
                     diff_text = git_diff(workspace_dir)
@@ -181,59 +215,110 @@ async def stream_chat(request: ChatRequest) -> AsyncIterator[str]:
     
     messages = [ChatMessage(role="system", content=combined_sys_prompt)] + request.messages
 
-    provider = await provider_for(request)
-    
     full_response = []
-    async for token in provider.stream_chat(request.model, messages, request.temperature):
-        full_response.append(token)
-        yield token
+    try:
+        provider = await provider_for(request)
+        async for token in provider.stream_chat(request.model, messages, request.temperature):
+            full_response.append(token)
+            yield token
+    except Exception as exc:
+        logger.error("stream_chat error: %s", exc)
+        if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+            err_msg = "\n\n[Error: AI provider request timed out. Please check your connection and try again.]"
+        elif isinstance(exc, httpx.HTTPStatusError):
+            code = exc.response.status_code
+            if code in (401, 403):
+                err_msg = "\n\n[Error: Authentication failed with AI provider. Please verify your API key in Settings.]"
+            elif code == 429:
+                err_msg = "\n\n[Error: Rate limit reached for AI provider. Please wait 60 seconds before retrying.]"
+            else:
+                err_msg = f"\n\n[Error: AI provider returned status HTTP {code}.]"
+        else:
+            err_msg = "\n\n[Error: An unexpected error occurred while communicating with the AI provider.]"
+        full_response.append(err_msg)
+        yield err_msg
+
 
     # 2. Parse accumulated stream response for edit proposals
     response_text = "".join(full_response)
-    match = PROPOSAL_RE.search(response_text)
-    if match and request.workspace:
-        filepath = match.group("path").strip()
-        original = match.group("original")
-        updated = match.group("updated")
-        
-        # Ensure path is absolute and within workspace
-        workspace_path = Path(request.workspace)
-        resolved_path = Path(filepath)
-        if not resolved_path.is_absolute():
-            resolved_path = (workspace_path / filepath).resolve()
-        
-        # If the file does not exist, force original to empty (pure CREATE)
-        if not resolved_path.exists():
-            original = ""
+    if request.workspace:
+        from ...core.paths import ensure_within_workspace, normalize_workspace
+        workspace_root = normalize_workspace(request.workspace)
+        for match in PROPOSAL_RE.finditer(response_text):
+            filepath = match.group("path").strip()
+            original = match.group("original")
+            updated = match.group("updated")
 
-        # Create edit proposal
-        try:
-            proposal_payload = EditProposalRequest(
-                workspace=request.workspace,
-                summary=f"Automated edit from command {cmd}",
-                changes=[FileChange(path=str(resolved_path), original=original, updated=updated)]
-            )
-            proposal = await create_proposal(proposal_payload)
-            yield f"\n\n[EDIT_PROPOSAL_CREATED: {proposal.id}]"
-        except Exception as exc:
-            logger.error("Failed to automatically create edit proposal: %s", exc)
-            yield f"\n\n[ERROR: Failed to create edit proposal - {exc}]"
+            # Resolve path, reject anything that escapes the workspace
+            try:
+                resolved_path = ensure_within_workspace(request.workspace, filepath)
+            except Exception:
+                logger.warning("stream_chat: proposal path escaped workspace, skipping: %s", filepath)
+                continue
+
+            # If the file does not exist, force original to empty (pure CREATE)
+            if not resolved_path.exists():
+                original = ""
+
+            # Create edit proposal
+            try:
+                proposal_payload = EditProposalRequest(
+                    workspace=request.workspace,
+                    summary=f"AI Chat proposal for {resolved_path.name}",
+                    changes=[FileChange(path=str(resolved_path), original=original, updated=updated)]
+                )
+                proposal = await create_proposal(proposal_payload)
+                yield f"\n\n[EDIT_PROPOSAL_CREATED: {proposal.id}]"
+            except Exception as exc:
+                logger.error("Failed to automatically create edit proposal: %s", exc)
 
 
 def _get_attachment_context_text(request: ChatRequest) -> str:
+    """
+    Build a file-context block for the LLM from attached paths.
+
+    SECURITY: every supplied path is validated to be inside the workspace root
+    before any filesystem access.  Paths outside the workspace are silently
+    skipped so the rest of the chat still works.
+    """
     if not request.attached_paths:
         return ""
+
+    if not request.workspace:
+        # Without a workspace anchor we cannot safely bound-check paths.
+        return ""
+
+    from ...core.paths import ensure_within_workspace, normalize_workspace, is_within_workspace
+    workspace_root = normalize_workspace(request.workspace)
+
     chunks: list[str] = []
     remaining = MAX_ATTACHMENT_CHARS
     for raw_path in request.attached_paths:
-        path = Path(raw_path)
-        if not path.is_absolute() and request.workspace:
-            path = (Path(request.workspace) / path).resolve()
-        
-        candidates = [path] if path.is_file() else [item for item in path.rglob("*") if item.is_file()][:20] if path.is_dir() else []
+        # Boundary-check the supplied path
+        try:
+            path = ensure_within_workspace(request.workspace, raw_path)
+        except Exception:
+            logger.warning("_get_attachment_context_text: path rejected (outside workspace): %s", raw_path)
+            continue
+
+        if path.is_file():
+            candidates = [path]
+        elif path.is_dir():
+            # Only recurse into files that are still within the workspace
+            candidates = [
+                item for item in path.rglob("*")
+                if item.is_file() and is_within_workspace(workspace_root, item.resolve())
+            ][:20]
+        else:
+            candidates = []
+
         for candidate in candidates:
             if remaining <= 0:
                 break
+            # Double-check the resolved candidate path (handles symlinks in dir rglob)
+            if not is_within_workspace(workspace_root, candidate.resolve()):
+                logger.warning("_get_attachment_context_text: symlink escape blocked: %s", candidate)
+                continue
             try:
                 content = candidate.read_text(encoding="utf-8", errors="ignore")[:remaining]
             except OSError:
@@ -268,19 +353,18 @@ def proposal_diff(changes: list[FileChange]) -> str:
 
 
 async def create_proposal(payload: EditProposalRequest) -> EditProposalDto:
-    from backend.app.core.paths import normalize_path
-    normalized_workspace = str(normalize_path(payload.workspace))
-    
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
-    trust = await get_workspace_trust(normalized_workspace)
-    if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. File modifications are disabled.")
+    from ...core.paths import normalize_workspace, ensure_within_workspace
+    normalized_workspace = str(normalize_workspace(payload.workspace))
 
-    # Force original block to be empty for nonexistent files
+    # Validate and normalise each change path against the workspace boundary
     for change in payload.changes:
-        change_path = Path(change.path)
-        if not change_path.is_absolute():
-            change_path = Path(normalized_workspace) / change_path
+        try:
+            change_path = ensure_within_workspace(normalized_workspace, change.path)
+            # Store the canonical absolute path to avoid ambiguity
+            change.path = str(change_path)
+        except Exception:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=403, detail=f"Proposal change path escapes workspace: {change.path}")
         if not change_path.exists():
             change.original = ""
 
@@ -292,15 +376,12 @@ async def create_proposal(payload: EditProposalRequest) -> EditProposalDto:
         "self_review": payload.self_review,
         "test_results": payload.test_results,
     }
-    db = await get_connection()
-    try:
-        await db.execute(
-            "INSERT INTO edit_proposals(id, workspace, status, payload) VALUES (?, ?, ?, ?)",
-            (proposal_id, normalized_workspace, "pending", json.dumps(body)),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute(
+        "INSERT INTO edit_proposals(id, workspace, status, payload) VALUES (?, ?, ?, ?)",
+        (proposal_id, normalized_workspace, "pending", json.dumps(body)),
+    )
+    await db.commit()
     return EditProposalDto(
         id=proposal_id,
         workspace=normalized_workspace,
@@ -315,12 +396,9 @@ async def create_proposal(payload: EditProposalRequest) -> EditProposalDto:
 
 
 async def get_proposal(proposal_id: str) -> EditProposalDto:
-    db = await get_connection()
-    try:
-        cursor = await db.execute("SELECT * FROM edit_proposals WHERE id = ?", (proposal_id,))
-        row = await cursor.fetchone()
-    finally:
-        await db.close()
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM edit_proposals WHERE id = ?", (proposal_id,))
+    row = await cursor.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Proposal not found")
     payload = json.loads(row["payload"])
@@ -353,13 +431,22 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
     if proposal.status != "pending":
         raise HTTPException(status_code=409, detail="Proposal is not pending")
         
-    from backend.app.core.paths import normalize_path
-    root = normalize_path(proposal.workspace)
+    from ...core.paths import normalize_workspace, ensure_within_workspace
+    root = normalize_workspace(proposal.workspace)
     
     # 1. Normalize line endings and merge changes
     merged_contents = {}
     for change in proposal.changes:
-        file_path = root / change.path
+        # SECURITY: validate that each change path is within the workspace root,
+        # even if the path stored in the DB was absolute (from an LLM-generated proposal).
+        try:
+            file_path = ensure_within_workspace(proposal.workspace, change.path)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Proposal change path escapes workspace: {change.path}"
+            )
+
         raw_original = change.original
         # Self-healing for legacy proposals created with dynamic ORIGINAL headers
         if raw_original.startswith(" ORIGINAL\n"):
@@ -384,30 +471,47 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
                 
             current_normalized = current_text.replace("\r\n", "\n")
             original_normalized = raw_original.replace("\r\n", "\n")
-            
             # Find the original snippet
-            idx = current_normalized.find(original_normalized)
-            if idx == -1:
-                # Be more forgiving of leading/trailing whitespace around original
-                idx = current_normalized.find(original_stripped)
-                if idx == -1:
-                    # If original is just placeholder explanation (e.g. "empty file") or file is empty, overwrite everything
-                    is_placeholder = any(p in original_stripped.lower() for p in [
-                        "no original", "empty file", "new file", "there is no original", "create a new file"
-                    ])
-                    if is_placeholder or not current_normalized.strip():
-                        merged = updated_clean
-                    else:
-                        raise HTTPException(
-                            status_code=409,
-                            detail=f"Merge conflict in {change.path}: proposed original block not found in current file."
-                        )
-                else:
-                    merged = current_normalized.replace(original_stripped, updated_clean.replace("\r\n", "\n"), 1)
+
+            if original_normalized in current_normalized:
+                target_snippet = original_normalized
+            elif original_stripped in current_normalized:
+                target_snippet = original_stripped
             else:
-                merged = current_normalized.replace(original_normalized, updated_clean.replace("\r\n", "\n"), 1)
-                
+                # Fuzzy fallback: match contiguous lines ignoring leading/trailing whitespace
+                orig_lines = [l.strip() for l in original_stripped.splitlines() if l.strip()]
+                curr_lines = current_normalized.splitlines()
+                target_snippet = None
+                if orig_lines:
+                    for i in range(len(curr_lines) - len(orig_lines) + 1):
+                        window = [curr_lines[i + j].strip() for j in range(len(orig_lines))]
+                        if window == orig_lines:
+                            target_snippet = "\n".join(curr_lines[i : i + len(orig_lines)])
+                            break
+
+            if target_snippet is None:
+                # Require an EXACT match of the entire original block against known placeholder strings
+                is_placeholder = original_stripped.lower() in KNOWN_PLACEHOLDERS
+                if is_placeholder or not current_normalized.strip() or not original_stripped:
+                    merged = updated_clean
+                else:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Merge conflict in {change.path}: proposed original block not found in current file."
+                    )
+            else:
+                # If target snippet appears multiple times in the file, skip to avoid ambiguous replacement
+                count = current_normalized.count(target_snippet)
+                if count > 1:
+                    logger.warning("apply_proposal: snippet appears %d times in %s, skipping ambiguous edit", count, change.path)
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Merge conflict in {change.path}: proposed original block appears {count} times in file; ambiguous replacement target."
+                    )
+                merged = current_normalized.replace(target_snippet, updated_clean.replace("\r\n", "\n"), 1)
+
             merged_contents[change.path] = merged
+
 
     # 2. Write merged contents
     for rel_path, content in merged_contents.items():
@@ -419,107 +523,77 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
                 detail=f"Failed to write merged changes to {rel_path}: {exc}"
             )
             
-    db = await get_connection()
-    try:
-        await db.execute("UPDATE edit_proposals SET status = ? WHERE id = ?", ("applied", proposal_id))
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute("UPDATE edit_proposals SET status = ? WHERE id = ?", ("applied", proposal_id))
+    await db.commit()
         
     # 3. Check if this proposal belongs to a pending task permission event and resume it
-    db = await get_connection()
-    try:
-        cursor = await db.execute("SELECT payload FROM edit_proposals WHERE id = ?", (proposal_id,))
-        row = await cursor.fetchone()
-        if row and row["payload"]:
-            payload = json.loads(row["payload"])
-            task_id = payload.get("task_id")
-            if task_id:
-                from backend.app.features.ai.agents import permission_state as perm_state
-                if task_id in perm_state.pending_permission_events:
-                    perm_state.pending_permission_decisions[task_id] = "approve"
-                    perm_state.pending_permission_events[task_id].set()
-    finally:
-        await db.close()
+    cursor = await db.execute("SELECT payload FROM edit_proposals WHERE id = ?", (proposal_id,))
+    row = await cursor.fetchone()
+    if row and row["payload"]:
+        payload = json.loads(row["payload"])
+        task_id = payload.get("task_id")
+        if task_id:
+            from .agents import permission_state as perm_state
+            if task_id in perm_state.pending_permission_events:
+                perm_state.pending_permission_decisions[task_id] = "approve"
+                perm_state.pending_permission_events[task_id].set()
 
     return await get_proposal(proposal_id)
 
 
 async def reject_proposal(proposal_id: str, feedback: str | None = None) -> EditProposalDto:
-    db = await get_connection()
-    try:
-        await db.execute("UPDATE edit_proposals SET status = ? WHERE id = ?", ("rejected", proposal_id))
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute("UPDATE edit_proposals SET status = ? WHERE id = ?", ("rejected", proposal_id))
+    await db.commit()
         
     # Check if this proposal belongs to a pending task permission event and resume it
-    db = await get_connection()
-    try:
-        cursor = await db.execute("SELECT payload FROM edit_proposals WHERE id = ?", (proposal_id,))
-        row = await cursor.fetchone()
-        if row and row["payload"]:
-            payload = json.loads(row["payload"])
-            task_id = payload.get("task_id")
-            if task_id:
-                from backend.app.features.ai.agents import permission_state as perm_state
-                if task_id in perm_state.pending_permission_events:
-                    perm_state.pending_permission_decisions[task_id] = "reject"
-                    if feedback:
-                        perm_state.pending_permission_feedback[task_id] = feedback
-                    perm_state.pending_permission_events[task_id].set()
-    finally:
-        await db.close()
+    cursor = await db.execute("SELECT payload FROM edit_proposals WHERE id = ?", (proposal_id,))
+    row = await cursor.fetchone()
+    if row and row["payload"]:
+        payload = json.loads(row["payload"])
+        task_id = payload.get("task_id")
+        if task_id:
+            from .agents import permission_state as perm_state
+            if task_id in perm_state.pending_permission_events:
+                perm_state.pending_permission_decisions[task_id] = "reject"
+                if feedback:
+                    perm_state.pending_permission_feedback[task_id] = feedback
+                perm_state.pending_permission_events[task_id].set()
         
     return await get_proposal(proposal_id)
 
 
 async def list_proposals(workspace: str) -> list[EditProposalDto]:
-    from backend.app.core.paths import normalize_path
-    normalized_workspace = str(normalize_path(workspace))
+    from ...core.paths import normalize_path
+    normalized_workspace = str(normalize_path(workspace)).lower().replace("\\", "/").rstrip("/")
     
-    db = await get_connection()
-    try:
-        cursor = await db.execute("SELECT * FROM edit_proposals WHERE workspace = ? ORDER BY created_at DESC", (normalized_workspace,))
-        rows = await cursor.fetchall()
-        
-        # Load statuses of all jobs in the workspace to evaluate active proposals
-        job_cursor = await db.execute("SELECT id, status FROM agent_jobs WHERE workspace = ?", (normalized_workspace,))
-        job_rows = await job_cursor.fetchall()
-        job_statuses = {j["id"]: j["status"] for j in job_rows}
-    finally:
-        await db.close()
+    db = await get_db()
+    all_rows = await db.execute_fetchall("SELECT * FROM edit_proposals ORDER BY created_at DESC")
+    rows = [
+        r for r in all_rows 
+        if str(r["workspace"]).lower().replace("\\", "/").rstrip("/") == normalized_workspace
+    ]
     
     results = []
-    db = await get_connection()
-    try:
-        for row in rows:
-            payload = json.loads(row["payload"])
-            status = row["status"]
-            
-            # Auto-reject pending proposals that belong to finished/cancelled jobs
-            job_id = payload.get("job_id")
-            if status == "pending" and job_id and job_id in job_statuses:
-                if job_statuses[job_id] in ("completed", "failed", "cancelled"):
-                    status = "rejected"
-                    await db.execute("UPDATE edit_proposals SET status = 'rejected' WHERE id = ?", (row["id"],))
-                    await db.commit()
-            
-            changes = [FileChange(**change) for change in payload["changes"]]
-            results.append(
-                EditProposalDto(
-                    id=row["id"],
-                    workspace=row["workspace"],
-                    status=status,
-                    summary=payload["summary"],
-                    changes=changes,
-                    diff=proposal_diff(changes),
-                    plan=payload.get("plan"),
-                    self_review=payload.get("self_review"),
-                    test_results=payload.get("test_results"),
-                )
+    for row in rows:
+        payload = json.loads(row["payload"])
+        status = row["status"]
+        
+        changes = [FileChange(**change) for change in payload["changes"]]
+        results.append(
+            EditProposalDto(
+                id=row["id"],
+                workspace=row["workspace"],
+                status=status,
+                summary=payload["summary"],
+                changes=changes,
+                diff=proposal_diff(changes),
+                plan=payload.get("plan"),
+                self_review=payload.get("self_review"),
+                test_results=payload.get("test_results"),
             )
-    finally:
-        await db.close()
+        )
         
     return results
+

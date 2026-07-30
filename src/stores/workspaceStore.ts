@@ -107,17 +107,29 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }
     }
 
-    // Check workspace trust before opening
-    const isTrusted = await get().checkWorkspaceTrust(selected);
-    if (!isTrusted) {
-      // Set pending workspace path and show trust dialog
-      set({ pendingWorkspacePath: selected });
-      return;
+    // Check if this workspace was previously trusted (backend query)
+    // If already known-trusted, skip trust dialog and open directly.
+    // For new/unknown workspaces, show the WorkspaceTrustDialog first.
+    try {
+      const response = await import("../lib/api").then(m =>
+        m.api.get<{ trusted: boolean }>(`/api/workspaces/trust/${encodeURIComponent(selected!)}`)
+      );
+      if (response.trusted) {
+        // Already trusted — open immediately, no dialog needed
+        set((state) => ({
+          trustedWorkspaces: { ...state.trustedWorkspaces, [selected!]: true }
+        }));
+        await get().completeWorkspaceOpen(selected!);
+      } else {
+        // Unknown or untrusted workspace — show trust selection dialog
+        set({ pendingWorkspacePath: selected, isOpeningFolder: false });
+      }
+    } catch {
+      // If trust check fails, default to showing trust dialog
+      set({ pendingWorkspacePath: selected, isOpeningFolder: false });
     }
-
-    // If trusted or previously decided, proceed with opening
-    await get().completeWorkspaceOpen(selected);
   },
+
   completeWorkspaceOpen: async (selected: string) => {
     set({ loading: true, isOpeningFolder: false, pendingWorkspacePath: null });
     try {
@@ -184,16 +196,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
     try {
       const nextTrees: Record<string, FileNode | null> = { ...get().fileTrees };
-      for (const ws of actives) {
-        try {
-          console.info("[workspace.tree] loading", ws.path);
-          const response = await api.get<{ root: FileNode }>("/api/files/tree", { workspace: ws.path, max_depth: 8 });
-          nextTrees[ws.path] = response.root;
-        } catch (error) {
-          console.error("[workspace.tree] failed", { workspace: ws.path, error });
-          nextTrees[ws.path] = null;
-        }
-      }
+      await Promise.all(
+        actives.map(async (ws) => {
+          try {
+            console.info("[workspace.tree] loading", ws.path);
+            const response = await api.get<{ root: FileNode }>("/api/files/tree", { workspace: ws.path, max_depth: 8 });
+            nextTrees[ws.path] = response.root;
+          } catch (error) {
+            console.error("[workspace.tree] failed", { workspace: ws.path, error });
+            nextTrees[ws.path] = null;
+          }
+        })
+      );
+
       
       const legacyTree = get().currentWorkspace ? nextTrees[get().currentWorkspace!.path] : null;
       set({ fileTrees: nextTrees, fileTree: legacyTree ?? null, error: null });

@@ -1,10 +1,10 @@
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from backend.app.features.workspaces.file_watcher import watcher
-from backend.app.features.workspaces.schemas import WorkspaceListResponse, WorkspaceOpenRequest, WorkspaceDto
-from backend.app.features.workspaces.service import get_last_workspace, list_recent_workspaces, open_workspace
-from backend.app.features.workspaces.trust_service import get_workspace_trust, set_workspace_trust, list_trusted_workspaces, remove_workspace_trust, clear_all_trust
+from .file_watcher import watcher
+from .schemas import WorkspaceListResponse, WorkspaceOpenRequest, WorkspaceDto
+from .service import get_last_workspace, list_recent_workspaces, open_workspace
+from .trust_service import get_workspace_trust, set_workspace_trust, list_trusted_workspaces, remove_workspace_trust, clear_all_trust
 
 router = APIRouter()
 

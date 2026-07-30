@@ -1,4 +1,4 @@
-import { ShieldAlert, Terminal, FileCode, FlaskConical, Check, X } from "lucide-react";
+import { FileDiff, ShieldAlert, Terminal, FileCode, FlaskConical, Check, X } from "lucide-react";
 import { Button } from "./Button";
 
 type PermissionGateProps = {
@@ -159,19 +159,27 @@ export function PermissionGate({ type, details, command, files, onApprove, onRej
       <div className="flex gap-2 justify-end pt-2">
         <Button
           variant="ghost"
+          data-testid="reject-button"
+          aria-label="Reject proposal"
           onClick={handleRejectClick}
           disabled={isLoading}
           className="h-8 px-3 text-xs"
         >
-          <X size={12} className="mr-1" />
-          Deny
+          {type === "duo-finalize" ? (
+            <><FileDiff size={12} className="mr-1" />View Diff</>
+          ) : (
+            <><X size={12} className="mr-1" />Deny</>
+          )}
         </Button>
         <Button
           variant="primary"
+          data-testid="approve-button"
+          aria-label="Approve proposal"
           onClick={handleApproveClick}
           disabled={isLoading}
           className={`h-8 px-3 text-xs ${themeMap.btnBg}`}
         >
+
           {isLoading ? (
             <span>Processing...</span>
           ) : (

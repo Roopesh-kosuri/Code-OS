@@ -4,6 +4,8 @@ from pydantic import BaseModel
 class CommitRequest(BaseModel):
     workspace: str
     message: str
+    files: list[str] | None = None
+
 
 
 class BranchSwitchRequest(BaseModel):

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from backend.app.features.ai.schemas import ChatMessage, ModelDto, ProviderHealth
+from ..schemas import ChatMessage, ModelDto, ProviderHealth
 
 
 class AIProvider(ABC):

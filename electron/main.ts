@@ -122,7 +122,8 @@ async function createWindow(): Promise<void> {
   });
 
   if (isDev) {
-    await mainWindow.loadURL("http://127.0.0.1:5173");
+    const devUrl = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5176";
+    await mainWindow.loadURL(devUrl);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
     await mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
@@ -151,6 +152,77 @@ ipcMain.handle("shell:reveal", (_event, targetPath: string) => {
 ipcMain.handle("clipboard:copy", (_event, text: string) => {
   clipboard.writeText(text);
 });
+
+// ── Terminal Environment Allowlist ────────────────────────────────────────────
+//
+// SECURITY: We use an ALLOWLIST (not a blacklist) to control which host
+// environment variables are forwarded to PTY terminal sessions.
+//
+// A blacklist is fundamentally broken: pattern-matching on substrings like
+// "key", "secret", "auth" would kill legitimate shell variables:
+//   - SSH_AUTH_SOCK  (matched "auth") — breaks SSH agent forwarding
+//   - KEYBOARD_LAYOUT / KEYBINDING (matched "key") — breaks keyboard config
+//   - GPG_KEY_ID (matched "key") — breaks gpg tooling
+//
+// The allowlist approach passes ONLY variables that are operationally necessary
+// for a shell to function correctly.  Secrets (API keys, cloud credentials,
+// database passwords, bearer tokens) are never forwarded even if present in
+// the Electron main process environment (process.env).
+//
+// sandbox: false is required in BrowserWindow webPreferences because the
+// preload script uses ipcRenderer, which needs Node.js APIs that are NOT
+// available in the fully sandboxed renderer context.  contextIsolation: true
+// and nodeIntegration: false are both set, so the renderer cannot access
+// Node APIs directly — only the safe API surface exposed via contextBridge.
+
+const SAFE_ENV_VARS = new Set([
+  // Shell / session identity
+  "PATH", "HOME", "USER", "LOGNAME",
+  "USERNAME", "USERPROFILE",          // Windows equivalents
+  "SHELL", "LANG", "LC_ALL", "LC_MESSAGES", "LC_CTYPE", "LANGUAGE",
+  "TERM", "TERM_PROGRAM", "COLORTERM", "COLUMNS", "LINES",
+
+  // SSH agent socket (path only, not a secret)
+  "SSH_AUTH_SOCK", "SSH_AGENT_PID",
+  // GPG agent
+  "GPG_AGENT_INFO",
+
+  // Python / virtual env
+  "PYTHONPATH", "PYTHONIOENCODING", "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV",
+
+  // Node / npm toolchain
+  "NVM_DIR", "NODE_PATH", "NPM_CONFIG_PREFIX",
+
+  // Rust toolchain
+  "CARGO_HOME", "RUSTUP_HOME",
+
+  // Go toolchain
+  "GOPATH", "GOROOT",
+
+  // Java
+  "JAVA_HOME",
+
+  // macOS / Linux specifics
+  "TMPDIR", "XDG_RUNTIME_DIR",
+  "DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "DBUS_SESSION_BUS_ADDRESS",
+
+  // Windows specifics
+  "COMSPEC", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
+  "TEMP", "TMP", "APPDATA", "LOCALAPPDATA",
+  "PROGRAMFILES", "PROGRAMDATA", "COMPUTERNAME",
+]);
+
+function buildSafeEnv(): NodeJS.ProcessEnv {
+  const safe: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (SAFE_ENV_VARS.has(key) && value !== undefined) {
+      safe[key] = value;
+    }
+  }
+  // Always inject a sane TERM value so TUI programs (vim, htop, etc.) work.
+  safe["TERM"] = "xterm-256color";
+  return safe;
+}
 
 // ── Terminal IPC Handlers ──────────────────────────────────────────
 
@@ -184,7 +256,7 @@ ipcMain.handle("terminal:create", (_event, cwd: string) => {
       cols: 80,
       rows: 24,
       cwd: resolvedCwd,
-      env: { ...process.env, TERM: "xterm-256color" },
+      env: buildSafeEnv(),
       useConpty,
     });
   } catch (err) {
@@ -192,9 +264,7 @@ ipcMain.handle("terminal:create", (_event, cwd: string) => {
     console.error(`[terminal] spawn failed for ${shellEnv}: ${msg}`);
     setTimeout(() => sendTerminalOutput(
       id,
-      `
-[31m[Failed to start shell "${shellEnv}": ${msg}][0m
-`
+      `\r\n\x1b[31m[Failed to start shell "${shellEnv}": ${msg}]\x1b[0m\r\n`
     ), 0);
     return id;
   }
@@ -254,11 +324,39 @@ ipcMain.handle("terminal:list", () => {
   }));
 });
 
+// ── Session Token IPC ──────────────────────────────────────────────────────
+// The renderer needs the session token to include in every API request's
+// Authorization header.  We expose it via a dedicated IPC handler so it is
+// never injected into the renderer's global scope (which would be accessible
+// to any content in the page).
+//
+// The renderer must call window.codeOS.getSessionToken() ONCE at startup and
+// store the result in memory (not localStorage, not sessionStorage).
+
+ipcMain.handle("session:getToken", async () => {
+  try {
+    return await backend.waitForToken(15_000);
+  } catch (err) {
+    console.error("[session] Could not obtain session token:", err);
+    return null;
+  }
+});
+
 app.whenReady().then(async () => {
   await backend.start();
+  // Wait for the backend to emit its session token before opening the window.
+  // This ensures the renderer can immediately call getSessionToken() without
+  // a race condition.
+  try {
+    await backend.waitForToken(20_000);
+    console.log("[app] session token ready");
+  } catch {
+    console.warn("[app] session token wait timed out; app will open anyway");
+  }
   createMenu();
   await createWindow();
 });
+
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) {

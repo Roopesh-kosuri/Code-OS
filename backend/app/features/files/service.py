@@ -4,25 +4,56 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from backend.app.core.paths import IGNORED_DIRS, ensure_file, ensure_within_workspace, normalize_path
-from backend.app.features.files.schemas import FileNode
+from ...core.paths import IGNORED_DIRS, ensure_file, ensure_within_workspace, normalize_path
+from .schemas import FileNode
 
 logger = logging.getLogger(__name__)
 
 LANGUAGE_BY_SUFFIX = {
     ".py": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
+    ".java": "java",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cxx": "cpp",
+    ".cc": "cpp",
+    ".hpp": "cpp",
+    ".cs": "csharp",
+    ".rs": "rust",
+    ".go": "go",
     ".js": "javascript",
     ".jsx": "javascript",
-    ".json": "json",
-    ".md": "markdown",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
     ".html": "html",
+    ".htm": "html",
     ".css": "css",
     ".scss": "scss",
+    ".less": "less",
+    ".json": "json",
+    ".md": "markdown",
+    ".markdown": "markdown",
     ".sql": "sql",
-    ".yml": "yaml",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+    ".bat": "bat",
+    ".cmd": "bat",
+    ".ps1": "powershell",
+    ".php": "php",
+    ".rb": "ruby",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".swift": "swift",
+    ".xml": "xml",
+    ".svg": "xml",
     ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "ini",
+    ".ini": "ini",
+    ".dockerfile": "dockerfile",
 }
 
 

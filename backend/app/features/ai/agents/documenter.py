@@ -73,7 +73,7 @@ class DocumenterAgent(BaseAgent):
             logs.append(f"DocumenterAgent completed documentation generation.")
             
             # Parse edit proposals from response text
-            from backend.app.features.ai.service import PROPOSAL_RE
+            from ..service import PROPOSAL_RE
             for match in PROPOSAL_RE.finditer(response):
                 filepath = match.group("path").strip()
                 original = match.group("original")

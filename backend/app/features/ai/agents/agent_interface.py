@@ -35,7 +35,7 @@ class BaseAgent(ABC):
         
     def create_chat_request(self, messages: list) -> "ChatRequest":
         """Build a ChatRequest based on the agent's provider config."""
-        from backend.app.features.ai.schemas import ChatRequest
+        from ..schemas import ChatRequest
         
         _PRESET_TO_PROVIDER = {
             "local_reasoning": "ollama",
@@ -66,10 +66,10 @@ class BaseAgent(ABC):
         Returns True if approved, False if rejected.
         """
         import asyncio
-        from backend.app.features.ai.job_service import update_task_status, update_task_pending_action, add_job_log
+        from ..job_service import update_task_status, update_task_pending_action, add_job_log
         
         # Import permission state at runtime to avoid circular dependency
-        from backend.app.features.ai.agents import permission_state as perm_state
+        from . import permission_state as perm_state
         
         # Create event
         event = asyncio.Event()
@@ -108,8 +108,8 @@ class BaseAgent(ABC):
         Returns a dict: {"action": "retry" | "switch_to_api" | "cancel"}
         """
         import asyncio
-        from backend.app.features.ai.job_service import update_task_status, update_task_pending_action, add_job_log
-        from backend.app.features.ai.agents import permission_state as perm_state
+        from ..job_service import update_task_status, update_task_pending_action, add_job_log
+        from . import permission_state as perm_state
         
         event = asyncio.Event()
         perm_state.pending_permission_events[task_id] = event
@@ -132,3 +132,42 @@ class BaseAgent(ABC):
         
         await add_job_log(job_id, f"LLM failure recovery decision: {decision}")
         return {"action": decision}
+
+    async def request_clarification(self, job_id: str, task_id: str, question: str) -> str:
+        """
+        Pauses agent execution and prompts the user for task clarification.
+        Returns the user's answer string, or empty string if cancelled/rejected.
+        """
+        import asyncio
+        from ..job_service import update_task_status, update_task_pending_action, add_job_log
+        from . import permission_state as perm_state
+        
+        event = asyncio.Event()
+        perm_state.pending_permission_events[task_id] = event
+        
+        action_payload = {
+            "type": "clarification",
+            "details": question,
+            "question": question
+        }
+        await update_task_pending_action(task_id, action_payload)
+        await update_task_status(task_id, "waiting")
+        await add_job_log(job_id, f"Agent [{self.role}] is waiting for user clarification: {question}")
+        
+        # Block until user answers or cancels via API
+        await event.wait()
+        
+        perm_state.pending_permission_events.pop(task_id, None)
+        decision = perm_state.pending_permission_decisions.pop(task_id, "reject")
+        user_answer = perm_state.pending_permission_feedback.pop(task_id, "")
+        
+        await update_task_pending_action(task_id, None)
+        await update_task_status(task_id, "running")
+        
+        if decision in ("answer", "approve") and user_answer.strip():
+            await add_job_log(job_id, f"User provided clarification: '{user_answer.strip()}'")
+            return user_answer.strip()
+        else:
+            await add_job_log(job_id, f"Clarification request cancelled for task ID: {task_id}")
+            return ""
+

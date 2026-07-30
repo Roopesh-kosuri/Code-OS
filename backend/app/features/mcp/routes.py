@@ -2,8 +2,8 @@ from fastapi import APIRouter, HTTPException, Body
 from pydantic import BaseModel
 from typing import Dict, Any, List
 
-from backend.app.features.mcp.mcp_manager import mcp_manager
-from backend.app.features.settings.service import list_settings
+from .mcp_manager import mcp_manager
+from ..settings.service import list_settings
 
 router = APIRouter()
 
@@ -47,8 +47,8 @@ async def toggle_server(server_id: str, req: ToggleRequest):
 
 @router.post("/servers/{server_id}/call")
 async def call_server(server_id: str, req: CallRequest):
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
-    from backend.app.features.workspaces.service import get_last_workspace
+    from ..workspaces.trust_service import get_workspace_trust
+    from ..workspaces.service import get_last_workspace
     
     last_ws = await get_last_workspace()
     workspace = last_ws.path if last_ws else None

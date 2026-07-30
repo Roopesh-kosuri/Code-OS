@@ -36,7 +36,7 @@ export function App() {
   useEffect(() => {
     const root = document.documentElement;
     // Clear all existing theme classes first
-    root.classList.remove("light", "crimson", "navy", "void", "violet", "cyberpunk");
+    root.classList.remove("light", "dark", "crimson", "navy", "void", "violet", "cyberpunk");
     
     let appliedTheme = theme;
     if (theme === "system") {
@@ -44,8 +44,10 @@ export function App() {
       appliedTheme = systemIsLight ? "light" : "dark";
     }
     
-    if (appliedTheme && appliedTheme !== "dark") {
-      root.classList.add(appliedTheme);
+    if (appliedTheme === "light") {
+      root.classList.add("light");
+    } else {
+      root.classList.add("dark");
     }
     root.setAttribute("data-theme", appliedTheme || "dark");
   }, [theme]);
@@ -75,8 +77,9 @@ export function App() {
     }
     void useEditorStore.getState().restoreTabs();
     void useIndexStore.getState().refresh();
-    const timer = window.setInterval(() => void refreshTree(), 2500);
-    const indexTimer = window.setInterval(() => void useIndexStore.getState().refresh(), 2500);
+    const timer = window.setInterval(() => void refreshTree(), 10000);
+    const indexTimer = window.setInterval(() => void useIndexStore.getState().refresh(), 10000);
+
     return () => {
       window.clearInterval(timer);
       window.clearInterval(indexTimer);

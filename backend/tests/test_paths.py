@@ -3,7 +3,7 @@ from fastapi import HTTPException
 from pathlib import Path
 import tempfile
 import os
-from backend.app.core.paths import ensure_within_workspace
+from app.core.paths import ensure_within_workspace
 
 
 class PathEnforcementTests(unittest.TestCase):

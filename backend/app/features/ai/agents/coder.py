@@ -7,11 +7,11 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .agent_interface import BaseAgent, AgentOutput
-from backend.app.features.ai.service import provider_for, create_proposal, get_proposal
-from backend.app.features.ai.schemas import ChatRequest, ChatMessage, FileChange, EditProposalRequest
-from backend.app.features.ai.job_service import add_job_log
-from backend.app.features.ai.event_bus import event_bus
-from backend.app.db.database import get_connection
+from ..service import provider_for, create_proposal, get_proposal
+from ..schemas import ChatRequest, ChatMessage, FileChange, EditProposalRequest
+from ..job_service import add_job_log
+from ..event_bus import event_bus
+from ....db.database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -101,8 +101,14 @@ class CoderAgent(BaseAgent):
   ====
   <new code>
   >>>>
+- CRITICAL FOR NEW FILES OR FULL REPLACEMENTS: If creating a NEW file or replacing an entire file, leave the <<<< ORIGINAL section completely empty:
+  [PROPOSAL: path]
+  <<<< ORIGINAL
+  ====
+  <new code>
+  >>>>
 - The GROUNDED FILE CONTEXT section contains the real current file contents — you MUST use them
-  as the source of truth for the original block. Never invent or paraphrase the original.
+  as the source of truth for the original block when modifying existing files. Never invent or paraphrase the original.
 - Reference repo index/symbols for context, not just raw file text
 - Keep code compact and avoid unnecessary nesting"""
 
@@ -144,10 +150,10 @@ class CoderAgent(BaseAgent):
     Returns a compact string to inject into the generation prompt so the LLM
     can produce a correct `original` block and avoid hallucinating symbols.
     """
-    from backend.app.db.database import get_connection
-    from backend.app.core.paths import normalize_path
+    from ...db.database import get_db
+    from ...core.paths import normalize_workspace, ensure_within_workspace
 
-    root = normalize_path(workspace)
+    root = normalize_workspace(workspace)
     sections: List[str] = []
 
     # Scale budget based on model capability tier
@@ -163,10 +169,12 @@ class CoderAgent(BaseAgent):
     max_imports = 60 if is_large else 20
 
     for rel_path in files_to_touch[:max_files]:
-      # Resolve to absolute path
-      candidate = Path(rel_path)
-      if not candidate.is_absolute():
-        candidate = (root / rel_path).resolve()
+      # Resolve to absolute path — reject anything outside the workspace
+      try:
+        candidate = ensure_within_workspace(workspace, rel_path)
+      except Exception:
+        logger.warning("coder: file path rejected (outside workspace): %s", rel_path)
+        continue
 
       # ── 1. File source content ──────────────────────────────────────────────
       source_lines: List[str] = []
@@ -188,19 +196,16 @@ class CoderAgent(BaseAgent):
       symbol_lines: List[str] = []
       try:
         query_start = time.perf_counter()
-        db = await get_connection()
-        try:
-          sym_rows = await db.execute_fetchall(
-            f"SELECT name, kind, line, signature FROM repo_symbols WHERE workspace = ? AND path = ? ORDER BY line LIMIT {max_symbols}",
-            (str(root), str(candidate)),
-          )
-          for row in sym_rows:
-            sig = f" — {row['signature']}" if row["signature"] else ""
-            symbol_lines.append(f"  L{row['line']} [{row['kind']}] {row['name']}{sig}")
-        finally:
-          await db.close()
-          if timing_recorder:
-            await timing_recorder(f"Repo grounding: repo_symbols ({rel_path})", time.perf_counter() - query_start)
+        db = await get_db()
+        sym_rows = await db.execute_fetchall(
+          f"SELECT name, kind, line, signature FROM repo_symbols WHERE workspace = ? AND path = ? ORDER BY line LIMIT {max_symbols}",
+          (str(root), str(candidate)),
+        )
+        for row in sym_rows:
+          sig = f" — {row['signature']}" if row["signature"] else ""
+          symbol_lines.append(f"  L{row['line']} [{row['kind']}] {row['name']}{sig}")
+        if timing_recorder:
+          await timing_recorder(f"Repo grounding: repo_symbols ({rel_path})", time.perf_counter() - query_start)
       except Exception as exc:
         symbol_lines = [f"  (symbol query failed: {exc})"]
 
@@ -208,21 +213,19 @@ class CoderAgent(BaseAgent):
       import_lines: List[str] = []
       try:
         query_start = time.perf_counter()
-        db = await get_connection()
-        try:
-          edge_rows = await db.execute_fetchall(
-            f"SELECT module, target_path FROM repo_import_edges WHERE workspace = ? AND source_path = ? LIMIT {max_imports}",
-            (str(root), str(candidate)),
-          )
-          for row in edge_rows:
-            target = row["target_path"] or "(external)"
-            import_lines.append(f"  {row['module']} → {target}")
-        finally:
-          await db.close()
-          if timing_recorder:
-            await timing_recorder(f"Repo grounding: repo_import_edges ({rel_path})", time.perf_counter() - query_start)
+        db = await get_db()
+        edge_rows = await db.execute_fetchall(
+          f"SELECT module, target_path FROM repo_import_edges WHERE workspace = ? AND source_path = ? LIMIT {max_imports}",
+          (str(root), str(candidate)),
+        )
+        for row in edge_rows:
+          target = row["target_path"] or "(external)"
+          import_lines.append(f"  {row['module']} → {target}")
+        if timing_recorder:
+          await timing_recorder(f"Repo grounding: repo_import_edges ({rel_path})", time.perf_counter() - query_start)
       except Exception as exc:
         import_lines = [f"  (import edge query failed: {exc})"]
+
 
       rel_display = str(candidate.relative_to(root)) if candidate.is_relative_to(root) else str(candidate)
       section = (
@@ -334,7 +337,7 @@ class CoderAgent(BaseAgent):
           plan_raw = await instrumented_chat(plan_req, "Phase 1: Planning", temp=0.1)
           
           # Extract JSON from markdown tags if present
-          from backend.app.features.duo.service import _extract_json
+          from ...duo.service import _extract_json
           plan_dict = _extract_json(plan_raw)
           plan = PlanModel(**plan_dict)
         except Exception as exc:
@@ -357,18 +360,54 @@ class CoderAgent(BaseAgent):
       "message": f"[PLAN_EMITTED] {json.dumps(plan.model_dump())}"
     })
 
-    # Ambiguity check
+    # Ambiguity check — pause for clarification instead of failing the workflow!
     if plan.ambiguous and plan.clarifying_question:
-      logs.append(f"Task is ambiguous. Clarifying question: {plan.clarifying_question}")
+      logs.append(f"Task is ambiguous. Asking user for clarification: {plan.clarifying_question}")
       await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
-      return AgentOutput(
-        agent_role=self.role,
-        task_id=task_id,
-        status="failure",
-        confidence=0.0,
-        reasoning_summary=plan.clarifying_question,
-        logs=logs
-      )
+      
+      answer = await self.request_clarification(job_id, task_id, plan.clarifying_question)
+      
+      if answer:
+        logs.append(f"Received user clarification: '{answer}'. Re-planning task with provided specifications...")
+        await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+        
+        clarified_context = f"{context}\n\n=== USER CLARIFICATION ===\nQuestion: {plan.clarifying_question}\nAnswer: {answer}"
+        plan_req = self.create_chat_request(
+          messages=[
+            ChatMessage(role="system", content=PLANNER_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=f"Task: {title}\n\nContext:\n{clarified_context}\n\nWorkspace: {workspace}")
+          ]
+        )
+        try:
+          plan_raw = await instrumented_chat(plan_req, "Phase 1: Re-Planning with Clarification", temp=0.1)
+          from ...duo.service import _extract_json
+          plan_dict = _extract_json(plan_raw)
+          plan = PlanModel(**plan_dict)
+          plan.ambiguous = False
+        except Exception as exc:
+          logger.error("Re-planning post clarification failed: %s", exc)
+          plan = PlanModel(
+            ambiguous=False,
+            clarifying_question="",
+            goal=f"{title} ({answer})",
+            hypothesis="Implementation plan based on user clarification",
+            files_to_touch=[],
+            approach=f"Implement task following user instructions: {answer}",
+            risks=[],
+            verification="Manual verification"
+          )
+      else:
+        logs.append("Clarification request cancelled by user. Aborting task.")
+        await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+        return AgentOutput(
+          agent_role=self.role,
+          task_id=task_id,
+          status="failure",
+          confidence=0.0,
+          reasoning_summary="Clarification request cancelled by user.",
+          logs=logs
+        )
+
 
     # --plan-only mode check
     plan_only = "--plan-only" in title or "--plan-only" in context
@@ -414,8 +453,8 @@ class CoderAgent(BaseAgent):
         logs.append("High-stakes task detected. Running inside internal DuoLoop...")
         await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
         try:
-          from backend.app.features.duo.service import start_session, get_session
-          from backend.app.features.duo.schemas import DuoSessionRequest, ModelConfig
+          from ...duo.service import start_session, get_session
+          from ...duo.schemas import DuoSessionRequest, ModelConfig
           
           duo_req = DuoSessionRequest(
             workspace=workspace,
@@ -442,7 +481,7 @@ class CoderAgent(BaseAgent):
               "status": session.status
             }
             # Resolve settings to get actual model info
-            from backend.app.features.settings.service import list_settings
+            from ...settings.service import list_settings
             settings = await list_settings()
             resolved_model = settings.get("ollama.model") or "llama3"
             resolved_provider = "ollama"
@@ -469,7 +508,7 @@ class CoderAgent(BaseAgent):
             logs.append(f"✍️ [EDITING] {file_to_touch}")
             await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
-            from backend.app.features.ai.service import proposal_diff
+            from ..service import proposal_diff
             preceding_context = ""
             if proposals:
               diff_text = proposal_diff(proposals)
@@ -506,7 +545,7 @@ class CoderAgent(BaseAgent):
               resolved_model = chat_req.model
               resolved_provider = chat_req.api_key_provider or chat_req.provider
 
-              from backend.app.features.ai.service import PROPOSAL_RE
+              from ..service import PROPOSAL_RE
               for match in PROPOSAL_RE.finditer(response):
                 filepath = match.group("path").strip()
                 original = match.group("original")
@@ -555,7 +594,7 @@ class CoderAgent(BaseAgent):
             resolved_model = chat_req.model
             resolved_provider = chat_req.api_key_provider or chat_req.provider
             
-            from backend.app.features.ai.service import PROPOSAL_RE
+            from ..service import PROPOSAL_RE
             for match in PROPOSAL_RE.finditer(response):
               filepath = match.group("path").strip()
               original = match.group("original")
@@ -593,7 +632,7 @@ class CoderAgent(BaseAgent):
           retry_count = 0
           max_retries = 2
           while retry_count <= max_retries:
-            from backend.app.features.ai.service import proposal_diff
+            from ..service import proposal_diff
             diff_text = proposal_diff(proposals)
             
             review_req = self.create_chat_request(
@@ -606,7 +645,7 @@ class CoderAgent(BaseAgent):
             try:
               review_raw = await instrumented_chat(review_req, f"Phase 3: Self-Review (Attempt {retry_count})", temp=0.1)
               
-              from backend.app.features.duo.service import _extract_json
+              from ...duo.service import _extract_json
               review_dict = _extract_json(review_raw)
               review = ReviewModel(**review_dict)
             except Exception as exc:
@@ -651,7 +690,7 @@ class CoderAgent(BaseAgent):
                 response = await instrumented_chat(chat_req, f"Phase 3: Self-Review Refine (Attempt {retry_count})", temp=0.2)
                 
                 proposals = []
-                from backend.app.features.ai.service import PROPOSAL_RE
+                from ..service import PROPOSAL_RE
                 for match in PROPOSAL_RE.finditer(response):
                   filepath = match.group("path").strip()
                   original = match.group("original")
@@ -669,7 +708,7 @@ class CoderAgent(BaseAgent):
       test_results = {"status": "no_tests", "passed": 0, "failed": 0, "total": 0, "summary": ""}
 
       if not skip_tests and proposals:
-        from backend.app.features.ai.agents.tester import TesterAgent
+        from .tester import TesterAgent
         tester = TesterAgent()
         runner_start = time.perf_counter()
         runner = tester.detect_test_runner(workspace)
@@ -779,7 +818,7 @@ class CoderAgent(BaseAgent):
                     response = await instrumented_chat(chat_req, f"Phase 4: Tester Refine (Attempt {test_retry})", temp=0.2)
                     
                     proposals = []
-                    from backend.app.features.ai.service import PROPOSAL_RE
+                    from ..service import PROPOSAL_RE
                     for match in PROPOSAL_RE.finditer(response):
                       filepath = match.group("path").strip()
                       original = match.group("original")
@@ -807,7 +846,7 @@ class CoderAgent(BaseAgent):
 
       # ── Proposal Internal Creation & Approval Loop ─────────────────────────────
       if proposals:
-        from backend.app.features.ai.service import create_proposal
+        from ..service import create_proposal
         
         proposal_payload = EditProposalRequest(
           workspace=workspace,
@@ -827,16 +866,12 @@ class CoderAgent(BaseAgent):
         logs.append(f"Agent [Coding Agent] created internal edit proposal ID: {proposal.id}")
         await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
         
-        # Save payload back to proposal in DB to carry metadata
-        db = await get_connection()
-        try:
-          await db.execute(
-            "UPDATE edit_proposals SET payload = ? WHERE id = ?",
-            (json.dumps(payload_dict), proposal.id)
-          )
-          await db.commit()
-        finally:
-          await db.close()
+        db = await get_db()
+        await db.execute(
+          "UPDATE edit_proposals SET payload = ? WHERE id = ?",
+          (json.dumps(payload_dict), proposal.id)
+        )
+        await db.commit()
 
         permission_details = f"CoderAgent proposed edits to {len(proposals)} file(s). Review and approve them in DiffViewer."
         approved = await self.request_permission(
@@ -849,7 +884,7 @@ class CoderAgent(BaseAgent):
           break
         else:
           # Rejection feedback retrieval
-          from backend.app.features.ai.agents import permission_state as perm_state
+          from . import permission_state as perm_state
           user_feedback = perm_state.pending_permission_feedback.pop(task_id, None)
           if not user_feedback:
             user_feedback = "User rejected proposal without comment."

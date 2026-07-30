@@ -107,14 +107,17 @@ export const useAIStore = create<AIState>((set, get) => ({
         base_url: state.baseUrl,
         api_key_provider: state.apiKeyProvider,
       });
-      // Auto-select: use first fetched model only if no model is already set
-      const bestModel = state.model || models[0]?.name || "";
+      const names = models.map((m) => m.name);
+      let bestModel = state.model;
+      if (!bestModel || (names.length > 0 && !names.includes(bestModel))) {
+        bestModel = models[0]?.name || state.model || "";
+      }
       set({ models, model: bestModel });
     } catch {
-      // Don't clear models on failure — keep existing list / current model
-      set({ models: [] });
+      // Keep existing models array and current model on failure
     }
   },
+
 
   stopGeneration: () => {
     activeController?.abort();
@@ -269,6 +272,23 @@ export const useAIStore = create<AIState>((set, get) => ({
       ])
     );
 
+    let pendingBuffer = "";
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flushBuffer = () => {
+      if (!pendingBuffer) return;
+      const chunkToFlush = pendingBuffer;
+      pendingBuffer = "";
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last?.role === "assistant") {
+          messages[messages.length - 1] = { ...last, content: last.content + chunkToFlush };
+        }
+        return { messages };
+      });
+    };
+
     try {
       await api.stream(
         "/api/ai/chat/stream",
@@ -282,21 +302,31 @@ export const useAIStore = create<AIState>((set, get) => ({
           workspace,
         },
         (token) => {
-          set((state) => {
-            const messages = [...state.messages];
-            const last = messages[messages.length - 1];
-            if (last?.role === "assistant") {
-              messages[messages.length - 1] = { ...last, content: last.content + token };
-            }
-            return { messages };
-          });
+          if (token.includes("[EDIT_PROPOSAL_CREATED:")) {
+            window.dispatchEvent(new CustomEvent("code-os:proposal-created"));
+          }
+          pendingBuffer += token;
+          if (!flushTimer) {
+            flushTimer = setTimeout(() => {
+              flushTimer = null;
+              flushBuffer();
+            }, 60);
+          }
         },
         activeController.signal
       );
 
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      flushBuffer();
+
       // Sync final response to db
       await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
     } catch (error) {
+      if (flushTimer) clearTimeout(flushTimer);
+      flushBuffer();
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         set({ error: error instanceof Error ? error.message : "AI request failed" });
       }
@@ -304,6 +334,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       activeController = null;
       set({ streaming: false });
     }
+
   },
 
   regenerate: async () => {

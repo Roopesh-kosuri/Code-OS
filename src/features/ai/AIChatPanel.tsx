@@ -130,12 +130,12 @@ function ProposalCard({ path, original, updated }: { path: string; original: str
       </div>
 
       {/* Diff snippet preview */}
-      <div className="rounded bg-surface-950 font-mono text-[10px] p-2 overflow-x-auto leading-normal max-h-24 border border-surface-800">
+      <div className="rounded bg-[#0a0a0b] font-code-block text-[11px] p-2 overflow-x-auto leading-normal max-h-32 border border-white/5">
         {originalLines.map((line, idx) => (
-          <div key={`orig-${idx}`} className="text-rose-400/90 whitespace-pre truncate">- {line}</div>
+          <div key={`orig-${idx}`} className="diff-removed px-1.5 py-0.5 whitespace-pre truncate font-mono">- {line}</div>
         ))}
         {updatedLines.map((line, idx) => (
-          <div key={`upd-${idx}`} className="text-emerald-400/90 whitespace-pre truncate">+ {line}</div>
+          <div key={`upd-${idx}`} className="diff-added px-1.5 py-0.5 whitespace-pre truncate font-mono">+ {line}</div>
         ))}
       </div>
 
@@ -398,14 +398,15 @@ export function AIChatPanel() {
   }, [messages]);
 
   return (
-    <section className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto] border-l border-surface-700 bg-surface-900 relative">
+    <section data-testid="ai-chat-panel" className="flex flex-col h-full min-h-0 w-full min-w-0 border-l border-outline-variant/20 bg-surface-container-low/70 backdrop-blur-2xl relative">
+
       
       {/* ── Thread History Drawer Overlay ────────────────────────────────────── */}
       {showDrawer && (
-        <div className="absolute inset-0 bg-surface-950/90 z-30 flex flex-col border-r border-surface-700 p-3 select-text">
-          <div className="flex items-center justify-between border-b border-surface-750 pb-2 mb-3">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-350">Conversations</span>
-            <IconButton label="Close history" icon={<X size={15} />} onClick={() => setShowDrawer(false)} />
+        <div className="absolute inset-0 bg-surface-dim/90 z-30 flex flex-col border-r border-outline-variant/20 p-3 select-text">
+          <div className="flex items-center justify-between border-b border-outline-variant/20 pb-2 mb-3">
+            <span className="text-xs font-bold uppercase tracking-wider text-on-surface-variant dark:text-on-surface-variant">Conversations</span>
+            <IconButton label="Close history" icon={<X size={15} />} onClick={() => setShowDrawer(false)} className="hover:bg-surface-bright/20 active:scale-95 duration-200" />
           </div>
 
           <input
@@ -413,12 +414,12 @@ export function AIChatPanel() {
             placeholder="Search threads…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="mb-3 h-8 w-full rounded bg-surface-850 border border-surface-700 text-xs px-2 focus:outline-none focus:border-accent-500"
+            className="mb-3 h-8 w-full rounded bg-surface-dim/80 border border-outline-variant/30 text-xs px-2 focus:outline-none focus:border-primary/50 text-on-surface dark:text-on-surface"
           />
 
           <div className="flex-1 overflow-y-auto space-y-1.5">
             {threads.filter((t) => t.title.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 ? (
-              <div className="text-center py-8 text-xs text-slate-500 select-none">
+              <div className="text-center py-8 text-xs text-on-surface-variant/60 dark:text-on-surface-variant/60 select-none">
                 No conversations found.
               </div>
             ) : (
@@ -434,8 +435,8 @@ export function AIChatPanel() {
                     key={t.id}
                     className={`group relative rounded-lg p-2 flex flex-col justify-between border transition-all ${
                       isSelected
-                        ? "bg-surface-800 border-accent-500/30"
-                        : "bg-surface-900 border-surface-800 hover:border-surface-700"
+                        ? "bg-surface-container-high border-primary-container/30"
+                        : "bg-surface-container border-outline-variant/20 hover:border-outline-variant/30"
                     }`}
                   >
                     {isEditing ? (
@@ -444,7 +445,7 @@ export function AIChatPanel() {
                           type="text"
                           value={editTitleValue}
                           onChange={(e) => setEditTitleValue(e.target.value)}
-                          className="h-6 flex-1 rounded bg-surface-950 border border-surface-700 text-[11px] px-1 focus:outline-none"
+                          className="h-6 flex-1 rounded bg-surface-dim/80 border border-outline-variant/30 text-[11px] px-1 focus:outline-none focus:border-primary/50 text-on-surface dark:text-on-surface"
                           onKeyDown={(e) => {
                             if (e.key === "Enter") handleSaveRename(t.id);
                             if (e.key === "Escape") setEditingThreadId(null);
@@ -527,11 +528,11 @@ export function AIChatPanel() {
       )}
 
       {/* ── Header ────────────────────────────────────────────────────────────── */}
-      <div className="border-b border-surface-700 px-3 py-2 space-y-2 z-10 select-none">
+      <div className="border-b border-outline-variant/20 px-3 py-2 space-y-2 z-10 select-none bg-surface-container-low/70">
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
-            <Bot size={15} className="text-accent-500" />
-            AI Chat
+          <div className="flex items-center gap-2 font-headline-md text-headline-md font-semibold text-on-surface">
+            <Bot size={16} className="text-primary" />
+            <span>Duo AI Assistant</span>
           </div>
           <div className="flex gap-0.5">
             <IconButton label="New Chat" icon={<Plus size={15} />} onClick={() => void newThread()} />
@@ -550,16 +551,13 @@ export function AIChatPanel() {
         {!showProviderConfig && (
           <div
             onClick={() => setShowProviderConfig(true)}
-            className="flex items-center justify-between text-[10px] text-slate-500 bg-surface-950/30 hover:bg-surface-950/60 hover:text-slate-350 rounded border border-surface-750 hover:border-surface-700 px-2.5 py-1 select-none cursor-pointer transition-all duration-150 group"
+            className="flex items-center justify-between text-[10px] text-on-surface-variant/60 dark:text-on-surface-variant/60 bg-surface-dim/30 hover:bg-surface-dim/60 hover:text-on-surface-variant dark:hover:text-on-surface-variant rounded border border-outline-variant/20 hover:border-outline-variant/30 px-2.5 py-1 select-none cursor-pointer transition-all duration-200 group active:scale-95"
             title="Click to configure model/provider settings"
           >
             <span className="truncate flex items-center gap-1">
-              Active model: <strong className="text-slate-350">{model || "Ollama default"}</strong>
+              Active model: <strong className="text-primary font-mono">{model ? `${model}${preset ? ` (${preset})` : ""}` : "Ollama default"}</strong>
             </span>
-            <div className="flex items-center gap-1 shrink-0">
-              {preset && <span className="capitalize text-accent-400 font-bold mr-1">{preset}</span>}
-              <ChevronDown size={11} className="text-slate-500 group-hover:text-slate-400 transition-colors" />
-            </div>
+            <ChevronDown size={11} className="text-on-surface-variant/60 group-hover:text-on-surface-variant transition-colors shrink-0" />
           </div>
         )}
 
@@ -576,21 +574,21 @@ export function AIChatPanel() {
       </div>
 
       {/* ── Messages Display ──────────────────────────────────────────────────── */}
-      <div className="min-h-0 overflow-y-auto px-3 py-3 space-y-4 select-text">
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-4 select-text">
         {messages.length === 0 ? (
-          <div className="text-xs text-slate-500 text-center py-6 leading-relaxed select-none">
+          <div className="text-xs text-on-surface-variant/60 dark:text-on-surface-variant/60 text-center py-6 leading-relaxed select-none">
             Start typing below to compose a query.<br />
             Select files to inject local context.
           </div>
         ) : null}
 
         {error ? (
-          <div className="rounded-md border border-danger/40 bg-danger/5 p-2 text-xs text-danger space-y-2">
+          <div className="rounded-md border border-error/40 bg-error/5 p-2 text-xs text-error space-y-2">
             <p>{error}</p>
             <div className="flex gap-2">
-              <button type="button" onClick={() => void regenerate()} className="rounded border border-danger/40 px-2 py-1 text-[10px] font-semibold hover:bg-danger/10">Retry</button>
-              <button type="button" onClick={handleSwitchToApi} className="rounded border border-danger/40 px-2 py-1 text-[10px] font-semibold hover:bg-danger/10">{configuredKeys.some((id) => id !== "ollama") ? "Switch to API" : "Configure API"}</button>
-              <button type="button" onClick={() => void stopGeneration()} className="rounded border border-danger/40 px-2 py-1 text-[10px] font-semibold hover:bg-danger/10">Cancel</button>
+              <button type="button" onClick={() => void regenerate()} className="rounded border border-error/40 px-2 py-1 text-[10px] font-semibold hover:bg-error/10 active:scale-95 duration-200">Retry</button>
+              <button type="button" onClick={handleSwitchToApi} className="rounded border border-error/40 px-2 py-1 text-[10px] font-semibold hover:bg-error/10 active:scale-95 duration-200">{configuredKeys.some((id) => id !== "ollama") ? "Switch to API" : "Configure API"}</button>
+              <button type="button" onClick={() => void stopGeneration()} className="rounded border border-error/40 px-2 py-1 text-[10px] font-semibold hover:bg-error/10 active:scale-95 duration-200">Cancel</button>
             </div>
           </div>
         ) : null}
@@ -605,28 +603,28 @@ export function AIChatPanel() {
               key={`${message.role}-${index}`}
               className={`chat-msg-in group flex flex-col space-y-1 relative rounded-lg p-3 transition-all ${
                 isUser
-                  ? "bg-surface-850 border border-surface-750/30"
-                  : "bg-surface-950/20"
+                  ? "glass-card border border-outline-variant/20"
+                  : "glass-panel"
               }`}
             >
               {/* Message header */}
-              <div className="flex items-center justify-between select-none pb-1.5 border-b border-surface-750/10">
+              <div className="flex items-center justify-between select-none pb-1.5 border-b border-outline-variant/10">
                 <div className="flex items-center gap-1.5">
-                  <span className={`text-[10px] font-bold uppercase tracking-wider ${isUser ? "text-accent-400" : "text-slate-400"}`}>
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${isUser ? "text-primary dark:text-primary-fixed-dim" : "text-on-surface-variant/60 dark:text-on-surface-variant/60"}`}>
                     {isUser ? "user" : "assistant"}
                   </span>
                   {!isUser && message.model && (
-                    <span className="rounded bg-surface-800 border border-surface-700 px-1 py-px text-[9px] text-slate-500 font-semibold uppercase shrink-0">
+                    <span className="rounded bg-surface-container-high border border-outline-variant/20 px-1 py-px text-[9px] text-on-surface-variant/60 dark:text-on-surface-variant/60 font-semibold uppercase shrink-0">
                       {message.model}
                     </span>
                   )}
                 </div>
 
                 {/* Message action options (copy/edit/delete) shown on hover */}
-                <div className="opacity-0 group-hover:opacity-100 flex gap-1 rounded bg-surface-900 p-0.5 border border-surface-750/30">
+                <div className="opacity-0 group-hover:opacity-100 flex gap-1 rounded bg-surface-container-highest p-0.5 border border-outline-variant/20">
                   <button
                     onClick={() => handleCopyMessage(message.content)}
-                    className="text-slate-500 hover:text-white p-0.5 transition-colors"
+                    className="text-on-surface-variant/60 dark:text-on-surface-variant/60 hover:text-on-surface dark:hover:text-on-surface p-0.5 transition-colors active:scale-95 duration-200"
                     title="Copy message"
                   >
                     <Copy size={10} />
@@ -634,7 +632,7 @@ export function AIChatPanel() {
                   {isUser && !streaming && (
                     <button
                       onClick={() => handleStartEdit(index, message.content)}
-                      className="text-slate-500 hover:text-white p-0.5 transition-colors"
+                      className="text-on-surface-variant/60 dark:text-on-surface-variant/60 hover:text-on-surface dark:hover:text-on-surface p-0.5 transition-colors active:scale-95 duration-200"
                       title="Edit message"
                     >
                       <Edit2 size={10} />
@@ -643,7 +641,7 @@ export function AIChatPanel() {
                   {!streaming && (
                     <button
                       onClick={() => deleteMessagePair(index)}
-                      className="text-slate-500 hover:text-rose-400 p-0.5 transition-colors"
+                      className="text-on-surface-variant/60 dark:text-on-surface-variant/60 hover:text-error p-0.5 transition-colors active:scale-95 duration-200"
                       title="Delete query block"
                     >
                       <Trash2 size={10} />
@@ -757,7 +755,7 @@ export function AIChatPanel() {
 
       {/* ── Input Box Form ────────────────────────────────────────────────────── */}
       <form
-        className="border-t border-surface-700 p-3 space-y-2 select-none z-10"
+        className="border-t border-outline-variant/20 p-3 space-y-2 select-none z-10"
         onSubmit={(e) => {
           e.preventDefault();
           if (!prompt.trim() || streaming) return;
@@ -773,13 +771,13 @@ export function AIChatPanel() {
             {attachedPaths.map((p) => (
               <span
                 key={p}
-                className="inline-flex items-center gap-1 rounded bg-surface-800 px-1.5 py-0.5 text-[10px] text-slate-300 font-mono"
+                className="inline-flex items-center gap-1 rounded bg-surface-container-high px-1.5 py-0.5 text-[10px] text-on-surface-variant dark:text-on-surface-variant font-mono"
               >
                 {p.split(/[\\/]/).pop()}
                 <button
                   type="button"
                   onClick={() => setAttachedPaths((prev) => prev.filter((item) => item !== p))}
-                  className="text-slate-500 hover:text-white transition-colors"
+                  className="text-on-surface-variant/60 dark:text-on-surface-variant/60 hover:text-on-surface dark:hover:text-on-surface transition-colors active:scale-95 duration-200"
                 >
                   <X size={10} />
                 </button>
@@ -791,9 +789,9 @@ export function AIChatPanel() {
         {/* Char usage limit indicator bar */}
         {attachedPaths.length > 0 && (
           <div className="space-y-1">
-            <div className="flex items-center justify-between text-[9px] text-slate-500 font-semibold select-none">
+            <div className="flex items-center justify-between text-[9px] text-on-surface-variant/60 dark:text-on-surface-variant/60 font-semibold select-none">
               <span>Attached Context Size</span>
-              <span className={limitReached ? "text-danger" : totalChars > 15000 ? "text-warning" : ""}>
+              <span className={limitReached ? "text-error" : totalChars > 15000 ? "text-tertiary-container" : ""}>
                 {totalChars.toLocaleString()} / 20,000 characters
               </span>
             </div>
@@ -808,86 +806,84 @@ export function AIChatPanel() {
           </div>
         )}
 
-        {/* Redesigned Premium Input Box */}
-        <div className="relative rounded-lg border border-surface-700 bg-surface-850 focus-within:border-accent-500/80 transition-all p-2 space-y-1.5 shadow-lg shadow-surface-950/20">
+        {/* Redesigned Floating Glass Input Box from Stitch Spec */}
+        <div className="glass-elevated rounded-xl p-2.5 relative flex flex-col gap-2 border border-outline-variant/40">
           
-          <textarea
-            className="w-full min-w-0 bg-transparent resize-none text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none h-14 leading-relaxed"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder={limitReached ? "Attachment limit exceeded" : "Ask the assistant..."}
-            disabled={limitReached}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (prompt.trim() && !streaming && !limitReached) {
-                  const content = prompt;
-                  setPrompt("");
-                  void sendMessage(content, attachedPaths);
-                  setAttachedPaths([]); // Clear attached paths on send
-                }
-              }
-            }}
-          />
+          {/* Model Selector Bar */}
+          <div className="flex items-center justify-between px-1 pt-0.5">
+            <button 
+              type="button"
+              onClick={() => setShowProviderConfig(true)}
+              className="flex items-center gap-1 text-on-surface-variant hover:text-primary transition-colors text-xs font-label-caps tracking-wider"
+            >
+              <span>{model || "Claude 3.5 Sonnet"}</span>
+              <ChevronDown size={11} />
+            </button>
+            <span title="Context Aware" className="flex items-center justify-center w-5 h-5 rounded bg-primary/10 border border-primary/20">
+              <Sparkles size={11} className="text-primary" />
+            </span>
+          </div>
 
-          {/* Action Row */}
-          <div className="flex items-center justify-between pt-1.5 border-t border-surface-800/60 select-none">
-            {/* Attachment Actions */}
-            <div className="flex items-center gap-1">
+          {/* Input Area */}
+          <div className="relative">
+            <textarea
+              className="w-full bg-surface-dim/60 border border-outline-variant/30 rounded-lg p-3 pr-16 text-body-base font-body-base text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 resize-none h-20 shadow-inner"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder={limitReached ? "Attachment limit exceeded" : "Ask Duo to edit code, explain errors, or generate tests..."}
+              disabled={limitReached}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  if (prompt.trim() && !streaming && !limitReached) {
+                    const content = prompt;
+                    setPrompt("");
+                    void sendMessage(content, attachedPaths);
+                    setAttachedPaths([]);
+                  }
+                }
+              }}
+            />
+
+            <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
               <button
                 type="button"
                 onClick={() => activePath && setAttachedPaths((paths) => Array.from(new Set([...paths, activePath])))}
                 disabled={!activePath}
-                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors bg-surface-900 border border-surface-800 text-slate-400 hover:text-slate-200 hover:bg-surface-800 disabled:opacity-40 disabled:cursor-not-allowed"
-                title={activePath ? `Attach: ${activePath.split(/[/\\]/).pop()}` : "No active file open"}
+                className="w-7 h-7 flex items-center justify-center rounded-md text-on-surface-variant/60 hover:bg-surface-variant hover:text-on-surface transition-colors disabled:opacity-40"
+                title={activePath ? `Attach: ${activePath.split(/[/\\]/).pop()}` : "No active file"}
               >
-                <Paperclip size={11} className="shrink-0" />
-                <span>File</span>
+                <Paperclip size={14} />
               </button>
-              <button
-                type="button"
-                onClick={() => workspace && setAttachedPaths((paths) => Array.from(new Set([...paths, workspace.path])))}
-                disabled={!workspace}
-                className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-medium transition-colors bg-surface-900 border border-surface-800 text-slate-400 hover:text-slate-200 hover:bg-surface-800 disabled:opacity-40 disabled:cursor-not-allowed"
-                title={workspace ? `Attach workspace: ${workspace.name}` : "No workspace open"}
-              >
-                <Paperclip size={11} className="shrink-0" />
-                <span>Folder</span>
-              </button>
-            </div>
-
-            {/* Right Buttons (Voice & Send) */}
-            <div className="flex items-center gap-1.5 shrink-0">
-              {/* Microphone Button */}
               <button
                 type="button"
                 onClick={toggleListening}
-                className={`w-8 h-8 rounded-full flex items-center justify-center border transition-all duration-300 ${
+                className={`w-7 h-7 rounded-md flex items-center justify-center transition-all ${
                   isListening
-                    ? "bg-rose-600/20 text-rose-400 border-rose-500/40 animate-pulse hover:bg-rose-600/30"
-                    : "bg-surface-900 text-slate-400 border-surface-800 hover:text-slate-200 hover:bg-surface-800 hover:border-surface-700"
+                    ? "bg-error/20 text-error border border-error/50 animate-pulse"
+                    : "text-on-surface-variant/60 hover:bg-surface-variant hover:text-on-surface"
                 }`}
                 title={isListening ? "Listening... Click to stop" : "Start Voice Input"}
               >
-                {isListening ? <MicOff size={13} className="block" /> : <Mic size={13} className="block" />}
+                {isListening ? <MicOff size={14} /> : <Mic size={14} />}
               </button>
-              {/* Premium Send Button */}
               <button
                 type="submit"
+                data-testid="send-button"
+                aria-label="Send message"
                 disabled={streaming || !prompt.trim() || limitReached}
-                className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 border ${
+                className={`w-7 h-7 rounded-md flex items-center justify-center transition-colors shadow-sm ${
                   streaming || !prompt.trim() || limitReached
-                    ? "bg-surface-900 text-slate-600 border-surface-800 cursor-not-allowed"
-                    : "bg-accent-600 text-white border-accent-500 hover:bg-accent-500 hover:shadow-lg hover:shadow-accent-500/25 hover:border-accent-400 active:scale-95 active:bg-accent-700"
+                    ? "bg-surface-variant text-on-surface-variant/40 cursor-not-allowed"
+                    : "bg-primary text-on-primary hover:bg-primary/90 active:scale-95"
                 }`}
                 title="Send Message"
               >
-                <Send size={12} className="block translate-x-[0.5px]" />
+                <Send size={13} />
               </button>
+
             </div>
-
           </div>
-
         </div>
       </form>
     </section>

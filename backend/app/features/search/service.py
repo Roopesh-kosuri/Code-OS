@@ -1,7 +1,7 @@
 import re
 from pathlib import Path
 
-from backend.app.core.paths import IGNORED_DIRS, normalize_path
+from ...core.paths import IGNORED_DIRS, normalize_path
 
 TEXT_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".html", ".css", ".scss", ".txt", ".yml", ".yaml"}
 SYMBOL_PATTERN = re.compile(r"^\s*(class|def|function|const|let|var|export\s+function|export\s+class)\s+([A-Za-z_$][\w$]*)")

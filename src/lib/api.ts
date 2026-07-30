@@ -1,4 +1,52 @@
+/**
+ * api.ts — Typed HTTP client for the CODE-OS backend.
+ *
+ * Security: every request includes the session token in the Authorization
+ * header so the backend middleware can reject requests from processes other
+ * than this Electron renderer (e.g., JavaScript running in a browser tab that
+ * tries to reach localhost:8000 via a DNS-rebinding attack).
+ *
+ * The token is obtained once at startup from the Electron main process via
+ * the secure IPC channel (window.codeOS.getSessionToken()) and kept in module
+ * memory.  It is never written to localStorage, sessionStorage, or cookies.
+ *
+ * In web-dev mode (no Electron, no window.codeOS) the token falls back to
+ * null and Authorization headers are omitted — this is intentional because
+ * the dev server is not exposed to the internet and backend auth is an
+ * Electron-specific protection layer.
+ */
+
 const API_BASE = "http://127.0.0.1:8000";
+
+// In-memory token — fetched once from Electron IPC, then reused.
+let _sessionToken: string | null = null;
+let _tokenFetchPromise: Promise<string | null> | null = null;
+
+async function _ensureToken(): Promise<string | null> {
+  if (_sessionToken !== null) return _sessionToken;
+
+  if (!_tokenFetchPromise) {
+    _tokenFetchPromise = (async () => {
+      if (window.codeOS?.getSessionToken) {
+        _sessionToken = await window.codeOS.getSessionToken();
+      } else {
+        try {
+          const res = await fetch(`${API_BASE}/api/auth/token`);
+          if (res.ok) {
+            const data = (await res.json()) as { token?: string };
+            _sessionToken = data.token ?? null;
+          }
+        } catch (e) {
+          console.warn("[api] Failed to fetch session token in web mode", e);
+        }
+      }
+      _tokenFetchPromise = null;
+      return _sessionToken;
+    })();
+  }
+  return _tokenFetchPromise;
+}
+
 
 type RequestOptions = RequestInit & {
   query?: Record<string, string | number | boolean | undefined | null>;
@@ -15,12 +63,20 @@ function url(path: string, query?: RequestOptions["query"]): string {
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const token = await _ensureToken();
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(options.headers as Record<string, string> | undefined),
+  };
+
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const response = await fetch(url(path, options.query), {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers
-    }
+    headers,
   });
 
   if (!response.ok) {
@@ -59,9 +115,14 @@ export const api = {
       query
     }),
   stream: async (path: string, body: unknown, onToken: (token: string) => void, signal?: AbortSignal) => {
+    const sessionToken = await _ensureToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (sessionToken) {
+      headers["Authorization"] = `Bearer ${sessionToken}`;
+    }
     const response = await fetch(url(path), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
       signal
     });

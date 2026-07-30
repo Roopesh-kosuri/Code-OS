@@ -47,8 +47,13 @@ function findPython() {
 }
 
 const pythonCmd = findPython();
+<<<<<<< HEAD
 const args = ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"];
 const proc = spawn(pythonCmd, args, { stdio: "inherit", shell: true });
+=======
+const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"];
+const proc = spawn(pythonCmd, args, { stdio: "inherit", shell: true, cwd: "backend", env: { ...process.env, PYTHONPATH: "D:/HTML/CODE OS/backend" } });
+>>>>>>> 4132f1f (Security patches and ui upgrade)
 
 proc.on("exit", (code) => {
   process.exit(code || 0);

@@ -4,7 +4,7 @@ from typing import List, Dict, Any
 from pathlib import Path
 import json
 
-from backend.app.core.plugins.plugin_manager import plugin_manager, PluginManifest
+from .plugin_manager import plugin_manager, PluginManifest
 
 router = APIRouter()
 
@@ -69,7 +69,8 @@ async def install_plugin(req: InstallRequest):
         
     entry_path = plugin_dir / "index.py"
     with open(entry_path, "w", encoding="utf-8") as f:
-        f.write(f'# {plugin_id} entry point\n\ndef initialize(api):\n    print("{plugin_id} plugin initialized")\n')
+        f.write(f'# {plugin_id} entry point\nimport logging\nlogger = logging.getLogger(__name__)\n\ndef initialize(api):\n    logger.info("{plugin_id} plugin initialized")\n')
+
         
     # Reload/load active plugins to include this newly installed one
     await plugin_manager.load_active_plugins()

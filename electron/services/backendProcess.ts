@@ -58,6 +58,33 @@ function findPythonCommand(): string {
 export class BackendProcess {
   private process: ChildProcessWithoutNullStreams | null = null;
 
+  /**
+   * The session token emitted by the backend on startup.
+   * The backend prints a line:  CODE_OS_SESSION_TOKEN=<hex>
+   * We capture it here so Electron can inject it into API requests.
+   */
+  sessionToken: string | null = null;
+
+  /** Promise that resolves once the session token has been captured. */
+  private _tokenReady: Promise<string>;
+  private _tokenResolve!: (token: string) => void;
+
+  constructor() {
+    this._tokenReady = new Promise<string>((resolve) => {
+      this._tokenResolve = resolve;
+    });
+  }
+
+  /** Wait until the backend has emitted its session token. */
+  waitForToken(timeoutMs = 15_000): Promise<string> {
+    return Promise.race([
+      this._tokenReady,
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error("Timed out waiting for backend session token")), timeoutMs)
+      )
+    ]);
+  }
+
   async start(): Promise<void> {
     if (this.process) {
       return;
@@ -65,6 +92,20 @@ export class BackendProcess {
 
     if (await this.isBackendHealthy()) {
       console.log("[backend] reusing existing backend on 127.0.0.1:8000");
+      // When reusing an existing backend we cannot capture the token from stdout.
+      // Read the token file that the backend wrote on startup instead.
+      try {
+        const fs = await import("node:fs");
+        const os = await import("node:os");
+        const path_ = await import("node:path");
+        const tokenPath = path_.join(os.homedir(), ".code-os", "session_token");
+        const token = fs.readFileSync(tokenPath, "utf-8").trim();
+        this.sessionToken = token;
+        this._tokenResolve(token);
+        console.log("[backend] session token loaded from file");
+      } catch (err) {
+        console.warn("[backend] could not read session token from file:", err);
+      }
       return;
     }
 
@@ -90,8 +131,23 @@ export class BackendProcess {
       }
     });
 
-    this.process.stdout.on("data", (data) => {
-      console.log(`[backend] ${data.toString().trim()}`);
+    this.process.stdout.on("data", (data: Buffer) => {
+      const text = data.toString();
+      // Parse the session token line emitted by the backend auth module.
+      for (const line of text.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("CODE_OS_SESSION_TOKEN=")) {
+          const token = trimmed.slice("CODE_OS_SESSION_TOKEN=".length).trim();
+          if (token) {
+            this.sessionToken = token;
+            this._tokenResolve(token);
+            console.log("[backend] session token captured from stdout");
+          }
+        } else {
+          // Forward all other stdout to the Electron console.
+          console.log(`[backend] ${trimmed}`);
+        }
+      }
     });
 
     this.process.stderr.on("data", (data) => {

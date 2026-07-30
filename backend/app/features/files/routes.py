@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 
-from backend.app.features.files.schemas import (
+
+from .schemas import (
     CreateRequest,
     DeleteRequest,
     DuplicateRequest,
@@ -10,7 +11,7 @@ from backend.app.features.files.schemas import (
     TreeResponse,
     WriteRequest,
 )
-from backend.app.features.files.service import (
+from .service import (
     build_tree,
     create_entry,
     delete_entry,
@@ -26,20 +27,22 @@ router = APIRouter()
 
 async def _ensure_trusted(workspace: str):
     from fastapi import HTTPException
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
+    from ..workspaces.trust_service import get_workspace_trust
     trust = await get_workspace_trust(workspace)
     if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. File modifications are disabled.")
+        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode.")
 
 
 
 @router.get("/tree", response_model=TreeResponse)
 async def tree(workspace: str = Query(...), max_depth: int = Query(4, ge=1, le=8)) -> TreeResponse:
+    await _ensure_trusted(workspace)
     return TreeResponse(root=build_tree(workspace, max_depth))
 
 
 @router.get("/read", response_model=FileReadResponse)
 async def read(workspace: str = Query(...), path: str = Query(...)) -> FileReadResponse:
+    await _ensure_trusted(workspace)
     content, language = read_file(workspace, path)
     return FileReadResponse(path=path, content=content, language=language)
 
@@ -81,6 +84,9 @@ async def duplicate(payload: DuplicateRequest) -> dict[str, str]:
 
 @router.post("/write")
 async def write(payload: WriteRequest) -> dict[str, str]:
+    from app.core.rate_limiter import rate_limiter
+    rate_limiter.check("files_write", max_requests=60, window_seconds=60.0)
     await _ensure_trusted(payload.workspace)
     write_file(payload.workspace, payload.path, payload.content)
     return {"status": "written"}
+

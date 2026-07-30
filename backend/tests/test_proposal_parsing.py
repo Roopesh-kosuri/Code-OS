@@ -1,5 +1,5 @@
 import unittest
-from backend.app.features.ai.service import PROPOSAL_RE
+from app.features.ai.service import PROPOSAL_RE
 
 
 class ProposalParsingTests(unittest.TestCase):

@@ -28,60 +28,60 @@ import { ContextPanel } from "../../features/ai/ContextPanel";
 import { AgentConsole } from "../../features/ai/AgentConsole";
 import { PerformanceDashboard } from "../../features/diagnostics/PerformanceDashboard";
 import { DuoPanel } from "../../features/duo/DuoPanel";
+import { CodeVerifierPanel } from "../../features/verifier/CodeVerifierPanel";
 import { WorkspaceTrustDialog } from "../../components/workspace/WorkspaceTrustDialog";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { SettingsModal } from "../settings/SettingsModal";
 import { OpenFolderModal } from "../workspace/OpenFolderModal";
+import { WelcomeScreen } from "../workspace/WelcomeScreen";
 
 // ── Activity Bar Button Sub-component ────────────────────────────────────────
 
 function ActivityBarButton({
-  icon,
+  iconName,
   label,
   active,
   onClick,
   id,
 }: {
-  icon: React.ReactNode;
+  iconName: string;
   label: string;
   active: boolean;
   onClick: () => void;
   id?: string;
 }) {
-  const [hovered, setHovered] = useState(false);
   return (
-    <div className="relative w-full flex justify-center py-0.5 select-none">
-      <button
-        id={id}
-        onClick={onClick}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        className={`relative flex h-9 w-9 items-center justify-center rounded-lg transition-all duration-150 ${
-          active
-            ? "text-white bg-surface-800 shadow-md shadow-accent-500/5 cyberpunk-glow"
-            : "text-slate-400 hover:text-slate-200 hover:bg-surface-850"
-        }`}
-        title={label}
-        aria-label={label}
+    <button
+      id={id}
+      onClick={onClick}
+      className={`w-full flex justify-center py-3 relative group transition-all duration-300 ease-in-out ${
+        active
+          ? "text-primary-container dark:text-primary-container border-l-2 border-primary-container bg-primary-container/10"
+          : "text-on-surface-variant/60 dark:text-on-surface-variant/60 hover:text-primary dark:hover:text-primary-fixed-dim hover:bg-surface-variant/30"
+      }`}
+      title={label}
+      aria-label={label}
+    >
+      <span 
+        className="material-symbols-outlined text-[20px]" 
+        style={active ? { fontVariationSettings: "'FILL' 1" } : undefined}
       >
-        {active && (
-          <span className="absolute left-0 top-2 bottom-2 w-[3px] bg-accent-500 rounded-r" />
-        )}
-        {icon}
-      </button>
-
-      {hovered && (
-        <div className="absolute left-12 top-1.5 z-45 rounded bg-surface-950 px-2 py-1 text-[10px] text-slate-200 border border-surface-700 whitespace-nowrap shadow-lg select-none pointer-events-none">
-          {label}
-        </div>
-      )}
-    </div>
+        {iconName}
+      </span>
+      {/* Tooltip */}
+      <div className="absolute left-16 top-1/2 -translate-y-1/2 bg-surface-container-highest border border-white/10 px-2.5 py-1 rounded-md shadow-2xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 font-label-caps text-label-caps text-on-surface font-semibold">
+        {label}
+      </div>
+    </button>
   );
 }
 
 // ── Main AppShell ─────────────────────────────────────────────────────────────
 
 export function AppShell() {
+  const [activeTopView, setActiveTopView] = useState<"main" | "agent" | "duo" | "verifier" | "diagnostics" | "proposals">("main");
+  const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
+
   const [activeSidebar, setActiveSidebar] = useState(() => {
     return localStorage.getItem("code-os:layout-active-sidebar") || "explorer";
   });
@@ -153,6 +153,18 @@ export function AppShell() {
     return () => window.removeEventListener("code-os:menu", listener);
   }, []);
 
+  // Listen for switch-top-view events (e.g. switching to proposals tab from Duo Loop)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const view = (e as CustomEvent<string>).detail;
+      if (["main", "agent", "duo", "diagnostics", "proposals"].includes(view)) {
+        setActiveTopView(view as any);
+      }
+    };
+    window.addEventListener("code-os:switch-top-view", handler);
+    return () => window.removeEventListener("code-os:switch-top-view", handler);
+  }, []);
+
   // Listen for switch-utility events (e.g. from round cards or proposals list)
   useEffect(() => {
     const handler = (e: Event) => {
@@ -214,7 +226,7 @@ export function AppShell() {
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const deltaX = startX - moveEvent.clientX;
-      const newWidth = Math.max(200, Math.min(500, startWidth + deltaX));
+      const newWidth = Math.max(260, Math.min(480, startWidth + deltaX));
       setAiPanelWidth(newWidth);
       localStorage.setItem("code-os:layout-ai-width", String(newWidth));
     };
@@ -253,6 +265,7 @@ export function AppShell() {
   };
 
   const handleActivityClick = (util: string) => {
+    setActiveTopView("main");
     if (activeSidebar === util && showSidebar) {
       setShowSidebar(false);
       localStorage.setItem("code-os:layout-show-sidebar", "false");
@@ -270,8 +283,12 @@ export function AppShell() {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-surface-950 text-slate-100 select-none">
-      <TopBar onOpenSettings={() => setShowSettings(true)} />
+    <div className="flex h-screen flex-col bg-background text-on-background selection:bg-primary-container/30 select-none">
+      <TopBar 
+        onOpenSettings={() => setShowSettings(true)}
+        activeView={activeTopView}
+        onViewChange={(v) => setActiveTopView(v as "main" | "agent" | "duo" | "diagnostics" | "proposals")}
+      />
 
       {/* Resize Block Overlay */}
       {isResizing && (
@@ -282,185 +299,197 @@ export function AppShell() {
         />
       )}
 
-      {/* Layout Split Container */}
+      {/* Layout Container */}
       <div className="flex flex-1 min-h-0 w-full overflow-hidden">
-        
-        {/* 1. Left Activity Bar (48px Rail) */}
-        <aside className="w-12 bg-surface-900 border-r border-surface-700 flex flex-col justify-between items-center py-2 shrink-0 z-20">
-          <div className="flex flex-col gap-2 w-full items-center">
-            <ActivityBarButton
-              id="activity-btn-explorer"
-              icon={<Folder size={18} />}
-              label="File Explorer"
-              active={showSidebar && activeSidebar === "explorer"}
-              onClick={() => handleActivityClick("explorer")}
-            />
-            <ActivityBarButton
-              id="activity-btn-search"
-              icon={<SearchIcon size={18} />}
-              label="Global Search"
-              active={showSidebar && activeSidebar === "search"}
-              onClick={() => handleActivityClick("search")}
-            />
-            <ActivityBarButton
-              id="activity-btn-git"
-              icon={<GitBranch size={18} />}
-              label="Source Control (Git)"
-              active={showSidebar && activeSidebar === "git"}
-              onClick={() => handleActivityClick("git")}
-            />
-            <ActivityBarButton
-              id="activity-btn-agent"
-              icon={<Cpu size={18} />}
-              label="Agent Console"
-              active={showSidebar && activeSidebar === "agent"}
-              onClick={() => handleActivityClick("agent")}
-            />
-            <ActivityBarButton
-              id="activity-btn-duo"
-              icon={<Zap size={18} />}
-              label="Duo Loop"
-              active={showSidebar && activeSidebar === "duo"}
-              onClick={() => handleActivityClick("duo")}
-            />
-            <ActivityBarButton
-              id="activity-btn-diagnostics"
-              icon={<Gauge size={18} />}
-              label="Diagnostics"
-              active={showSidebar && activeSidebar === "diagnostics"}
-              onClick={() => handleActivityClick("diagnostics")}
-            />
-            <ActivityBarButton
-              id="activity-btn-memory"
-              icon={<Brain size={18} />}
-              label="AI Memory"
-              active={showSidebar && activeSidebar === "memory"}
-              onClick={() => handleActivityClick("memory")}
-            />
-            <ActivityBarButton
-              id="activity-btn-context"
-              icon={<Eye size={18} />}
-              label="AI Context"
-              active={showSidebar && activeSidebar === "context"}
-              onClick={() => handleActivityClick("context")}
-            />
-            <ActivityBarButton
-              id="activity-btn-diff"
-              icon={<FileDiff size={18} />}
-              label="AI Proposals"
-              active={showSidebar && activeSidebar === "diff"}
-              onClick={() => handleActivityClick("diff")}
-            />
-          </div>
+        <div className={activeTopView === "agent" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <AgentConsole />
+        </div>
 
-          <div className="flex flex-col gap-2 w-full items-center">
-            <ActivityBarButton
-              id="activity-btn-terminal"
-              icon={<TermIcon size={18} />}
-              label="Toggle Terminal Panel"
-              active={showTerminal}
-              onClick={() => setShowTerminal((v) => {
-                localStorage.setItem("code-os:layout-show-terminal", String(!v));
-                return !v;
-              })}
-            />
-            <ActivityBarButton
-              id="activity-btn-aichat"
-              icon={<Bot size={18} />}
-              label="Toggle AI Chat Panel"
-              active={showAIChat}
-              onClick={() => setShowAIChat((v) => {
-                localStorage.setItem("code-os:layout-show-ai-chat", String(!v));
-                return !v;
-              })}
-            />
-            <ActivityBarButton
-              id="activity-btn-settings"
-              icon={<SettingsIcon size={18} />}
-              label="Open Settings"
-              active={showSettings}
-              onClick={() => setShowSettings(true)}
-            />
-          </div>
-        </aside>
+        <div className={activeTopView === "duo" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <DuoPanel />
+        </div>
 
-        {/* 2. Left Primary Sidebar (Explorer / Search / Git / Console / etc.) */}
-        {showSidebar && (
-          <>
-            <aside
-              className="min-h-0 bg-surface-900 flex flex-col shrink-0 overflow-hidden border-r border-surface-700/80 select-text"
-              style={{ width: `${sidebarWidth}px` }}
-            >
-              <div className="flex-1 min-h-0">
-                {activeSidebar === "explorer" && (
-                  <div className="flex flex-col h-full overflow-hidden">
-                    <FileExplorer />
-                  </div>
-                )}
-                {activeSidebar === "git" && <GitPanel />}
-                {activeSidebar === "search" && <SearchPanel />}
-                {activeSidebar === "repo" && <RepoUnderstanding />}
-                {activeSidebar === "diff" && <DiffViewer />}
-                {activeSidebar === "memory" && <MemoryPanel />}
-                {activeSidebar === "context" && <ContextPanel />}
-                {activeSidebar === "agent" && <AgentConsole />}
-                {activeSidebar === "diagnostics" && <PerformanceDashboard />}
-                {activeSidebar === "duo" && <DuoPanel />}
-              </div>
-            </aside>
-            {/* Draggable Resizer Handle */}
-            <div
-              className="w-[3px] hover:w-[5px] bg-surface-700/80 hover:bg-accent-500 cursor-col-resize shrink-0 transition-all duration-100 z-10 relative"
-              onMouseDown={handleSidebarMouseDown}
-            >
-              <div className="absolute inset-y-0 -left-[5px] -right-[5px] cursor-col-resize" />
-            </div>
-          </>
-        )}
+        <div className={activeTopView === "verifier" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <CodeVerifierPanel />
+        </div>
 
-        {/* 3. Central Editor and Terminal Area */}
-        <main className="flex flex-col flex-1 min-h-0 bg-surface-950 overflow-hidden">
-          <div className="flex-1 min-h-0 relative select-text">
-            <EditorWorkspace />
-          </div>
-          
-          {showTerminal && (
+        <div className={activeTopView === "diagnostics" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <PerformanceDashboard />
+        </div>
+
+        <div className={activeTopView === "proposals" ? "flex-1 p-3 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <DiffViewer />
+        </div>
+
+        <div className={activeTopView === "main" ? "flex flex-1 min-h-0 w-full overflow-hidden h-full" : "hidden"}>
+          {!currentWorkspace ? (
+            <WelcomeScreen />
+          ) : (
             <>
-              {/* Bottom Resizer Handle */}
-              <div
-                className="h-[3px] hover:h-[5px] bg-surface-700/80 hover:bg-accent-500 cursor-row-resize shrink-0 transition-all duration-100 z-10 relative"
-                onMouseDown={handleTerminalMouseDown}
-              >
-                <div className="absolute inset-x-0 -top-[5px] -bottom-[5px] cursor-row-resize" />
+            {/* 1. Left Activity Bar (56px Rail) */}
+            <aside className="glass-panel border-r border-outline-variant/20 flex flex-col justify-between items-center py-4 shrink-0 z-20 w-nav-rail-width">
+              <div className="flex flex-col gap-1 w-full items-center">
+                <ActivityBarButton
+                  id="activity-btn-explorer"
+                  iconName="folder_open"
+                  label="File Explorer"
+                  active={showSidebar && activeSidebar === "explorer"}
+                  onClick={() => handleActivityClick("explorer")}
+                />
+                <ActivityBarButton
+                  id="activity-btn-search"
+                  iconName="search"
+                  label="Global Search"
+                  active={showSidebar && activeSidebar === "search"}
+                  onClick={() => handleActivityClick("search")}
+                />
+                <ActivityBarButton
+                  id="activity-btn-git"
+                  iconName="conversion_path"
+                  label="Source Control (Git)"
+                  active={showSidebar && activeSidebar === "git"}
+                  onClick={() => handleActivityClick("git")}
+                />
+                <ActivityBarButton
+                  id="activity-btn-agent"
+                  iconName="smart_toy"
+                  label="Agent Console"
+                  active={showSidebar && activeSidebar === "agent"}
+                  onClick={() => handleActivityClick("agent")}
+                />
+                <ActivityBarButton
+                  id="activity-btn-duo"
+                  iconName="loop"
+                  label="Duo Loop"
+                  active={showSidebar && activeSidebar === "duo"}
+                  onClick={() => handleActivityClick("duo")}
+                />
+                <ActivityBarButton
+                  id="activity-btn-diagnostics"
+                  iconName="monitoring"
+                  label="Diagnostics"
+                  active={showSidebar && activeSidebar === "diagnostics"}
+                  onClick={() => handleActivityClick("diagnostics")}
+                />
+                <ActivityBarButton
+                  id="activity-btn-diff"
+                  iconName="extension"
+                  label="AI Proposals"
+                  active={showSidebar && activeSidebar === "diff"}
+                  onClick={() => handleActivityClick("diff")}
+                />
               </div>
-              <div className="shrink-0 overflow-hidden select-text" style={{ height: `${terminalHeight}px` }} id="terminal-panel">
-                <TerminalPanel onClose={toggleTerminalOff} />
-              </div>
-            </>
-          )}
-        </main>
 
-        {/* 4. Right Resizable Independent AI Chat Panel */}
-        {showAIChat && (
-          <>
-            {/* Draggable Resizer Handle */}
-            <div
-              className="w-[3px] hover:w-[5px] bg-surface-700/80 hover:bg-accent-500 cursor-col-resize shrink-0 transition-all duration-100 z-10 relative"
-              onMouseDown={handleAIPanelMouseDown}
-            >
-              <div className="absolute inset-y-0 -left-[5px] -right-[5px] cursor-col-resize" />
-            </div>
-            <aside
-              id="ai-chat-panel"
-              className="min-h-0 bg-surface-900 flex flex-col justify-between shrink-0 overflow-hidden border-l border-surface-700/80 select-text"
-              style={{ width: `${aiPanelWidth}px` }}
-            >
-              <AIChatPanel />
+              <div className="flex flex-col gap-1 w-full items-center mt-auto">
+                <ActivityBarButton
+                  id="activity-btn-terminal"
+                  iconName="terminal"
+                  label="Toggle Terminal Panel"
+                  active={showTerminal}
+                  onClick={() => setShowTerminal((v) => {
+                    localStorage.setItem("code-os:layout-show-terminal", String(!v));
+                    return !v;
+                  })}
+                />
+                <ActivityBarButton
+                  id="activity-btn-aichat"
+                  iconName="auto_awesome"
+                  label="Toggle AI Chat Panel"
+                  active={showAIChat}
+                  onClick={() => setShowAIChat((v) => {
+                    localStorage.setItem("code-os:layout-show-ai-chat", String(!v));
+                    return !v;
+                  })}
+                />
+                <ActivityBarButton
+                  id="activity-btn-settings"
+                  iconName="settings"
+                  label="Open Settings"
+                  active={showSettings}
+                  onClick={() => setShowSettings(true)}
+                />
+              </div>
             </aside>
+
+            {/* 2. Left Primary Sidebar (Explorer / Search / Git / Console / etc.) */}
+            {showSidebar && (
+              <>
+                <aside
+                  className="glass-panel min-h-0 flex flex-col shrink-0 overflow-hidden border-r border-outline-variant/20 select-text"
+                  style={{ width: `${sidebarWidth}px` }}
+                >
+                  <div className="flex-1 min-h-0">
+                    {activeSidebar === "explorer" && (
+                      <div className="flex flex-col h-full overflow-hidden">
+                        <FileExplorer />
+                      </div>
+                    )}
+                    {activeSidebar === "git" && <GitPanel />}
+                    {activeSidebar === "search" && <SearchPanel />}
+                    {activeSidebar === "repo" && <RepoUnderstanding />}
+                    {activeSidebar === "diff" && <DiffViewer />}
+                    {activeSidebar === "memory" && <MemoryPanel />}
+                    {activeSidebar === "context" && <ContextPanel />}
+                    {activeSidebar === "agent" && <AgentConsole compact />}
+                    {activeSidebar === "diagnostics" && <PerformanceDashboard />}
+                    {activeSidebar === "duo" && <DuoPanel compact />}
+                  </div>
+                </aside>
+                {/* Draggable Resizer Handle */}
+                <div
+                  className="codeos-resizer w-[3px] hover:w-[5px] cursor-col-resize shrink-0 z-10 relative"
+                  onMouseDown={handleSidebarMouseDown}
+                >
+                  <div className="absolute inset-y-0 -left-[5px] -right-[5px] cursor-col-resize" />
+                </div>
+              </>
+            )}
+
+            {/* 3. Central Editor and Terminal Area */}
+            <main className="bg-surface flex flex-col flex-1 min-h-0 overflow-hidden">
+              <div className="flex-1 min-h-0 relative select-text">
+                <EditorWorkspace />
+              </div>
+              
+              {showTerminal && (
+                <>
+                  {/* Bottom Resizer Handle */}
+                  <div
+                    className="codeos-resizer h-[3px] hover:h-[5px] cursor-row-resize shrink-0 z-10 relative"
+                    onMouseDown={handleTerminalMouseDown}
+                  >
+                    <div className="absolute inset-x-0 -top-[5px] -bottom-[5px] cursor-row-resize" />
+                  </div>
+                  <div className="glass-panel shrink-0 overflow-hidden select-text" style={{ height: `${terminalHeight}px` }} id="terminal-panel">
+                    <TerminalPanel onClose={toggleTerminalOff} />
+                  </div>
+                </>
+              )}
+            </main>
+
+            {/* 4. Right Resizable Independent AI Chat Panel */}
+            {showAIChat && (
+              <>
+                {/* Draggable Resizer Handle */}
+                <div
+                  className="codeos-resizer w-[3px] hover:w-[5px] cursor-col-resize shrink-0 z-10 relative"
+                  onMouseDown={handleAIPanelMouseDown}
+                >
+                  <div className="absolute inset-y-0 -left-[5px] -right-[5px] cursor-col-resize" />
+                </div>
+                <aside
+                  id="ai-chat-panel"
+                  className="glass-panel min-h-0 flex flex-col justify-between shrink-0 overflow-hidden border-l border-outline-variant/20 select-text glass-edge z-30"
+                  style={{ width: `${aiPanelWidth}px` }}
+                >
+                  <AIChatPanel />
+                </aside>
+              </>
+            )}
           </>
         )}
-
       </div>
+    </div>
 
       {/* Settings Page Overlay Modal */}
       {showSettings && (
@@ -486,8 +515,9 @@ export function AppShell() {
             await completeWorkspaceOpen(pendingWorkspacePath);
           }}
           onCancel={() => {
-            setOpeningFolder(false);
+            useWorkspaceStore.setState({ pendingWorkspacePath: null, isOpeningFolder: false });
           }}
+
         />
       )}
     </div>

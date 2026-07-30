@@ -51,7 +51,10 @@ function TreeNode({
   return (
     <div>
       <div
-        className="group flex h-7 items-center gap-1 rounded px-2 text-sm text-slate-300 hover:bg-surface-800 hover:text-white"
+        role="treeitem"
+        data-testid="file-tree-item"
+        className="group flex h-7 items-center gap-1 rounded px-2 text-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-bright/20 hover:text-on-surface dark:hover:text-on-surface"
+
         style={{ paddingLeft: 8 + depth * 14 }}
         draggable={!isEditing}
         onDragStart={(event) => event.dataTransfer.setData("text/plain", node.path)}
@@ -71,15 +74,27 @@ function TreeNode({
           onContext({ node, x: event.clientX, y: event.clientY });
         }}
       >
-        {isDirectory ? <ChevronRight size={13} className={isExpanded ? "rotate-90 transition-transform" : "transition-transform"} /> : <span className="w-[13px]" />}
         {isDirectory ? (
-          isExpanded ? <FolderOpen size={15} className="text-accent-500" /> : <Folder size={15} className="text-accent-500" />
+          <span className="material-symbols-outlined text-[16px] text-primary-fixed-dim/80 shrink-0">
+            {isExpanded ? "keyboard_arrow_down" : "keyboard_arrow_right"}
+          </span>
         ) : (
-          <File size={15} className="text-slate-400" />
+          <span className="w-[16px] shrink-0" />
+        )}
+        {isDirectory ? (
+          <span className="material-symbols-outlined text-[16px] text-tertiary-fixed-dim shrink-0">
+            {isExpanded ? "folder_open" : "folder"}
+          </span>
+        ) : (
+          <span className="material-symbols-outlined text-[16px] text-on-surface-variant/70 shrink-0">
+            {node.name.endsWith(".ts") || node.name.endsWith(".tsx") || node.name.endsWith(".js") ? "code" :
+             node.name.endsWith(".css") ? "style" :
+             node.name.endsWith(".json") ? "api" : "description"}
+          </span>
         )}
         {isEditing ? (
           <input
-            className="h-5 flex-1 min-w-0 bg-surface-950 border border-accent-500 rounded px-1 text-xs text-white focus:outline-none select-text"
+            className="h-5 flex-1 min-w-0 bg-surface-dim/80 border border-outline-variant/30 rounded px-1 text-xs text-on-surface focus:border-primary/50 focus:outline-none select-text"
             value={renameValue}
             onChange={(e) => onRenameChange(e.target.value)}
             onKeyDown={(e) => onRenameKeyDown(e, node)}
@@ -248,9 +263,15 @@ export function FileExplorer() {
   }, [workspace?.path, activeWorkspaces, fileTrees, refreshTree]);
 
   return (
-    <section className="relative flex h-full min-h-0 w-full min-w-0 flex-col border-b border-surface-700" onClick={() => setContext(null)}>
-      <div className="flex h-10 shrink-0 items-center justify-between px-3 min-w-0 w-full">
-        <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">Explorer</div>
+    <section
+      role="tree"
+      data-testid="file-tree-panel"
+      className="relative flex h-full min-h-0 w-full min-w-0 flex-col border-b border-outline-variant/20 bg-surface-container-lowest/80"
+      onClick={() => setContext(null)}
+    >
+
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-outline-variant/20 px-3 min-w-0 w-full bg-surface-container-low/70">
+        <div className="font-label-caps text-label-caps uppercase tracking-wider text-on-surface-variant">Explorer</div>
         <div className="flex gap-0.5">
           <IconButton label="Add folder to workspace" icon={<FolderPlus size={15} />} onClick={() => void openWorkspace()} />
           <IconButton label="Refresh tree" icon={<RefreshCw size={15} />} onClick={() => void refreshTree()} disabled={activeWorkspaces.length === 0} />
@@ -263,7 +284,7 @@ export function FileExplorer() {
             if (!treeNode) return null;
             return (
               <div key={ws.path} className="mb-4">
-                <div className="flex h-7 items-center justify-between px-2 text-xs font-bold uppercase tracking-wider text-slate-500 bg-surface-850 rounded mb-1">
+                <div className="mb-1 flex h-7 items-center justify-between rounded px-2 text-xs font-bold uppercase tracking-wider text-slate-500 bg-surface-850">
                   <span className="truncate" title={ws.path}>{ws.name}</span>
                   <button
                     onClick={(e) => {
@@ -346,4 +367,3 @@ function findNode(node: FileNode | null, path: string): FileNode | null {
   }
   return null;
 }
-

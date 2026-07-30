@@ -28,17 +28,22 @@ export function OpenFolderModal({ onClose }: OpenFolderModalProps) {
     e.preventDefault();
     if (!pathInput.trim()) return;
     await openWorkspace(pathInput.trim());
-    if (!useWorkspaceStore.getState().error) {
+    // Close modal on success: either workspace opened directly (no error)
+    // or trust dialog is pending (pendingWorkspacePath set, isOpeningFolder cleared)
+    const state = useWorkspaceStore.getState();
+    if (!state.error) {
       onClose();
     }
   };
 
   const handleRecentClick = async (path: string) => {
     await openWorkspace(path);
-    if (!useWorkspaceStore.getState().error) {
+    const state = useWorkspaceStore.getState();
+    if (!state.error) {
       onClose();
     }
   };
+
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-950/70 p-4 backdrop-blur-sm select-text">

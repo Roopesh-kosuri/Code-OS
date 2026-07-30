@@ -65,9 +65,12 @@ export function DiffViewer() {
     if (!workspace) return;
     try {
       const data = await api.get<Proposal[]>("/api/ai/edit-proposals", { workspace: workspace.path });
-      setProposals(data.filter((p) => p.status === "pending"));
-      if (data.length > 0 && !selectedProposal) {
-        setSelectedProposal(data.filter((p) => p.status === "pending")[0] || null);
+      const pendingList = data.filter((p) => p.status === "pending");
+      setProposals(pendingList);
+      if (pendingList.length > 0 && (!selectedProposal || !pendingList.some((p) => p.id === selectedProposal.id))) {
+        setSelectedProposal(pendingList[0]);
+      } else if (pendingList.length === 0) {
+        setSelectedProposal(null);
       }
     } catch {
       setProposals([]);
@@ -81,8 +84,24 @@ export function DiffViewer() {
 
   useEffect(() => {
     void fetchProposals();
-    const interval = setInterval(() => void fetchProposals(), 4000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => void fetchProposals(), 10000);
+
+    const handler = () => void fetchProposals();
+    const selectHandler = (e: Event) => {
+      const targetId = (e as CustomEvent<string>).detail;
+      void api.get<Proposal[]>("/api/ai/edit-proposals", { workspace: workspace?.path }).then((data) => {
+        setProposals(data);
+        const match = data.find((p) => p.id === targetId);
+        if (match) setSelectedProposal(match);
+      }).catch(() => undefined);
+    };
+    window.addEventListener("code-os:proposal-created", handler);
+    window.addEventListener("code-os:select-proposal", selectHandler);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("code-os:proposal-created", handler);
+      window.removeEventListener("code-os:select-proposal", selectHandler);
+    };
   }, [workspace?.path]);
 
   const handleApply = async (id: string) => {
@@ -126,7 +145,8 @@ export function DiffViewer() {
   const details = selectedProposal ? parseProposalSummary(selectedProposal.summary) : null;
 
   return (
-    <section className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[38px_1fr] border-b border-surface-700">
+    <section data-testid="diff-viewer" className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[38px_1fr] border-b border-surface-700">
+
       <div className="flex items-center gap-2 border-b border-surface-700 px-3 py-1">
         <FileDiff size={15} className="text-slate-400" />
         <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Advanced Diff Inspector ({proposals.length})</span>

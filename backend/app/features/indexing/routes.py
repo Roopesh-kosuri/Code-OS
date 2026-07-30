@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Query
 
-from backend.app.features.indexing.schemas import IndexStatusDto, IndexSummaryDto
-from backend.app.features.indexing.service import get_index_status, get_index_summary, index_manager
-from backend.app.features.indexing.repo_service import get_repo_summary, get_repo_graph
+from .schemas import IndexStatusDto, IndexSummaryDto
+from .service import get_index_status, get_index_summary, index_manager
+from .repo_service import get_repo_summary, get_repo_graph
 
 router = APIRouter()
 

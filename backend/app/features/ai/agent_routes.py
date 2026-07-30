@@ -1,10 +1,10 @@
 import uuid
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel
-from backend.app.features.ai.agents.planner import PlannerAgent
-from backend.app.features.ai.dag_engine import dag_engine
-from backend.app.features.ai.job_service import create_job, create_task, get_job, list_jobs, update_job_status
-from backend.app.features.ai.context_service import gather_context
+from .agents.planner import PlannerAgent
+from .dag_engine import dag_engine
+from .job_service import create_job, create_task, get_job, list_jobs, update_job_status
+from .context_service import gather_context
 
 router = APIRouter()
 
@@ -21,7 +21,7 @@ class StartJobRequest(BaseModel):
 
 @router.post("/plan")
 async def generate_plan(payload: PlanRequest) -> dict:
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
+    from ..workspaces.trust_service import get_workspace_trust
     trust = await get_workspace_trust(payload.workspace)
     if not trust.get("trusted", False):
         raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. Agent planning is disabled.")
@@ -39,7 +39,7 @@ async def generate_plan(payload: PlanRequest) -> dict:
 
 @router.post("/jobs")
 async def start_job(payload: StartJobRequest) -> dict:
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
+    from ..workspaces.trust_service import get_workspace_trust
     trust = await get_workspace_trust(payload.workspace)
     if not trust.get("trusted", False):
         raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. Agent execution is disabled.")
@@ -48,18 +48,19 @@ async def start_job(payload: StartJobRequest) -> dict:
     # 1. Create Job in SQLite
     await create_job(job_id, payload.workspace, payload.workflow)
 
-    # 2. Remap task IDs to fresh UUIDs to avoid UNIQUE constraint collisions when
-    #    the planner (or its fallback) returns static/repeated IDs across jobs.
+    # 2. Remap task IDs to fresh UUIDs to avoid UNIQUE constraint collisions
     id_remap: dict[str, str] = {}
     remapped_tasks = []
-    for t in payload.tasks:
-        new_id = f"{t['id']}_{uuid.uuid4().hex[:8]}"
-        id_remap[t["id"]] = new_id
+    for idx, t in enumerate(payload.tasks):
+        raw_id = t.get("id") or f"task_{idx}"
+        new_id = f"{raw_id}_{uuid.uuid4().hex[:8]}"
+        id_remap[raw_id] = new_id
         remapped_tasks.append({**t, "id": new_id})
 
-    # Fix dependency references to use new IDs
+    # Validate dependencies: remap valid ones and silently drop hallucinated/non-existent task IDs
     for t in remapped_tasks:
-        t["dependencies"] = [id_remap.get(dep, dep) for dep in t.get("dependencies", [])]
+        valid_deps = [id_remap[dep] for dep in t.get("dependencies", []) if dep in id_remap]
+        t["dependencies"] = valid_deps
 
     # 3. Create tasks in SQLite
     for t in remapped_tasks:
@@ -71,6 +72,7 @@ async def start_job(payload: StartJobRequest) -> dict:
             dependencies=t.get("dependencies", []),
             estimated_effort=t.get("estimated_effort", "")
         )
+
 
     # 4. Trigger DAG Execution in background
 
@@ -106,26 +108,23 @@ async def get_jobs_list(workspace: str = Query(...)) -> list[dict]:
 
 @router.post("/jobs/{job_id}/tasks/{task_id}/approve")
 async def approve_task_action(job_id: str, task_id: str) -> dict:
-    import backend.app.features.ai.agents.permission_state as perm_state
-    from backend.app.db.database import get_connection
+    from .agents import permission_state as perm_state
+    from ...db.database import get_db
     import json
     
     if task_id in perm_state.pending_permission_events:
         # Check if there is an associated proposal ID in pending action
-        db = await get_connection()
+        db = await get_db()
         proposal_id = None
-        try:
-            cur = await db.execute("SELECT pending_action FROM agent_tasks WHERE id = ?", (task_id,))
-            row = await cur.fetchone()
-            if row and row["pending_action"]:
-                act = json.loads(row["pending_action"])
-                if act.get("type") == "file-write":
-                    proposal_id = act.get("command")
-        finally:
-            await db.close()
+        cur = await db.execute("SELECT pending_action FROM agent_tasks WHERE id = ?", (task_id,))
+        row = await cur.fetchone()
+        if row and row["pending_action"]:
+            act = json.loads(row["pending_action"])
+            if act.get("type") == "file-write":
+                proposal_id = act.get("command")
 
         if proposal_id:
-            from backend.app.features.ai.service import apply_proposal
+            from .service import apply_proposal
             try:
                 await apply_proposal(proposal_id)
             except Exception as exc:
@@ -147,7 +146,7 @@ class TaskRejectRequest(BaseModel):
 
 @router.post("/jobs/{job_id}/tasks/{task_id}/reject")
 async def reject_task_action(job_id: str, task_id: str, payload: TaskRejectRequest | None = None) -> dict:
-    import backend.app.features.ai.agents.permission_state as perm_state
+    from .agents import permission_state as perm_state
     if task_id in perm_state.pending_permission_events:
         perm_state.pending_permission_decisions[task_id] = "reject"
         if payload and payload.feedback:
@@ -162,10 +161,60 @@ class TaskRecoverRequest(BaseModel):
 
 @router.post("/jobs/{job_id}/tasks/{task_id}/recover")
 async def recover_task_action(job_id: str, task_id: str, payload: TaskRecoverRequest) -> dict:
-    import backend.app.features.ai.agents.permission_state as perm_state
+    from .agents import permission_state as perm_state
     if task_id in perm_state.pending_permission_events:
         perm_state.pending_permission_decisions[task_id] = payload.action
         perm_state.pending_permission_events[task_id].set()
         return {"status": "recovered"}
     raise HTTPException(status_code=400, detail="No pending action for this task")
+
+
+class TaskAnswerRequest(BaseModel):
+    answer: str
+
+@router.post("/jobs/{job_id}/tasks/{task_id}/answer")
+async def answer_task_clarification(job_id: str, task_id: str, payload: TaskAnswerRequest) -> dict:
+    from .agents import permission_state as perm_state
+    if task_id in perm_state.pending_permission_events:
+        perm_state.pending_permission_decisions[task_id] = "answer"
+        perm_state.pending_permission_feedback[task_id] = payload.answer
+        perm_state.pending_permission_events[task_id].set()
+        return {"status": "answered"}
+    raise HTTPException(status_code=400, detail="No pending action for this task")
+
+
+class AuditRequest(BaseModel):
+    workspace: str
+    provider_config: dict | None = None
+
+@router.post("/audit")
+async def run_security_audit(payload: AuditRequest) -> dict:
+    from .agents.auditor import AuditorAgent
+    from ...core.paths import normalize_workspace
+    
+    ws_path = normalize_workspace(payload.workspace)
+    if not ws_path.exists():
+        raise HTTPException(status_code=404, detail="Workspace directory does not exist")
+        
+    auditor = AuditorAgent(provider_config=payload.provider_config)
+    report = await auditor.execute_audit(str(ws_path), provider_config=payload.provider_config)
+    return report
+
+
+class SaveAuditReportRequest(BaseModel):
+    workspace: str
+    markdown_content: str
+
+@router.post("/audit/save-report")
+async def save_security_audit_report(payload: SaveAuditReportRequest) -> dict:
+    from ...core.paths import ensure_within_workspace
+    try:
+        report_path = ensure_within_workspace(payload.workspace, "SECURITY_AUDIT.md")
+        report_path.write_text(payload.markdown_content, encoding="utf-8")
+        return {"status": "success", "file": str(report_path)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to save security report: {exc}")
+
+
+
 

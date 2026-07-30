@@ -168,6 +168,7 @@ SQLite  →  workspaces · settings · encrypted keys · index · jobs · histor
 
 | Layer | Tech |
 |---|---|
+<<<<<<< HEAD
 | Desktop | Electron 33 |
 | Frontend | React 18 · TypeScript · Zustand · Tailwind · Monaco · xterm.js |
 | Backend | Python · FastAPI · Uvicorn · aiosqlite |
@@ -176,14 +177,64 @@ SQLite  →  workspaces · settings · encrypted keys · index · jobs · histor
 | AI | Ollama + OpenAI · Anthropic · Gemini · Groq · DeepSeek · Mistral · OpenRouter · NVIDIA NIM |
 | Security | Fernet-encrypted keys · server-side trust enforcement |
 | CI/CD | GitHub Actions — tests + build on every push, multi-platform installers on release |
+=======
+| Monaco code editor (multi-tab, split view, syntax highlighting) | WORKING |
+| Multi-root workspace explorer (drag-drop, file ops) | WORKING |
+| Real PTY terminal via node-pty (Electron) | WORKING |
+| WebSocket terminal fallback (browser mode with trust check) | WORKING |
+| Git: status, commit, push/pull, branch, history | WORKING |
+| AI chat streaming (Native Anthropic Messages API, Ollama & OpenAI-compatible) | WORKING |
+| Slash commands: /fix /refactor /explain /test /review /commit | WORKING |
+| AI edit proposals (diff view, approve/reject, write to disk) | WORKING |
+| Multi-agent orchestration (Planner, Coder, Reviewer, Tester, Documenter) | WORKING |
+| Repository indexer (AST symbols, imports, deps) | WORKING |
+| Text + symbol search with replace | WORKING |
+| Light/dark theme (Monaco synced) | WORKING |
+| Resizable panels (persist across reload) | WORKING |
+| Settings + encrypted API keys (OS Keychain / Fernet fallback) | WORKING |
+| Diagnostics dashboard (psutil: real CPU/RAM) | WORKING |
+| MCP integration (Filesystem, Git servers) | WORKING |
+| Plugin system (load from ~/.code-os/extensions/) | WORKING |
+
+## Security Architecture
+
+CODE OS implements multi-layer defense-in-depth:
+- **Workspace Trust Model**: Workspace paths are categorized into Restricted Mode vs. Trusted Mode. File modifications, terminal creation, and mutating API endpoints require explicit user trust.
+- **Strict Path Sandboxing**: Client-supplied paths are verified with strict `ensure_within_workspace` checks, blocking tilde (`~`) expansion, symlink escape, and `..` path traversal.
+- **Session Bearer Token Authentication**: High-privilege API endpoints require an ephemeral 256-bit cryptographically secure session token (`Authorization: Bearer <session-token>`).
+- **Terminal Environment Sanitization**: Terminal subprocesses run with an explicit environment allowlist (`PATH`, `SSH_AGENT_PID`, `TERM`, etc.), stripping sensitive API keys and cloud credentials (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, etc.).
+- **Encrypted API Key Rest**: API keys are encrypted at rest using Fernet master keys stored securely in OS-native credential storage (macOS Keychain, Windows Credential Manager, Linux Secret Service using `keyring`), with a fallback file chmod `0600`.
+- **Sliding-Window Rate Limiting**: Mutating and AI streaming endpoints enforce rate limiting (HTTP 429) to prevent abuse and API quota exhaustion.
+- **Content Security Policy (CSP)**: `index.html` specifies restrictive CSP directives limiting network connectivity (`connect-src`), frame embedding, and script sources.
+>>>>>>> 4132f1f (Security patches and ui upgrade)
 
 ---
 
+<<<<<<< HEAD
 ## 🔐 Security
 
 Every untrusted workspace runs in **Restricted Mode**, blocked at the API layer — not just hidden buttons. Every shell command needs explicit approval. API keys are encrypted at rest, never logged in plaintext, and spawned processes get their environment sanitized of anything credential-shaped.
 
 A formal third-party security audit hasn't happened yet — **planned for Q3 2026 in collaboration with external auditors** as part of an upcoming hardening release, and it'll be linked here the moment it's done.
+=======
+CODE OS provides native adapters and OpenAI-compatible integration for verified AI providers:
+1. **Ollama** (100% offline local LLM hosting on 127.0.0.1 / localhost)
+2. **Anthropic** (Native Messages API `/v1/messages` with `x-api-key` & `anthropic-version`)
+3. **OpenAI-Compatible Providers** (OpenAI, Groq, DeepSeek, Mistral AI, OpenRouter, NVIDIA NIM, and self-hosted endpoints)
+
+## Known Limitations
+
+- **No OS-Level Container Sandbox**: Terminal execution relies on environment sanitization and workspace trust checks rather than hardware containerization (Docker or OS jail).
+- **No Native Code Signing**: Executables and desktop bundles are not currently signed with Apple Developer / Microsoft Authenticode certificates.
+- **No Third-Party Security Audit**: The codebase has undergone comprehensive internal automated testing and static analysis, but has not received a formal external third-party penetration audit.
+- **No Language Server Protocol (LSP)**: Code intelligence uses AST parsing and symbol indexers; native LSP daemon integration is planned for future releases.
+
+## Documentation
+
+- [SECURITY.md](./SECURITY.md) — Security policy, reporting SLA, and security controls summary.
+- [docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md) — Architectural trust boundaries, threats, and mitigations.
+- [FULL_README.md](./FULL_README.md) — Complete technical specification and API documentation.
+>>>>>>> 4132f1f (Security patches and ui upgrade)
 
 Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)**
 
@@ -191,6 +242,7 @@ Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)**
 
 ## 📊 Project Status
 
+<<<<<<< HEAD
 This is real, working software — actively developed and hardened through iterative testing, not a mockup. Community feedback is shaping upcoming releases:
 
 ✅ **Solid & verified:** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent system + Duo Loop (including background job persistence), workspace trust enforcement swept across every route, a real automated test suite, CI/CD running on every push via GitHub Actions.
@@ -227,3 +279,8 @@ This project is licensed under the MIT License — see [LICENSE](./LICENSE).
 🔗 **Links**
 LinkedIn: [Roopesh Ram Varma Kosuri](https://www.linkedin.com/in/roopesh-ram-varma-kosuri-28186a37b/)
 X (Twitter): [@KosuriRoopesh](https://x.com/KosuriRoopesh)
+=======
+**Frontend**: React 18, TypeScript, Tailwind CSS 3, Zustand 5, Monaco Editor, xterm.js, Vite 6  
+**Backend**: Python 3.11+, FastAPI 0.115, aiosqlite, GitPython, psutil, cryptography, keyring, watchdog, httpx  
+**Desktop**: Electron 33, node-pty 1.1
+>>>>>>> 4132f1f (Security patches and ui upgrade)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   X,
   Palette,
@@ -39,13 +39,10 @@ interface ThemeSwatch {
 }
 
 const THEME_SWATCHES: ThemeSwatch[] = [
-  { id: "dark", name: "Default Dark", bg: "#101215", accent: "#45b3e7", text: "#f1f5f9", isDark: true },
-  { id: "light", name: "Light", bg: "#ffffff", accent: "#208cc8", text: "#1f2328", isDark: false },
-  { id: "crimson", name: "Crimson", bg: "#150808", accent: "#e0483e", text: "#f2e8e6", isDark: true },
-  { id: "navy", name: "Navy", bg: "#0a0e1a", accent: "#3b82f6", text: "#e8ecf5", isDark: true },
+  { id: "dark", name: "Dark (Default)", bg: "#131314", accent: "#00daf3", text: "#e5e2e3", isDark: true },
+  { id: "light", name: "Light (White)", bg: "#ffffff", accent: "#00838f", text: "#1f2328", isDark: false },
   { id: "void", name: "Void (OLED)", bg: "#000000", accent: "#a1a1aa", text: "#e4e4e7", isDark: true },
-  { id: "violet", name: "Violet", bg: "#120c1a", accent: "#a855f7", text: "#ede9f5", isDark: true },
-  { id: "cyberpunk", name: "Cyberpunk", bg: "#080b12", accent: "#00e5ff", text: "#dcf1f5", isDark: true },
+  { id: "cyberpunk", name: "Cyberpunk (Neon)", bg: "#080b12", accent: "#00e5ff", text: "#dcf1f5", isDark: true },
 ];
 
 export function SettingsModal({ onClose }: SettingsModalProps) {
@@ -163,119 +160,93 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     }
   };
 
+  const modalRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    modalRef.current?.focus();
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-      {/* Container */}
-      <div className="relative w-full max-w-5xl h-[85vh] rounded-xl border border-surface-700 bg-surface-900 shadow-2xl flex overflow-hidden text-slate-100">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4"
+      role="dialog"
+      aria-modal="true"
+      data-testid="settings-modal"
+      tabIndex={-1}
+      ref={modalRef}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      {/* Full-page premium settings container */}
+      <div className="relative w-full max-w-5xl h-[88vh] rounded-2xl overflow-hidden shadow-2xl shadow-black/50 flex border border-white/8"
+        style={{ background: "linear-gradient(135deg, rgba(19,19,20,0.97) 0%, rgba(28,27,28,0.98) 100%)" }}>
+        
+        {/* Glow accent top edge */}
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent pointer-events-none" />
         
         {/* Close Button */}
         <button
           onClick={onClose}
-          className="absolute top-3 right-3 text-slate-400 hover:text-white transition-colors z-10 p-1 hover:bg-surface-800 rounded-md"
+          aria-label="Close Settings"
+          className="absolute top-4 right-4 z-20 w-8 h-8 flex items-center justify-center rounded-lg text-on-surface-variant/60 hover:text-on-surface hover:bg-white/5 transition-all active:scale-95"
+          title="Close Settings (Esc)"
         >
-          <X size={18} />
+          <X size={16} />
         </button>
 
+
         {/* Left Sidebar Navigation */}
-        <aside className="w-64 border-r border-surface-700 bg-surface-950/40 shrink-0 flex flex-col p-4">
-          <div className="flex items-center gap-2 mb-6 px-2">
-            <Sliders className="text-accent-500" size={16} />
-            <span className="font-bold text-sm tracking-wider uppercase">Settings</span>
+        <aside className="w-56 border-r border-white/5 shrink-0 flex flex-col p-4 select-none">
+          {/* Brand header */}
+          <div className="flex items-center gap-2.5 mb-6 px-2 pb-4 border-b border-white/5">
+            <div className="w-7 h-7 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+              <Sliders size={14} className="text-primary" />
+            </div>
+            <span className="font-bold text-sm text-on-surface tracking-tight">Settings</span>
           </div>
 
-          <nav className="flex-1 space-y-1">
-            <button
-              onClick={() => setActiveCategory("appearance")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "appearance"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <Palette size={14} /> Swatch &amp; Appearance
-            </button>
-            <button
-              onClick={() => setActiveCategory("ai")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "ai"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <Server size={14} /> AI Providers
-            </button>
-            <button
-              onClick={() => setActiveCategory("editor")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "editor"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <Sliders size={14} /> Editor (Monaco)
-            </button>
-            <button
-              onClick={() => setActiveCategory("terminal")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "terminal"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <TermIcon size={14} /> Terminal
-            </button>
-            <button
-              onClick={() => setActiveCategory("git")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "git"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <GitBranch size={14} /> Git Configuration
-            </button>
-            <button
-              onClick={() => setActiveCategory("agents")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "agents"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <Cpu size={14} /> Agents &amp; Duo
-            </button>
-            <button
-              onClick={() => setActiveCategory("security")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "security"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <Lock size={14} /> Security &amp; Privacy
-            </button>
-            <button
-              onClick={() => setActiveCategory("about")}
-              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold transition-all ${
-                activeCategory === "about"
-                  ? "bg-accent-500 text-white shadow-md shadow-accent-500/10"
-                  : "text-slate-400 hover:bg-surface-800 hover:text-white"
-              }`}
-            >
-              <Info size={14} /> About
-            </button>
+          <nav className="flex-1 space-y-0.5">
+            {([
+              { key: "appearance", icon: <Palette size={14} />, label: "Appearance" },
+              { key: "ai", icon: <Server size={14} />, label: "AI Providers" },
+              { key: "editor", icon: <Sliders size={14} />, label: "Editor" },
+              { key: "terminal", icon: <TermIcon size={14} />, label: "Terminal" },
+              { key: "git", icon: <GitBranch size={14} />, label: "Git" },
+              { key: "agents", icon: <Cpu size={14} />, label: "Agents & Duo" },
+              { key: "security", icon: <Lock size={14} />, label: "Security" },
+              { key: "about", icon: <Info size={14} />, label: "About" },
+            ] as { key: Category; icon: React.ReactNode; label: string }[]).map(({ key, icon, label }) => (
+              <button
+                key={key}
+                onClick={() => setActiveCategory(key)}
+                className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-xs font-medium transition-all ${
+                  activeCategory === key
+                    ? "bg-primary/10 text-primary border border-primary/20 shadow-[0_0_10px_rgba(0,229,255,0.08)]"
+                    : "text-on-surface-variant hover:bg-white/5 hover:text-on-surface border border-transparent"
+                }`}
+              >
+                <span className={activeCategory === key ? "text-primary" : "text-on-surface-variant/60"}>{icon}</span>
+                {label}
+              </button>
+            ))}
           </nav>
 
-          <div className="text-[10px] text-slate-600 px-2 mt-auto">
-            Press <kbd className="bg-surface-800 px-1 py-0.5 rounded">ESC</kbd> to close
+          <div className="text-[10px] text-on-surface-variant/30 px-2 mt-auto pt-4 border-t border-white/5">
+            Press <kbd className="bg-white/5 px-1.5 py-0.5 rounded text-[9px] border border-white/10">ESC</kbd> to close
           </div>
         </aside>
 
         {/* Right Content Area */}
-        <main className="flex-1 min-w-0 bg-surface-900 p-6 overflow-y-auto">
-          {/* Header */}
-          <div className="border-b border-surface-700 pb-3 mb-5 flex items-center justify-between">
-            <h2 className="text-base font-bold text-white capitalize">{activeCategory} Settings</h2>
+        <main className="flex-1 min-w-0 p-6 overflow-y-auto">
+          {/* Section header */}
+          <div className="flex items-center gap-3 border-b border-white/5 pb-4 mb-6">
+            <h2 className="text-base font-bold text-on-surface capitalize tracking-tight">
+              {activeCategory === "ai" ? "AI Providers" :
+               activeCategory === "agents" ? "Agents & Duo" :
+               activeCategory === "security" ? "Security & Privacy" :
+               `${activeCategory.charAt(0).toUpperCase() + activeCategory.slice(1)} Settings`}
+            </h2>
           </div>
 
           {/* ── Category: Appearance ───────────────────────────────────────── */}
@@ -283,7 +254,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             <div className="space-y-6">
               {/* Themes Swatch Grid */}
               <div>
-                <label className="text-xs text-slate-400 font-semibold mb-2 block">Theme Palette Swatches</label>
+                <label className="text-xs text-on-surface-variant font-semibold mb-3 block uppercase tracking-wider">Theme Palette</label>
                 <div className="grid grid-cols-4 gap-3">
                   {THEME_SWATCHES.map((swatch) => {
                     const isActive = (settings.theme ?? "dark") === swatch.id;
@@ -295,27 +266,27 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                           setAppearanceSaveFeedback(true);
                           setTimeout(() => setAppearanceSaveFeedback(false), 2000);
                         }}
-                        className={`group relative flex flex-col justify-between p-3 rounded-lg border-2 text-left transition-all ${
+                        className={`group relative flex flex-col justify-between p-3 rounded-xl border-2 text-left transition-all active:scale-95 ${
                           isActive
-                            ? "border-accent-500 bg-surface-800 scale-[1.02] shadow-lg shadow-accent-500/5"
-                            : "border-surface-700 bg-surface-950/40 hover:border-surface-600 hover:bg-surface-850"
+                            ? "border-primary bg-primary/5 shadow-[0_0_16px_rgba(0,229,255,0.15)] scale-[1.02]"
+                            : "border-white/8 bg-white/3 hover:border-white/15 hover:bg-white/5"
                         }`}
-                        style={{ height: "72px" }}
+                        style={{ height: "80px" }}
                       >
-                        <div className="text-xs font-bold text-slate-200 group-hover:text-white truncate">
+                        <div className={`text-xs font-bold truncate ${isActive ? "text-primary" : "text-on-surface-variant"}`}>
                           {swatch.name}
                         </div>
                         
                         {/* Swatch indicators */}
                         <div className="flex items-center gap-1.5 mt-1">
-                          <span className="w-3 h-3 rounded-full border border-slate-700" style={{ backgroundColor: swatch.bg }} title="Background" />
-                          <span className="w-3 h-3 rounded-full border border-slate-700" style={{ backgroundColor: swatch.accent }} title="Accent" />
-                          <span className="w-3 h-3 rounded-full border border-slate-700" style={{ backgroundColor: swatch.text }} title="Text" />
+                          <span className="w-4 h-4 rounded-full border border-white/10 shadow-sm" style={{ backgroundColor: swatch.bg }} title="Background" />
+                          <span className="w-4 h-4 rounded-full border border-white/10 shadow-sm" style={{ backgroundColor: swatch.accent }} title="Accent" />
+                          <span className="w-4 h-4 rounded-full border border-white/10 shadow-sm" style={{ backgroundColor: swatch.text }} title="Text" />
                         </div>
 
                         {isActive && (
-                          <span className="absolute top-2 right-2 text-accent-500">
-                            <Check size={14} />
+                          <span className="absolute top-2 right-2 text-primary">
+                            <Check size={13} />
                           </span>
                         )}
                       </button>
@@ -327,10 +298,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               <div className="grid grid-cols-2 gap-4">
                 {/* Editor Font Family */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Editor Font Family</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Editor Font Family</label>
                   <input
                     type="text"
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500 font-mono"
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50 font-mono"
                     value={editorFontFamily}
                     onChange={(e) => {
                       setEditorFontFamily(e.target.value);
@@ -339,14 +310,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       setTimeout(() => setAppearanceSaveFeedback(false), 2000);
                     }}
                   />
-                  <p className="text-[10px] text-slate-500 mt-1">Comma-separated list of fallback monospace fonts.</p>
+                  <p className="text-[10px] text-on-surface-variant/40 mt-1">Comma-separated fallback monospace fonts.</p>
                 </div>
 
                 {/* Status Indicator */}
                 <div className="flex items-end justify-start pb-2">
                   {appearanceSaveFeedback && (
-                    <span className="text-emerald-400 text-xs flex items-center gap-1">
-                      <Check size={12} /> Theme variables applied
+                    <span className="text-primary text-xs flex items-center gap-1">
+                      <Check size={12} /> Applied
                     </span>
                   )}
                 </div>
@@ -358,16 +329,17 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           {activeCategory === "ai" && (
             <div className="space-y-6">
               {/* Ollama Defaults */}
-              <div className="rounded-lg border border-surface-700 bg-surface-950/20 p-4 space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+              <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-primary flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-[14px]">computer</span>
                   Local Inference (Ollama)
                 </h3>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">Ollama Server Base URL</label>
+                    <label className="text-xs text-on-surface-variant block mb-1.5">Ollama Server Base URL</label>
                     <input
                       type="text"
-                      className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                       value={aiBaseUrl}
                       onChange={async (e) => {
                         useAIStore.setState({ baseUrl: e.target.value });
@@ -376,10 +348,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">Default Ollama Model</label>
+                    <label className="text-xs text-on-surface-variant block mb-1.5">Default Ollama Model</label>
                     <input
                       type="text"
-                      className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                       value={aiModel}
                       onChange={async (e) => {
                         useAIStore.setState({ model: e.target.value });
@@ -387,54 +359,47 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       }}
                     />
                     {/(^|[-_/:])(r1|o1|o3|reasoner|reasoning|thinking)([-_/:]|$)/i.test(aiModel) && (
-                      <p className="mt-1 text-[10px] leading-relaxed text-amber-300">
-                        Reasoning model detected: it may take longer before streaming a response.
+                      <p className="mt-1 text-[10px] leading-relaxed text-tertiary/80">
+                        Reasoning model detected: may take longer before streaming.
                       </p>
                     )}
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4 border-t border-surface-800 pt-3">
+                <div className="grid grid-cols-2 gap-4 border-t border-white/5 pt-3">
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">Local request timeout (seconds)</label>
+                    <label className="text-xs text-on-surface-variant block mb-1.5">Local request timeout (seconds)</label>
                     <input
-                      type="number"
-                      min="5"
-                      max="900"
-                      className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                      type="number" min="5" max="900"
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                       value={settings["ai.provider.ollama.timeout_seconds"] ?? "300"}
                       onChange={async (e) => saveSetting("ai.provider.ollama.timeout_seconds", e.target.value)}
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">API request timeout (seconds)</label>
+                    <label className="text-xs text-on-surface-variant block mb-1.5">API request timeout (seconds)</label>
                     <input
-                      type="number"
-                      min="5"
-                      max="900"
-                      className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                      type="number" min="5" max="900"
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                       value={settings["ai.provider.api.timeout_seconds"] ?? "60"}
                       onChange={async (e) => saveSetting("ai.provider.api.timeout_seconds", e.target.value)}
                     />
                   </div>
-                  <p className="col-span-2 text-[10px] text-slate-600">Specific provider overrides use `ai.provider.&lt;provider-id&gt;.timeout_seconds` and `.retries`.</p>
                 </div>
               </div>
 
-              {/* API Keys Header */}
+              {/* API Keys */}
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-secondary">
                     Encrypted Provider Keys
                   </h3>
-                  <span className="text-[10px] text-slate-500">
-                    {configuredKeys.length} preset key(s) configured
+                  <span className="text-[10px] text-on-surface-variant/50 bg-white/5 px-2 py-0.5 rounded">
+                    {configuredKeys.length} configured
                   </span>
                 </div>
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  Keys are stored encrypted locally. Select providers will use their specific credentials instead of sharing a global key slot.
+                <p className="text-xs text-on-surface-variant/60 leading-relaxed">
+                  Keys are stored encrypted locally. Each provider uses its own key slot.
                 </p>
-
-                {/* Swatch-like expandable API key rows */}
                 <div className="grid grid-cols-2 gap-3">
                   {PROVIDER_PRESETS.filter(
                     (p) => p.group === "api" && p.api_key_provider !== null
@@ -442,41 +407,36 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     const keyId = p.api_key_provider!;
                     const isSet = configuredKeys.includes(keyId);
                     const status = keySaveStatus[keyId] || "idle";
-
                     return (
                       <div
                         key={p.id}
-                        className="rounded-lg border border-surface-700 bg-surface-950/20 p-3 space-y-2 flex flex-col justify-between"
+                        className="rounded-xl border border-white/8 bg-white/3 p-3 space-y-2 flex flex-col justify-between"
                       >
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-300">{p.label}</span>
+                          <span className="text-xs font-semibold text-on-surface">{p.label}</span>
                           <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase border ${
                             isSet
-                              ? "text-emerald-400 bg-emerald-400/5 border-emerald-500/20"
-                              : "text-slate-500 bg-surface-800 border-surface-700"
+                              ? "text-primary bg-primary/5 border-primary/20"
+                              : "text-on-surface-variant/50 bg-white/3 border-white/8"
                           }`}>
-                            {isSet ? <><Check size={8} /> Saved</> : "Not configured"}
+                            {isSet ? <><Check size={8} /> Saved</> : "Not set"}
                           </span>
                         </div>
-
                         {p.note && (
-                          <p className="text-[9px] text-slate-600 line-clamp-1 leading-normal" title={p.note}>
-                            {p.note}
-                          </p>
+                          <p className="text-[9px] text-on-surface-variant/40 line-clamp-1" title={p.note}>{p.note}</p>
                         )}
-
                         <div className="flex gap-1.5 mt-1.5">
                           <input
                             type="password"
                             placeholder={isSet ? "••••••••••••••••" : p.api_key_prefix ? `${p.api_key_prefix}…` : "sk-…"}
                             value={keyInputs[keyId] || ""}
                             onChange={(e) => setKeyInputs((i) => ({ ...i, [keyId]: e.target.value }))}
-                            className="h-7 flex-1 min-w-0 rounded border border-surface-650 bg-surface-850 px-2 text-[11px] text-slate-200 focus:outline-none focus:border-accent-500 font-mono"
+                            className="h-7 flex-1 min-w-0 rounded-lg border border-white/10 bg-white/5 px-2 text-[11px] text-on-surface focus:outline-none focus:border-primary/50 font-mono"
                           />
                           <button
                             onClick={() => void handleSaveKey(keyId)}
                             disabled={!keyInputs[keyId]?.trim() || status === "saving"}
-                            className="h-7 flex items-center gap-1 rounded bg-surface-800 border border-surface-650 px-2 text-[11px] text-slate-300 hover:bg-surface-700 disabled:opacity-40 transition-colors"
+                            className="h-7 flex items-center gap-1 rounded-lg bg-primary/10 border border-primary/20 px-2 text-[11px] text-primary hover:bg-primary/20 disabled:opacity-40 transition-colors"
                           >
                             {status === "saving" ? "Saving…" : status === "saved" ? "Saved!" : <><KeyRound size={10} /> Store</>}
                           </button>
@@ -493,14 +453,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           {activeCategory === "editor" && (
             <div className="space-y-6">
               <div className="grid grid-cols-2 gap-4">
-                {/* Font Size */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Editor Font Size (px)</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Editor Font Size (px)</label>
                   <input
-                    type="number"
-                    min={10}
-                    max={32}
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                    type="number" min={10} max={32}
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                     value={editorFontSize}
                     onChange={(e) => {
                       setEditorSetting({ fontSize: Number(e.target.value) });
@@ -509,15 +466,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     }}
                   />
                 </div>
-
-                {/* Tab Size */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Tab Indentation Size</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Tab Indentation Size</label>
                   <input
-                    type="number"
-                    min={2}
-                    max={8}
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                    type="number" min={2} max={8}
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                     value={editorTabSize}
                     onChange={(e) => {
                       setEditorSetting({ tabSize: Number(e.target.value) });
@@ -528,62 +481,30 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 </div>
               </div>
 
-              {/* Toggles */}
-              <div className="rounded-lg border border-surface-700 bg-surface-950/20 p-4 space-y-3.5">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={editorAutoSave}
-                    onChange={(e) => setAutoSave(e.target.checked)}
-                    className="rounded text-accent-500 focus:ring-accent-500"
-                  />
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200 block">Auto Save Changes</span>
-                    <span className="text-[10px] text-slate-500">Automatically save modified code files on editor keystrokes.</span>
-                  </div>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer border-t border-surface-800 pt-3">
-                  <input
-                    type="checkbox"
-                    checked={editorWordWrap}
-                    onChange={(e) => {
-                      setEditorWordWrap(e.target.checked);
-                      localStorage.setItem("code-os:editor.wordWrap", e.target.checked ? "on" : "off");
-                      setEditorSaveFeedback(true);
-                      setTimeout(() => setEditorSaveFeedback(false), 2000);
-                    }}
-                    className="rounded text-accent-500 focus:ring-accent-500"
-                  />
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200 block">Word Wrap</span>
-                    <span className="text-[10px] text-slate-500">Wrap long lines to fit the current editor workspace width.</span>
-                  </div>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer border-t border-surface-800 pt-3">
-                  <input
-                    type="checkbox"
-                    checked={editorMinimap}
-                    onChange={(e) => {
-                      setEditorMinimap(e.target.checked);
-                      localStorage.setItem("code-os:editor.minimap", String(e.target.checked));
-                      setEditorSaveFeedback(true);
-                      setTimeout(() => setEditorSaveFeedback(false), 2000);
-                    }}
-                    className="rounded text-accent-500 focus:ring-accent-500"
-                  />
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200 block">Code Minimap</span>
-                    <span className="text-[10px] text-slate-500">Show vertical visual outline on the right hand side of the editor pane.</span>
-                  </div>
-                </label>
+              <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-4">
+                {[
+                  { checked: editorAutoSave, onChange: (c: boolean) => setAutoSave(c), label: "Auto Save Changes", desc: "Automatically save modified files on editor keystrokes.", border: false },
+                  { checked: editorWordWrap, onChange: (c: boolean) => { setEditorWordWrap(c); localStorage.setItem("code-os:editor.wordWrap", c ? "on" : "off"); setEditorSaveFeedback(true); setTimeout(() => setEditorSaveFeedback(false), 2000); }, label: "Word Wrap", desc: "Wrap long lines to fit the current editor width.", border: true },
+                  { checked: editorMinimap, onChange: (c: boolean) => { setEditorMinimap(c); localStorage.setItem("code-os:editor.minimap", String(c)); setEditorSaveFeedback(true); setTimeout(() => setEditorSaveFeedback(false), 2000); }, label: "Code Minimap", desc: "Show visual outline on the right side of the editor pane.", border: true },
+                ].map(({ checked, onChange, label, desc, border }) => (
+                  <label key={label} className={`flex items-center gap-3 cursor-pointer ${border ? "border-t border-white/5 pt-3" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => onChange(e.target.checked)}
+                      className="rounded accent-primary w-3.5 h-3.5"
+                    />
+                    <div>
+                      <span className="text-xs font-semibold text-on-surface block">{label}</span>
+                      <span className="text-[10px] text-on-surface-variant/50">{desc}</span>
+                    </div>
+                  </label>
+                ))}
               </div>
 
-              {/* Status Indicator */}
               {editorSaveFeedback && (
-                <div className="text-emerald-400 text-xs flex items-center gap-1">
-                  <Check size={12} /> Monaco configurations updated (takes effect next file open)
+                <div className="text-primary text-xs flex items-center gap-1">
+                  <Check size={12} /> Monaco configurations updated
                 </div>
               )}
             </div>
@@ -593,12 +514,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           {activeCategory === "terminal" && (
             <div className="space-y-6">
               <div className="grid grid-cols-2 gap-4">
-                {/* Shell Preference */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Shell Executable Path</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Shell Executable Path</label>
                   <input
                     type="text"
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500 font-mono"
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50 font-mono"
                     value={termShell}
                     onChange={(e) => {
                       setTermShell(e.target.value);
@@ -607,14 +527,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       setTimeout(() => setTerminalSaveFeedback(false), 2000);
                     }}
                   />
-                  <p className="text-[10px] text-slate-500 mt-1">e.g. powershell.exe, cmd.exe, bash.exe</p>
+                  <p className="text-[10px] text-on-surface-variant/40 mt-1">e.g. powershell.exe, cmd.exe, bash.exe</p>
                 </div>
-
-                {/* Cursor Style */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Cursor Animation Style</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Cursor Animation Style</label>
                   <select
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                     value={termCursorStyle}
                     onChange={(e) => {
                       setTermCursorStyle(e.target.value);
@@ -629,16 +547,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   </select>
                 </div>
               </div>
-
               <div className="grid grid-cols-2 gap-4">
-                {/* Font Size */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Terminal Font Size (pt)</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Terminal Font Size (pt)</label>
                   <input
-                    type="number"
-                    min={9}
-                    max={24}
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                    type="number" min={9} max={24}
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                     value={termFontSize}
                     onChange={(e) => {
                       const num = Number(e.target.value);
@@ -649,13 +563,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     }}
                   />
                 </div>
-
-                {/* Font Family */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Terminal Font Family</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Terminal Font Family</label>
                   <input
                     type="text"
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500 font-mono"
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50 font-mono"
                     value={termFontFamily}
                     onChange={(e) => {
                       setTermFontFamily(e.target.value);
@@ -666,11 +578,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   />
                 </div>
               </div>
-
-              {/* Status Indicator */}
               {terminalSaveFeedback && (
-                <div className="text-emerald-400 text-xs flex items-center gap-1">
-                  <Check size={12} /> Terminal styling persisted (restart terminal tab to apply)
+                <div className="text-primary text-xs flex items-center gap-1">
+                  <Check size={12} /> Terminal styling persisted
                 </div>
               )}
             </div>
@@ -679,51 +589,28 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           {/* ── Category: Git ─────────────────────────────────────────────── */}
           {activeCategory === "git" && (
             <div className="space-y-6">
-              <div className="rounded-lg border border-surface-700 bg-surface-950/20 p-4 space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Version Control Operations
-                </h3>
-
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={gitAutoPoll}
-                    onChange={(e) => {
-                      setGitAutoPoll(e.target.checked);
-                      localStorage.setItem("code-os:git.autoPoll", String(e.target.checked));
-                      setGitSaveFeedback(true);
-                      setTimeout(() => setGitSaveFeedback(false), 2000);
-                    }}
-                    className="rounded text-accent-500 focus:ring-accent-500"
-                  />
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200 block">Automatic Status Polling</span>
-                    <span className="text-[10px] text-slate-500">Poll git local repositories every 5 seconds to sync sidebars.</span>
-                  </div>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer border-t border-surface-800 pt-3">
-                  <input
-                    type="checkbox"
-                    checked={gitSignCommits}
-                    onChange={(e) => {
-                      setGitSignCommits(e.target.checked);
-                      localStorage.setItem("code-os:git.signCommits", String(e.target.checked));
-                      setGitSaveFeedback(true);
-                      setTimeout(() => setGitSaveFeedback(false), 2000);
-                    }}
-                    className="rounded text-accent-500 focus:ring-accent-500"
-                  />
-                  <div>
-                    <span className="text-xs font-semibold text-slate-200 block">GPG Commit Signoff</span>
-                    <span className="text-[10px] text-slate-500">Append signoff metadata flag to commits executed via the Git console panel.</span>
-                  </div>
-                </label>
+              <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-secondary">Version Control</h3>
+                {[
+                  { checked: gitAutoPoll, onChange: (c: boolean) => { setGitAutoPoll(c); localStorage.setItem("code-os:git.autoPoll", String(c)); setGitSaveFeedback(true); setTimeout(() => setGitSaveFeedback(false), 2000); }, label: "Automatic Status Polling", desc: "Poll git repositories every 5s to sync sidebar.", border: false },
+                  { checked: gitSignCommits, onChange: (c: boolean) => { setGitSignCommits(c); localStorage.setItem("code-os:git.signCommits", String(c)); setGitSaveFeedback(true); setTimeout(() => setGitSaveFeedback(false), 2000); }, label: "GPG Commit Signoff", desc: "Append signoff flag to commits via the Git console.", border: true },
+                ].map(({ checked, onChange, label, desc, border }) => (
+                  <label key={label} className={`flex items-center gap-3 cursor-pointer ${border ? "border-t border-white/5 pt-3" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => onChange(e.target.checked)}
+                      className="rounded accent-primary w-3.5 h-3.5"
+                    />
+                    <div>
+                      <span className="text-xs font-semibold text-on-surface block">{label}</span>
+                      <span className="text-[10px] text-on-surface-variant/50">{desc}</span>
+                    </div>
+                  </label>
+                ))}
               </div>
-
-              {/* Status Indicator */}
               {gitSaveFeedback && (
-                <div className="text-emerald-400 text-xs flex items-center gap-1">
+                <div className="text-primary text-xs flex items-center gap-1">
                   <Check size={12} /> Git configs saved
                 </div>
               )}
@@ -734,14 +621,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           {activeCategory === "agents" && (
             <div className="space-y-6">
               <div className="grid grid-cols-2 gap-4">
-                {/* Max rounds */}
                 <div>
-                  <label className="text-xs text-slate-400 block mb-1">Duo Loop Max Rounds</label>
+                  <label className="text-xs text-on-surface-variant block mb-1.5">Duo Loop Max Rounds</label>
                   <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                    type="number" min={1} max={20}
+                    className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                     value={duoMaxRounds}
                     onChange={(e) => {
                       const val = Math.max(1, Math.min(20, Number(e.target.value)));
@@ -753,46 +637,31 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   />
                 </div>
               </div>
-
-              <div className="rounded-lg border border-surface-700 bg-surface-950/20 p-4 space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Default Models for Autonomous Roles
-                </h3>
+              <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-tertiary/80">Default Models for Autonomous Roles</h3>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">Planner Agent Default Model</label>
+                    <label className="text-xs text-on-surface-variant block mb-1.5">Planner Agent Model</label>
                     <input
                       type="text"
-                      className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                       value={agentPlannerModel}
-                      onChange={(e) => {
-                        setAgentPlannerModel(e.target.value);
-                        localStorage.setItem("code-os:agent.plannerModel", e.target.value);
-                        setAgentsSaveFeedback(true);
-                        setTimeout(() => setAgentsSaveFeedback(false), 2000);
-                      }}
+                      onChange={(e) => { setAgentPlannerModel(e.target.value); localStorage.setItem("code-os:agent.plannerModel", e.target.value); setAgentsSaveFeedback(true); setTimeout(() => setAgentsSaveFeedback(false), 2000); }}
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-slate-500 block mb-1">Developer Agent Default Model</label>
+                    <label className="text-xs text-on-surface-variant block mb-1.5">Developer Agent Model</label>
                     <input
                       type="text"
-                      className="w-full rounded bg-surface-800 border border-surface-650 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-accent-500"
+                      className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-xs text-on-surface focus:outline-none focus:border-primary/50"
                       value={agentDeveloperModel}
-                      onChange={(e) => {
-                        setAgentDeveloperModel(e.target.value);
-                        localStorage.setItem("code-os:agent.developerModel", e.target.value);
-                        setAgentsSaveFeedback(true);
-                        setTimeout(() => setAgentsSaveFeedback(false), 2000);
-                      }}
+                      onChange={(e) => { setAgentDeveloperModel(e.target.value); localStorage.setItem("code-os:agent.developerModel", e.target.value); setAgentsSaveFeedback(true); setTimeout(() => setAgentsSaveFeedback(false), 2000); }}
                     />
                   </div>
                 </div>
               </div>
-
-              {/* Status Indicator */}
               {agentsSaveFeedback && (
-                <div className="text-emerald-400 text-xs flex items-center gap-1">
+                <div className="text-primary text-xs flex items-center gap-1">
                   <Check size={12} /> Agent presets updated
                 </div>
               )}
@@ -802,78 +671,35 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           {/* ── Category: Security & Privacy ────────────────────────────────── */}
           {activeCategory === "security" && (
             <div className="space-y-6">
-              <div className="rounded-lg border border-surface-700 bg-surface-950/20 p-4 space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Data Reset Options
-                </h3>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
+              <div className="rounded-xl border border-error/20 bg-error/3 p-4 space-y-4">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-error/80">Data Reset Options</h3>
+                <p className="text-[11px] text-on-surface-variant/60 leading-relaxed">
                   Reset local settings, encrypted API keys, or clear autonomous agent logs and execution history.
                 </p>
-
                 <div className="flex flex-col gap-3 max-w-sm pt-2">
-                  <Button
-                    variant="danger"
-                    onClick={async () => {
-                      if (confirm("Are you sure you want to clear all encrypted API keys? This action cannot be undone.")) {
-                        await api.delete("/api/settings/api-keys");
-                        alert("API keys cleared.");
-                        void refreshKeys();
-                      }
-                    }}
-                    className="w-full text-center"
-                  >
-                    Clear Configured API Keys
-                  </Button>
-
-                  <Button
-                    variant="danger"
-                    onClick={async () => {
-                      if (confirm("Are you sure you want to clear all conversation threads, Duo loop session histories, and agent job queues?")) {
-                        await api.delete("/api/settings/history");
-                        alert("Chat, Duo, and Agent histories cleared.");
-                      }
-                    }}
-                    className="w-full text-center"
-                  >
-                    Clear Chat &amp; Job History
-                  </Button>
-
-                  <Button
-                    variant="danger"
-                    onClick={async () => {
-                      if (confirm("Are you sure you want to reset all workspace trust decisions? You will be prompted to trust workspaces when opening them again.")) {
-                        await api.delete("/api/workspaces/trust");
-                        const wsStore = (window as any).useWorkspaceStore;
-                        if (wsStore) {
-                          wsStore.getState().setRestrictedMode(true);
-                        }
-                        alert("Workspace trust decisions reset.");
-                      }
-                    }}
-                    className="w-full text-center"
-                  >
-                    Reset Workspace Trust Decisions
-                  </Button>
+                  {[
+                    { label: "Clear API Keys", action: async () => { if (confirm("Clear all encrypted API keys? Cannot be undone.")) { await api.delete("/api/settings/api-keys"); void refreshKeys(); alert("API keys cleared."); } } },
+                    { label: "Clear Chat & Job History", action: async () => { if (confirm("Clear all conversation threads, Duo sessions, and agent queues?")) { await api.delete("/api/settings/history"); alert("Histories cleared."); } } },
+                    { label: "Reset Workspace Trust", action: async () => { if (confirm("Reset all workspace trust decisions?")) { await api.delete("/api/workspaces/trust"); alert("Trust decisions reset."); } } },
+                  ].map(({ label, action }) => (
+                    <Button key={label} variant="danger" onClick={action} className="w-full text-center text-xs">
+                      {label}
+                    </Button>
+                  ))}
                 </div>
               </div>
-
-              <div className="rounded-lg border border-surface-700 bg-surface-950/20 p-4 space-y-4">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Walkthrough &amp; Onboarding
-                </h3>
-                <p className="text-[11px] text-slate-400 leading-relaxed">
-                  Restart the interactive walkthrough and tutorial spotlight. This will reload the workspace to launch the onboarding flow.
-                </p>
+              <div className="rounded-xl border border-white/8 bg-white/3 p-4 space-y-3">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-on-surface-variant">Onboarding</h3>
+                <p className="text-[11px] text-on-surface-variant/60">Restart the interactive walkthrough and tutorial spotlight.</p>
                 <Button
                   variant="primary"
                   id="btn-replay-tutorial"
                   onClick={() => {
-                    if (confirm("Restart onboarding tutorial? The application will reload to initiate the walkthrough.")) {
+                    if (confirm("Restart onboarding tutorial? The application will reload.")) {
                       localStorage.setItem("code-os:onboarding-complete", "false");
                       window.location.reload();
                     }
                   }}
-                  className="animate-pulse"
                 >
                   Replay Tutorial Walkthrough
                 </Button>
@@ -884,14 +710,17 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           {/* ── Category: About ────────────────────────────────────────────── */}
           {activeCategory === "about" && (
             <div className="space-y-5 py-2">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center shadow-[0_0_24px_rgba(0,229,255,0.1)]">
+                  <span className="material-symbols-outlined text-primary text-3xl" style={{ fontVariationSettings: "'FILL' 1" }}>code</span>
+                </div>
                 <div>
-                  <CodeOsLogo className="px-2 py-1.5" imageClassName="h-8 w-[170px]" priority />
-                  <p className="text-xs text-slate-400">Version 0.2.0 — Stable Channel</p>
+                  <div className="text-lg font-black text-primary tracking-tight">CODE OS</div>
+                  <p className="text-xs text-on-surface-variant">Version 0.2.0 — Stable Channel</p>
                 </div>
               </div>
 
-              <div className="border-t border-surface-700 pt-4 space-y-2 text-xs text-slate-400 leading-relaxed max-w-xl">
+              <div className="border-t border-white/5 pt-4 space-y-2 text-xs text-on-surface-variant/60 leading-relaxed max-w-xl">
                 <p>
                   A production-ready agentic AI development environment, built for pair-programming and autonomous generator/critic validation loops.
                 </p>
@@ -905,7 +734,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   href="https://github.com/google-deepmind"
                   target="_blank"
                   rel="noreferrer"
-                  className="flex items-center gap-1 text-xs text-accent-400 hover:text-accent-300 font-semibold"
+                  className="flex items-center gap-1 text-xs text-primary hover:text-primary/80 font-semibold"
                 >
                   DeepMind AI Group <ExternalLink size={12} />
                 </a>

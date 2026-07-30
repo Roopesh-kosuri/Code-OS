@@ -39,30 +39,30 @@ export function SearchPanel() {
 
   if (!workspace) {
     return (
-      <section className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2 select-none border-b border-surface-700 bg-surface-900">
-        <Search size={22} className="text-slate-600 mb-1 animate-pulse" />
-        <span className="text-xs text-slate-500">Open a workspace to search text.</span>
+      <section className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2 select-none border-b border-outline-variant/20 bg-surface-container-low/90 glass-panel">
+        <Search size={22} className="text-on-surface-variant/40 mb-1 animate-pulse" />
+        <span className="text-xs text-on-surface-variant/60">Open a workspace to search text.</span>
       </section>
     );
   }
 
   return (
-    <section className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] border-b border-surface-700">
-      <div className="space-y-2 border-b border-surface-700 p-3">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
-          <Search size={15} />
-          Search
+    <section className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] border-b border-outline-variant/20 bg-surface-container-low/90 glass-panel">
+      <div className="space-y-2.5 border-b border-outline-variant/20 p-3.5">
+        <div className="flex items-center gap-2 font-headline-md text-headline-md font-semibold text-on-surface">
+          <Search size={16} className="text-primary" />
+          <span>Global Search</span>
         </div>
-        <input className="h-8 w-full min-w-0 rounded-md border-surface-700 bg-surface-850 text-sm text-slate-100" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find text" />
+        <input className="h-8 w-full min-w-0 rounded-lg border border-outline-variant/30 bg-surface-dim/80 px-3 py-1.5 text-body-base font-body-base text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find text..." />
         <div className="flex gap-2">
-          <input className="h-8 min-w-0 flex-1 rounded-md border-surface-700 bg-surface-850 text-sm text-slate-100" value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="Replace with" />
+          <input className="h-8 min-w-0 flex-1 rounded-lg border border-outline-variant/30 bg-surface-dim/80 px-3 py-1.5 text-body-base font-body-base text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/30 transition-all" value={replacement} onChange={(event) => setReplacement(event.target.value)} placeholder="Replace with..." />
           <IconButton label="Search" icon={<Search size={15} />} onClick={() => void runSearch()} disabled={!workspace} />
           <IconButton label="Preview replace" icon={<Replace size={15} />} onClick={() => void runReplacePreview()} disabled={!workspace} />
         </div>
-        <div className="flex gap-3 text-xs text-slate-400">
-          <label className="flex items-center gap-1"><input type="checkbox" checked={regex} onChange={(event) => setRegex(event.target.checked)} /> Regex</label>
-          <label className="flex items-center gap-1"><input type="checkbox" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} /> Case</label>
-          <label className="flex items-center gap-1"><input type="checkbox" checked={wholeWord} onChange={(event) => setWholeWord(event.target.checked)} /> Word</label>
+        <div className="flex gap-3 text-xs text-on-surface-variant font-body-base">
+          <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" className="rounded border-outline-variant/50 text-primary focus:ring-primary/50" checked={regex} onChange={(event) => setRegex(event.target.checked)} /> Regex</label>
+          <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" className="rounded border-outline-variant/50 text-primary focus:ring-primary/50" checked={caseSensitive} onChange={(event) => setCaseSensitive(event.target.checked)} /> Case Match</label>
+          <label className="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" className="rounded border-outline-variant/50 text-primary focus:ring-primary/50" checked={wholeWord} onChange={(event) => setWholeWord(event.target.checked)} /> Whole Word</label>
         </div>
       </div>
       <div className="min-h-0 overflow-auto p-2">

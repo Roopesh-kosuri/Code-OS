@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-from backend.app.features.settings.service import list_settings, set_setting
-from backend.app.features.workspaces.service import get_last_workspace
+from ..settings.service import list_settings, set_setting
+from ..workspaces.service import get_last_workspace
 
 logger = logging.getLogger(__name__)
 

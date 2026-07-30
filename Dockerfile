@@ -1,44 +1,43 @@
-# Base image containing Node.js 20
-FROM node:20-bookworm-slim
+# ── Stage 1: Build Frontend Assets ─────────────────────────────────────────────
+FROM node:20-bookworm-slim AS frontend-builder
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
 
-# Install Python 3, pip, git, and other utilities
+# ── Stage 2: Production Backend & Runtime ─────────────────────────────────────
+FROM python:3.11-slim-bookworm AS runner
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-venv \
     git \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up environment variables
-ENV PYTHONUNBUFFERED=1
-ENV CODE_OS_DATA_DIR=/workspace-data/.code-os
-ENV CODE_OS_HOME=/workspace-data/.code-os
+ENV PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    CODE_OS_DATA_DIR=/workspace-data/.code-os \
+    CODE_OS_HOME=/workspace-data/.code-os
+
+# Create Python virtual environment
+RUN python3 -m venv /opt/venv
 
 WORKDIR /app
 
-# Copy dependency manifests
-COPY package.json package-lock.json ./
+# Copy & install Python backend dependencies into virtual environment
 COPY backend/requirements.txt ./backend/
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r backend/requirements.txt
 
-# Install Node and Python dependencies
-RUN npm install
-RUN python3 -m pip install --upgrade pip --break-system-packages
-RUN python3 -m pip install -r backend/requirements.txt --break-system-packages
+# Copy backend source code & built frontend static assets
+COPY backend/app ./backend/app
+COPY --from=frontend-builder /app/dist ./dist
 
-# Copy project source code
-COPY . .
-
-# Compile TypeScript and Vite production assets
-RUN npm run build
-
-# Expose ports: 5173 for Vite (frontend) and 8000 for FastAPI (backend)
-EXPOSE 5173
-EXPOSE 8000
-
-# Create workspace and configuration storage mount points
+# Create workspace and data storage mount points
 RUN mkdir -p /workspace-data /project-workspace
 VOLUME ["/workspace-data", "/project-workspace"]
 
-# Start both services concurrently (binding to 0.0.0.0 inside container)
-CMD ["npx", "concurrently", "-k", "python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000", "npm run dev:renderer -- --host 0.0.0.0"]
+EXPOSE 8000
+
+# Run production Uvicorn server
+CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]

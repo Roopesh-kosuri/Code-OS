@@ -22,10 +22,10 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from backend.app.db.database import get_connection
-from backend.app.features.ai.schemas import ChatMessage, ChatRequest, EditProposalRequest, FileChange
-from backend.app.features.ai.service import PROPOSAL_RE, create_proposal, provider_for
-from backend.app.features.ai.context_service import gather_context
+from ...db.database import get_db
+from ..ai.schemas import ChatMessage, ChatRequest, EditProposalRequest, FileChange
+from ..ai.service import PROPOSAL_RE, create_proposal, provider_for
+from ..ai.context_service import gather_context
 
 from .schemas import (
     CriticIssue,
@@ -89,12 +89,30 @@ async def _build_provider(cfg: ModelConfig):
 
 
 async def _call_model(cfg: ModelConfig, messages: list[ChatMessage]) -> str:
-    """Call a model and return the full concatenated response text."""
-    provider = await _build_provider(cfg)
-    tokens: list[str] = []
-    async for token in provider.stream_chat(cfg.model, messages, cfg.temperature):
-        tokens.append(token)
-    return "".join(tokens).strip()
+    """Call a model and return the full concatenated response text with fallback."""
+    try:
+        provider = await _build_provider(cfg)
+        tokens: list[str] = []
+        async for token in provider.stream_chat(cfg.model, messages, cfg.temperature):
+            tokens.append(token)
+        return "".join(tokens).strip()
+    except Exception as exc:
+        if cfg.provider == "ollama":
+            from ..ai.service import get_api_key
+            for kid, default_model in [("groq", "llama-3.3-70b-versatile"), ("openai", "gpt-4o"), ("gemini", "gemini-2.5-flash")]:
+                key = await get_api_key(kid)
+                if key:
+                    logger.info("duo.loop.auto_fallback from ollama to %s (%s)", kid, default_model)
+                    cfg.provider = "openai-compatible"
+                    cfg.model = default_model
+                    cfg.api_key_provider = kid
+                    cfg.base_url = None
+                    provider = await _build_provider(cfg)
+                    tokens = []
+                    async for token in provider.stream_chat(cfg.model, messages, cfg.temperature):
+                        tokens.append(token)
+                    return "".join(tokens).strip()
+        raise
 
 
 # ── System prompts ────────────────────────────────────────────────────────────
@@ -167,44 +185,38 @@ async def _db_create_session(
     session_id: str,
     req: DuoSessionRequest,
 ) -> None:
-    db = await get_connection()
-    try:
-        await db.execute(
-            """
-            INSERT INTO duo_sessions
-                (id, workspace, task_description, status, current_round, max_rounds,
-                 final_proposal_id, generator_config, critic_config, created_at, updated_at)
-            VALUES (?, ?, ?, 'running', 0, ?, NULL, ?, ?, ?, ?)
-            """,
-            (
-                session_id,
-                req.workspace,
-                req.task_description,
-                req.max_rounds,
-                req.generator.model_dump_json(),
-                req.critic.model_dump_json(),
-                _now_iso(),
-                _now_iso(),
-            ),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO duo_sessions
+            (id, workspace, task_description, status, current_round, max_rounds,
+             final_proposal_id, generator_config, critic_config, created_at, updated_at)
+        VALUES (?, ?, ?, 'running', 0, ?, NULL, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            req.workspace,
+            req.task_description,
+            req.max_rounds,
+            req.generator.model_dump_json(),
+            req.critic.model_dump_json(),
+            _now_iso(),
+            _now_iso(),
+        ),
+    )
+    await db.commit()
 
 async def _db_update_config(
     session_id: str,
     generator_config: str,
     critic_config: str
 ) -> None:
-    db = await get_connection()
-    try:
-        await db.execute(
-            "UPDATE duo_sessions SET generator_config=?, critic_config=?, updated_at=? WHERE id=?",
-            (generator_config, critic_config, _now_iso(), session_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute(
+        "UPDATE duo_sessions SET generator_config=?, critic_config=?, updated_at=? WHERE id=?",
+        (generator_config, critic_config, _now_iso(), session_id),
+    )
+    await db.commit()
 
 async def _db_add_round(
     session_id: str,
@@ -212,22 +224,19 @@ async def _db_add_round(
     generator_output: str,
     proposal_id: str | None,
 ) -> None:
-    db = await get_connection()
-    try:
-        await db.execute(
-            """
-            INSERT INTO duo_rounds (session_id, round_number, generator_output, proposal_id, critic_verdict, created_at)
-            VALUES (?, ?, ?, ?, NULL, ?)
-            """,
-            (session_id, round_number, generator_output, proposal_id, _now_iso()),
-        )
-        await db.execute(
-            "UPDATE duo_sessions SET current_round=?, updated_at=? WHERE id=?",
-            (round_number, _now_iso(), session_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO duo_rounds (session_id, round_number, generator_output, proposal_id, critic_verdict, created_at)
+        VALUES (?, ?, ?, ?, NULL, ?)
+        """,
+        (session_id, round_number, generator_output, proposal_id, _now_iso()),
+    )
+    await db.execute(
+        "UPDATE duo_sessions SET current_round=?, updated_at=? WHERE id=?",
+        (round_number, _now_iso(), session_id),
+    )
+    await db.commit()
 
 
 async def _db_update_round_verdict(
@@ -235,19 +244,16 @@ async def _db_update_round_verdict(
     round_number: int,
     verdict: CriticVerdict,
 ) -> None:
-    db = await get_connection()
-    try:
-        await db.execute(
-            "UPDATE duo_rounds SET critic_verdict=? WHERE session_id=? AND round_number=?",
-            (verdict.model_dump_json(), session_id, round_number),
-        )
-        await db.execute(
-            "UPDATE duo_sessions SET updated_at=? WHERE id=?",
-            (_now_iso(), session_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute(
+        "UPDATE duo_rounds SET critic_verdict=? WHERE session_id=? AND round_number=?",
+        (verdict.model_dump_json(), session_id, round_number),
+    )
+    await db.execute(
+        "UPDATE duo_sessions SET updated_at=? WHERE id=?",
+        (_now_iso(), session_id),
+    )
+    await db.commit()
 
 
 async def _db_finish_session(
@@ -255,34 +261,28 @@ async def _db_finish_session(
     status: str,
     final_proposal_id: str | None,
 ) -> None:
-    db = await get_connection()
-    try:
-        await db.execute(
-            "UPDATE duo_sessions SET status=?, final_proposal_id=?, updated_at=? WHERE id=?",
-            (status, final_proposal_id, _now_iso(), session_id),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute(
+        "UPDATE duo_sessions SET status=?, final_proposal_id=?, updated_at=? WHERE id=?",
+        (status, final_proposal_id, _now_iso(), session_id),
+    )
+    await db.commit()
 
 
 # ── Read helpers ──────────────────────────────────────────────────────────────
 
 async def get_session(session_id: str) -> DuoSessionDto:
-    db = await get_connection()
-    try:
-        cur = await db.execute("SELECT * FROM duo_sessions WHERE id=?", (session_id,))
-        row = await cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Duo session not found")
+    db = await get_db()
+    cur = await db.execute("SELECT * FROM duo_sessions WHERE id=?", (session_id,))
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Duo session not found")
 
-        rounds_cur = await db.execute(
-            "SELECT * FROM duo_rounds WHERE session_id=? ORDER BY round_number ASC",
-            (session_id,),
-        )
-        round_rows = await rounds_cur.fetchall()
-    finally:
-        await db.close()
+    rounds_cur = await db.execute(
+        "SELECT * FROM duo_rounds WHERE session_id=? ORDER BY round_number ASC",
+        (session_id,),
+    )
+    round_rows = await rounds_cur.fetchall()
 
     rounds: list[DuoRoundDto] = []
     for r in round_rows:
@@ -326,15 +326,12 @@ async def get_session(session_id: str) -> DuoSessionDto:
 
 
 async def list_sessions(workspace: str) -> list[DuoSessionDto]:
-    db = await get_connection()
-    try:
-        cur = await db.execute(
-            "SELECT id FROM duo_sessions WHERE workspace=? ORDER BY created_at DESC LIMIT 50",
-            (workspace,),
-        )
-        rows = await cur.fetchall()
-    finally:
-        await db.close()
+    db = await get_db()
+    cur = await db.execute(
+        "SELECT id FROM duo_sessions WHERE workspace=? ORDER BY created_at DESC LIMIT 50",
+        (workspace,),
+    )
+    rows = await cur.fetchall()
     results = []
     for row in rows:
         try:
@@ -353,12 +350,9 @@ async def _handle_duo_llm_failure(session_id: str, exc: Exception) -> str:
     _pending_recovery_errors[session_id] = str(exc)
     
     # Set status to waiting_for_recovery
-    db = await get_connection()
-    try:
-        await db.execute("UPDATE duo_sessions SET status='waiting_for_recovery', updated_at=? WHERE id=?", (_now_iso(), session_id))
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute("UPDATE duo_sessions SET status='waiting_for_recovery', updated_at=? WHERE id=?", (_now_iso(), session_id))
+    await db.commit()
         
     await event.wait()
     
@@ -366,14 +360,12 @@ async def _handle_duo_llm_failure(session_id: str, exc: Exception) -> str:
     _pending_recovery_errors.pop(session_id, None)
     decision = _pending_recovery_decisions.pop(session_id, "cancel")
     
-    db = await get_connection()
-    try:
-        await db.execute("UPDATE duo_sessions SET status='running', updated_at=? WHERE id=?", (_now_iso(), session_id))
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute("UPDATE duo_sessions SET status='running', updated_at=? WHERE id=?", (_now_iso(), session_id))
+    await db.commit()
         
     return decision
+
 
 
 async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
@@ -442,10 +434,10 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
             logger.info("duo.loop.cancelled session_id=%s at round %d", session_id, round_num)
             return
 
-        # Extract proposal
+        # Extract proposal changes
         proposal_id: str | None = None
-        match = PROPOSAL_RE.search(gen_output)
-        if match:
+        changes: list[FileChange] = []
+        for match in PROPOSAL_RE.finditer(gen_output):
             filepath = match.group("path").strip()
             original = match.group("original")
             updated = match.group("updated")
@@ -455,16 +447,24 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
                 resolved = Path(filepath)
                 if not resolved.is_absolute():
                     resolved = (workspace_path / filepath).resolve()
+                if not resolved.exists():
+                    original = ""
+                changes.append(FileChange(path=str(resolved), original=original, updated=updated))
+            except Exception as exc:
+                logger.warning("duo.loop.path_error round=%d: %s", round_num, exc)
+
+        if changes:
+            try:
                 proposal = await create_proposal(
                     EditProposalRequest(
                         workspace=req.workspace,
-                        summary=f"[Duo round {round_num}] {req.task_description[:80]}",
-                        changes=[FileChange(path=str(resolved), original=original, updated=updated)],
+                        summary=f"[Duo Round {round_num}] {req.task_description[:80]}",
+                        changes=changes,
                     )
                 )
                 proposal_id = proposal.id
                 last_proposal_id = proposal_id
-                logger.info("duo.loop.proposal_created id=%s round=%d", proposal_id, round_num)
+                logger.info("duo.loop.proposal_created id=%s round=%d changes=%d", proposal_id, round_num, len(changes))
             except Exception as exc:
                 logger.warning("duo.loop.proposal_error round=%d: %s", round_num, exc)
 
@@ -573,7 +573,7 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
     logger.info("duo.loop.unresolved session_id=%s after %d rounds", session_id, req.max_rounds)
 
 
-from backend.app.features.settings.service import list_settings
+from ..settings.service import list_settings
 
 async def _resolve_model_config(cfg: ModelConfig) -> None:
     if not cfg.model or cfg.model.strip() == "" or cfg.model == "auto":
@@ -638,17 +638,14 @@ async def cancel_session(session_id: str) -> DuoSessionDto:
             pass
 
     # Ensure DB reflects cancelled state even if the task didn't write it
-    db = await get_connection()
-    try:
-        cur = await db.execute("SELECT status FROM duo_sessions WHERE id=?", (session_id,))
-        row = await cur.fetchone()
-        if row and row["status"] == "running":
-            await db.execute(
-                "UPDATE duo_sessions SET status='cancelled', updated_at=? WHERE id=?",
-                (_now_iso(), session_id),
-            )
-            await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    cur = await db.execute("SELECT status FROM duo_sessions WHERE id=?", (session_id,))
+    row = await cur.fetchone()
+    if row and row["status"] == "running":
+        await db.execute(
+            "UPDATE duo_sessions SET status='cancelled', updated_at=? WHERE id=?",
+            (_now_iso(), session_id),
+        )
+        await db.commit()
 
     return await get_session(session_id)

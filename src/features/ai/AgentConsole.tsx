@@ -8,6 +8,7 @@ import { api } from "../../lib/api";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useAIStore } from "../../stores/aiStore";
 import { ProviderSelector, type ProviderConfig } from "../../components/ui/ProviderSelector";
+import { getPreset } from "../../lib/providerPresets";
 
 type Task = {
   id: string;
@@ -200,14 +201,14 @@ function LivePlanCard({ plan }: { plan: LivePlan }) {
           {plan.files_to_touch.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-1.5">
-                <FileCode size={10} className="text-slate-400 shrink-0" />
-                <span className="text-[9px] uppercase font-bold tracking-wider text-slate-500">Files targeted</span>
+                <FileCode size={10} className="text-on-surface-variant/60 dark:text-on-surface-variant/60 shrink-0" />
+                <span className="text-[9px] uppercase font-bold tracking-wider text-on-surface-variant/60 dark:text-on-surface-variant/60">Files targeted</span>
               </div>
               <div className="flex flex-wrap gap-1">
                 {plan.files_to_touch.map((f, i) => (
                   <span
                     key={i}
-                    className="text-[9px] font-mono text-slate-300 bg-surface-800 border border-surface-700 px-1.5 py-0.5 rounded truncate max-w-[150px]"
+                    className="text-[9px] font-mono text-on-surface-variant dark:text-on-surface-variant bg-surface-container-high border border-outline-variant/20 px-1.5 py-0.5 rounded truncate max-w-[150px]"
                     title={f}
                   >
                     {f.split(/[/\\]/).pop()}
@@ -221,13 +222,13 @@ function LivePlanCard({ plan }: { plan: LivePlan }) {
           {plan.risks && plan.risks.length > 0 && (
             <div>
               <div className="flex items-center gap-1.5 mb-1">
-                <Shield size={10} className="text-amber-400 shrink-0" />
-                <span className="text-[9px] uppercase font-bold tracking-wider text-amber-600">Risks</span>
+                <Shield size={10} className="text-tertiary-container shrink-0" />
+                <span className="text-[9px] uppercase font-bold tracking-wider text-tertiary-container">Risks</span>
               </div>
               <ul className="space-y-0.5">
                 {plan.risks.map((r, i) => (
-                  <li key={i} className="text-[9px] text-amber-200/70 flex items-start gap-1">
-                    <span className="text-amber-600 mt-0.5 shrink-0">▸</span>
+                  <li key={i} className="text-[9px] text-tertiary/70 flex items-start gap-1">
+                    <span className="text-tertiary-container mt-0.5 shrink-0">▸</span>
                     {r}
                   </li>
                 ))}
@@ -239,10 +240,10 @@ function LivePlanCard({ plan }: { plan: LivePlan }) {
           {plan.verification && (
             <div>
               <div className="flex items-center gap-1.5 mb-1">
-                <FlaskConical size={10} className="text-emerald-400 shrink-0" />
-                <span className="text-[9px] uppercase font-bold tracking-wider text-emerald-600">Verification</span>
+                <FlaskConical size={10} className="text-primary-container shrink-0" />
+                <span className="text-[9px] uppercase font-bold tracking-wider text-primary-container">Verification</span>
               </div>
-              <p className="text-[9px] text-emerald-200/60 leading-snug">{plan.verification}</p>
+              <p className="text-[9px] text-primary/60 leading-snug">{plan.verification}</p>
             </div>
           )}
         </div>
@@ -251,7 +252,7 @@ function LivePlanCard({ plan }: { plan: LivePlan }) {
   );
 }
 
-export function AgentConsole() {
+export function AgentConsole({ compact = false }: { compact?: boolean }) {
   const [requestText, setRequestText] = useState("");
   const [quickMode, setQuickMode] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -302,11 +303,13 @@ export function AgentConsole() {
 
   /** Build provider_config payload the backend expects */
   const buildProviderConfig = () => {
+    const presetObj = getPreset(providerConfig.preset);
     return {
-      provider: providerConfig.preset,
-      model: providerConfig.model,
-      base_url: providerConfig.base_url,
-      api_key_provider: providerConfig.api_key_provider,
+      provider: presetObj?.provider || (providerConfig.preset === "ollama" ? "ollama" : "openai-compatible"),
+      preset: providerConfig.preset,
+      model: providerConfig.model || presetObj?.model_example || "llama3",
+      base_url: providerConfig.base_url || presetObj?.base_url,
+      api_key_provider: providerConfig.api_key_provider || presetObj?.api_key_provider,
     };
   };
 
@@ -410,13 +413,27 @@ export function AgentConsole() {
     }
   };
 
-  // 7. Recover pending action (LLM failure)
-  const handleRecoverAction = async (jobId: string, taskId: string, action: "retry" | "switch_to_api" | "cancel") => {
+  // 7. Recover pending action (LLM failure / Task failure)
+  const handleRecoverAction = async (jobId: string, taskId: string, action: "retry" | "switch_to_api" | "cancel" | "reduced_pipeline") => {
     try {
       await api.post(`/api/agents/jobs/${jobId}/tasks/${taskId}/recover`, { action });
       await fetchJobDetails(jobId);
     } catch (err) {
       alert("Failed to recover action: " + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+
+  const [clarificationText, setClarificationText] = useState("");
+
+  // 8. Submit clarification answer
+  const handleAnswerClarification = async (jobId: string, taskId: string) => {
+    if (!clarificationText.trim()) return;
+    try {
+      await api.post(`/api/agents/jobs/${jobId}/tasks/${taskId}/answer`, { answer: clarificationText.trim() });
+      setClarificationText("");
+      await fetchJobDetails(jobId);
+    } catch (err) {
+      alert("Failed to submit clarification: " + (err instanceof Error ? err.message : String(err)));
     }
   };
 
@@ -520,26 +537,53 @@ export function AgentConsole() {
   // Extract live plan from logs if job is running
   const livePlan = activeJob ? extractLivePlan(activeJob.logs) : null;
 
-  return (
-    <section className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[38px_minmax(0,1fr)] border-b border-surface-700">
-      {/* Header */}
-      <div className="flex items-center gap-2 border-b border-surface-700 px-3 py-1">
-        <Cpu size={15} className="text-accent-400" />
-        <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Agent Command Console</span>
-        {activeJob && !["completed", "failed", "cancelled"].includes(activeJob.status) && phaseBadge(activeJob.logs)}
-      </div>
+  /* ── Compact (sidebar) layout ─────────────────────────────────────────── */
+  if (compact) {
+    return (
+      <main
+        data-testid="agent-console-panel"
+        className="flex flex-col h-full overflow-y-auto bg-[#131314] text-on-surface select-none"
+      >
+        {/* Compact Header */}
+        <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
+          <div className="flex items-center gap-1.5">
+            <Cpu size={13} className="text-primary shrink-0" />
+            <span className="text-[11px] font-bold text-on-surface tracking-tight">Agent Console</span>
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              activeJob && !["completed", "failed", "cancelled"].includes(activeJob.status)
+                ? "bg-primary-container animate-pulse" : "bg-outline"
+            }`} />
+          </div>
+          <div className="flex items-center gap-1">
+            {activeJob && !["completed", "failed", "cancelled"].includes(activeJob.status) ? (
+              <button
+                onClick={() => void handleCancelJob(activeJob.id)}
+                className="text-[9px] text-error hover:bg-error/10 border border-error/30 px-1.5 py-0.5 rounded font-mono font-bold"
+                title="Cancel running workflow"
+              >
+                Cancel
+              </button>
+            ) : activeJob ? (
+              <button
+                onClick={() => { setActiveJob(null); setPlanTasks([]); setRequestText(""); }}
+                className="text-[9px] text-primary hover:bg-primary/10 border border-primary/30 px-1.5 py-0.5 rounded font-mono font-bold"
+              >
+                + New Task
+              </button>
+            ) : null}
+            <span className="font-mono text-[9px] text-on-surface-variant bg-surface-container px-1.5 py-0.5 rounded border border-white/5">
+              {activeJob ? `${activeJob.duration.toFixed(1)}s` : "READY"}
+            </span>
+          </div>
+        </div>
 
-      <div className="overflow-auto p-3 text-xs space-y-4 min-h-0 flex flex-col justify-between">
-        <div className="space-y-4">
+        {/* Compact body: scrollable, single column */}
+        <div className="flex flex-col gap-2 p-2 overflow-y-auto flex-1 min-h-0">
 
-          {/* ── Instructions Input ─────────────────────────────────────────── */}
-          {!activeJob && planTasks.length === 0 && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <Brain size={13} className="text-violet-400" />
-                <span className="font-semibold text-slate-300">New Autonomous Request</span>
-              </div>
-              
+          {/* Instruction textarea */}
+          <div className="glass-panel rounded-md p-2 flex flex-col gap-1.5">
+            <div className="flex justify-between items-center">
+              <span className="text-[9px] font-bold uppercase tracking-wider text-outline">Instruction</span>
               <ProviderSelector
                 value={providerConfig}
                 onChange={setProviderConfig}
@@ -547,356 +591,480 @@ export function AgentConsole() {
                 models={models}
                 compact
               />
-
-              <textarea
-                className="w-full h-20 rounded-lg border border-surface-700 bg-surface-950 text-slate-200 text-xs p-3 focus:outline-none focus:border-violet-600/60 focus:ring-1 focus:ring-violet-600/20 resize-none placeholder-slate-600 transition-all"
-                placeholder="e.g. Add a rate-limiting middleware to the FastAPI auth routes with unit tests..."
-                value={requestText}
-                onChange={(e) => setRequestText(e.target.value)}
-                disabled={loading}
-                onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void handleGeneratePlan(); }}
-              />
-
-              <div className="flex items-center gap-2 select-none">
+            </div>
+            <textarea
+              className="w-full bg-surface-container-lowest border-0 border-b border-primary/30 focus:border-primary text-on-surface font-mono text-[10px] resize-none h-16 p-1.5 transition-colors outline-none rounded"
+              placeholder="e.g. Add rate-limiting middleware..."
+              value={requestText}
+              onChange={(e) => setRequestText(e.target.value)}
+              disabled={loading}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void handleGeneratePlan(); }}
+            />
+            <div className="flex items-center justify-between">
+              <label className="flex items-center gap-1 text-[9px] text-on-surface-variant cursor-pointer">
                 <input
                   type="checkbox"
-                  id="quick-edit-mode"
                   checked={quickMode}
                   onChange={(e) => setQuickMode(e.target.checked)}
                   disabled={loading}
-                  className="rounded border-surface-700 bg-surface-950 text-violet-600 focus:ring-violet-500 w-3 h-3 cursor-pointer disabled:opacity-50"
+                  className="rounded border-white/20 bg-surface text-primary focus:ring-primary w-2.5 h-2.5"
                 />
-                <label htmlFor="quick-edit-mode" className="text-[10px] text-slate-400 cursor-pointer font-medium hover:text-slate-200 transition-colors flex items-center gap-1 disabled:opacity-50">
-                  ⚡ Quick Edit Mode <span className="text-slate-600">(skips planning, reviews, and testing)</span>
-                </label>
-              </div>
-
-              {/* Premium Plan Button */}
+                <span>⚡ Quick</span>
+              </label>
               <button
-                id="plan-autonomous-workflow-btn"
-                className={`
-                  w-full relative overflow-hidden rounded-lg px-4 py-2.5
-                  flex items-center justify-center gap-2
-                  font-semibold text-xs tracking-wide
-                  transition-all duration-200
-                  ${loading || !requestText.trim()
-                    ? "opacity-50 cursor-not-allowed bg-surface-800 text-slate-500 border border-surface-700"
-                    : "bg-gradient-to-r from-violet-600 via-accent-600 to-violet-600 bg-size-200 bg-pos-0 hover:bg-pos-100 text-white shadow-lg shadow-violet-500/20 hover:shadow-violet-500/40 border border-violet-500/30 active:scale-[0.98]"
-                  }
-                `}
                 onClick={() => void handleGeneratePlan()}
                 disabled={loading || !requestText.trim()}
+                className="bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 px-2.5 py-1 rounded-full text-[9px] font-semibold transition-all flex items-center gap-1 disabled:opacity-50"
               >
-                {/* Animated shimmer overlay */}
-                {!loading && requestText.trim() && (
-                  <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent translate-x-[-100%] hover:translate-x-[100%] transition-transform duration-700 pointer-events-none" />
-                )}
-                {loading
-                  ? <Loader2 size={13} className="animate-spin shrink-0" />
-                  : <Sparkles size={13} className="shrink-0" />
-                }
-                <span>{loading ? "Planning agent workflow…" : "Plan Autonomous Agent Workflow"}</span>
+                <Sparkles size={9} />
+                {loading ? "Planning…" : "Generate Plan"}
               </button>
-              <p className="text-[9px] text-slate-600 text-center">⌘+Enter to plan · Plans are reviewed before execution</p>
+            </div>
+          </div>
+
+          {/* Approval / Clarification required */}
+          {activeTask?.pending_action && (
+            <div className={`glass-panel rounded-md p-2 flex flex-col gap-2 relative overflow-hidden ${
+              activeTask.pending_action.type === "clarification" ? "border-amber-500/30 bg-amber-950/20" : "border-error/30 bg-error-container/10"
+            }`}>
+              <div className={`absolute top-0 left-0 w-0.5 h-full ${
+                activeTask.pending_action.type === "clarification" ? "bg-amber-500" : "bg-error"
+              }`} />
+              <div className={`flex items-center gap-1.5 text-[10px] font-bold ${
+                activeTask.pending_action.type === "clarification" ? "text-amber-400" : "text-error"
+              }`}>
+                <span className="material-symbols-outlined text-xs">
+                  {activeTask.pending_action.type === "llm_failure" ? "error_med" :
+                   activeTask.pending_action.type === "clarification" ? "help" : "warning"}
+                </span>
+                {activeTask.pending_action.type === "llm_failure" ? "LLM FAILURE" :
+                 activeTask.pending_action.type === "clarification" ? "CLARIFICATION NEEDED" : "APPROVAL NEEDED"}
+              </div>
+              <p className="text-[9px] text-on-surface-variant leading-snug">{activeTask.pending_action.details}</p>
+
+              {activeTask.pending_action.type === "clarification" ? (
+                <div className="flex flex-col gap-1.5 mt-1">
+                  <textarea
+                    rows={2}
+                    value={clarificationText}
+                    onChange={(e) => setClarificationText(e.target.value)}
+                    placeholder="Type your clarification answer..."
+                    className="w-full bg-surface-container-lowest text-on-surface text-[10px] border border-amber-500/30 focus:border-amber-400 p-1.5 rounded outline-none font-mono resize-none"
+                  />
+                  <div className="flex gap-1.5 justify-end">
+                    <button
+                      onClick={() => void handleRejectAction(activeJob!.id, activeTask.id)}
+                      className="text-[9px] border border-outline px-2 py-0.5 rounded text-on-surface-variant"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void handleAnswerClarification(activeJob!.id, activeTask.id)}
+                      disabled={!clarificationText.trim()}
+                      className="text-[9px] bg-amber-500/20 border border-amber-500/40 text-amber-300 font-bold px-2.5 py-0.5 rounded disabled:opacity-40"
+                    >
+                      Submit Answer
+                    </button>
+                  </div>
+                </div>
+              ) : activeTask.pending_action.type === "task_failure" ? (
+                <div className="flex flex-col gap-1.5 mt-1">
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "retry")}
+                    className="text-[9px] bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 px-2 py-1 rounded text-left font-bold transition-colors"
+                  >
+                    🔄 Try Again (Re-ground & Retry)
+                  </button>
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "reduced_pipeline")}
+                    className="text-[9px] bg-amber-500/10 border border-amber-500/30 text-amber-300 hover:bg-amber-500/20 px-2 py-1 rounded text-left font-bold transition-colors"
+                  >
+                    ⚡ Continue with Reduced Pipeline (Skip Review/Docs)
+                  </button>
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "cancel")}
+                    className="text-[9px] border border-outline px-2 py-1 rounded text-left text-on-surface-variant hover:bg-white/5 transition-colors"
+                  >
+                    🛑 Cancel Workflow
+                  </button>
+                </div>
+              ) : activeTask.pending_action.type === "llm_failure" ? (
+                <div className="flex gap-1.5 flex-wrap">
+                  <button onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "retry")} className="text-[9px] bg-primary/10 border border-primary/30 text-primary px-2 py-0.5 rounded">Retry</button>
+                  <button onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "switch_to_api")} className="text-[9px] bg-secondary/10 border border-secondary/30 text-secondary px-2 py-0.5 rounded">Use API</button>
+                  <button onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "cancel")} className="text-[9px] border border-outline px-2 py-0.5 rounded text-on-surface-variant">Cancel</button>
+                </div>
+              ) : (
+                <div className="flex gap-1.5 flex-wrap">
+                  <button onClick={() => void handleRejectAction(activeJob!.id, activeTask.id)} className="text-[9px] bg-error/10 border border-error/30 text-error px-2 py-0.5 rounded">Deny</button>
+                  <button onClick={() => void handleApproveAction(activeJob!.id, activeTask.id)} className="text-[9px] border border-outline px-2 py-0.5 rounded text-on-surface">Approve</button>
+                </div>
+              )}
             </div>
           )}
 
-          {/* ── Checklist Plan Review ──────────────────────────────────────── */}
+          {/* Planned tasks */}
           {planTasks.length > 0 && (
-            <div className="space-y-3 bg-surface-900/40 border border-violet-800/30 p-3 rounded-lg">
+            <div className="glass-panel rounded-md p-2 border-primary/20 bg-primary/5 flex flex-col gap-1.5">
               <div className="flex justify-between items-center">
-                <div className="flex items-center gap-2">
-                  <Brain size={13} className="text-violet-400" />
-                  <span className="font-semibold text-slate-200">Review Proposed Task Graph</span>
-                </div>
-                <span className="text-[10px] text-slate-500 font-semibold bg-surface-800 px-1.5 py-0.5 rounded border border-surface-700">
-                  {planTasks.length} tasks
-                </span>
+                <span className="text-[9px] font-bold text-primary uppercase">Plan ({planTasks.length} tasks)</span>
+                <button
+                  onClick={() => void handleStartWorkflow()}
+                  disabled={loading}
+                  className="text-[9px] bg-primary-container text-on-primary-container px-2 py-0.5 rounded-full font-bold"
+                >
+                  Execute
+                </button>
               </div>
-              <div className="space-y-1.5 max-h-40 overflow-auto pr-1">
-                {planTasks.map((task, idx) => (
-                  <div key={task.id} className="flex gap-2 items-start border border-surface-800 bg-surface-900/60 rounded p-2 text-[11px]">
-                    <div className="flex items-center justify-center w-4 h-4 rounded-full bg-violet-950/60 border border-violet-800/40 text-[8px] font-bold text-violet-400 shrink-0 mt-0.5">
-                      {idx + 1}
+              {planTasks.map((t, idx) => (
+                <div key={t.id} className="text-[9px] bg-surface-container-low border border-white/5 rounded p-1.5">
+                  <span className="font-bold text-on-surface">Step {idx + 1}: {t.agent_role}</span>
+                  <p className="text-on-surface-variant mt-0.5 leading-snug truncate">{t.title}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Execution timeline */}
+          <div className="glass-panel rounded-md p-2 flex flex-col gap-1">
+            <span className="text-[9px] font-bold uppercase tracking-wider text-outline mb-1">Execution Flow</span>
+            <div className="relative pl-4 space-y-2 overflow-y-auto max-h-40">
+              <div className="absolute top-1 bottom-1 left-[7px] w-px bg-white/10" />
+              {activeJob?.tasks.map((task, idx) => (
+                <div key={task.id} className="relative">
+                  <div className={`absolute left-[-16px] top-1 w-2.5 h-2.5 rounded-full z-10 flex items-center justify-center ${
+                    task.status === "completed" ? "bg-primary-container" :
+                    task.status === "running" ? "bg-surface-container border border-primary-container animate-pulse" :
+                    "bg-surface-container border border-outline-variant"
+                  }`}>
+                    {task.status === "completed" && <span className="material-symbols-outlined text-[8px] text-on-primary-container">check</span>}
+                  </div>
+                  <div className={`rounded p-1.5 border text-[9px] ${
+                    task.status === "completed" ? "bg-surface-container-low border-white/5 opacity-80" :
+                    task.status === "running" ? "bg-surface-container border-primary/30" :
+                    "bg-surface-container-lowest border-white/5 opacity-50"
+                  }`}>
+                    <div className="flex justify-between items-center">
+                      <span className="font-semibold text-on-surface">{task.agent_role}</span>
+                      <span className="text-primary-container uppercase text-[8px]">{task.status}</span>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-slate-300 truncate font-semibold">{task.title}</div>
-                      <div className="text-[9px] text-slate-500 font-mono mt-0.5 flex gap-2">
-                        <span className="text-violet-500">{task.agent_role}</span>
-                        <span className="text-slate-600">·</span>
-                        <span>{task.estimated_effort || "~"}</span>
-                        {task.dependencies.length > 0 && (
-                          <span className="text-slate-600">deps: {task.dependencies.length}</span>
-                        )}
-                      </div>
+                    <p className="text-on-surface-variant leading-snug truncate mt-0.5">{task.title}</p>
+                  </div>
+                </div>
+              )) ?? (
+                <div className="text-[9px] text-outline-variant italic">No active workflow. Generate a plan to begin.</div>
+              )}
+            </div>
+          </div>
+
+          {/* Live logs */}
+          <div className="glass-panel rounded-md flex flex-col overflow-hidden shrink-0">
+            <div className="bg-surface-container-high px-2 py-1 border-b border-white/5 flex justify-between items-center">
+              <div className="flex items-center gap-1">
+                <Terminal size={10} className="text-on-surface-variant" />
+                <span className="text-[9px] uppercase tracking-wider text-outline">Live Logs</span>
+              </div>
+              <span className="w-1.5 h-1.5 rounded-full bg-[#00ff00] animate-pulse" />
+            </div>
+            <div className="p-2 font-mono text-[9px] leading-relaxed text-on-surface-variant overflow-y-auto max-h-28 bg-surface-container-lowest">
+              {activeJob?.logs.map((log, i) => (
+                <div key={i} className="mb-0.5">{log}</div>
+              )) ?? (
+                <div className="text-outline-variant">[init] Waiting for task…</div>
+              )}
+              <div ref={logsEndRef} />
+            </div>
+          </div>
+
+        </div>
+      </main>
+    );
+  }
+
+  /* ── Full (topbar) layout — unchanged ──────────────────────────────────── */
+  return (
+    <main data-testid="agent-console-panel" className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 flex flex-col gap-3 sm:gap-6 bg-[#131314] text-on-surface h-full select-none">
+
+      {/* Page Header */}
+      <div className="flex justify-between items-center pb-2 sm:pb-4 border-b border-white/5 shrink-0 flex-wrap gap-2">
+        <div>
+          <h1 className="font-bold text-on-surface text-base sm:text-headline-lg">Agent Console</h1>
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${activeJob && !["completed", "failed", "cancelled"].includes(activeJob.status) ? "bg-primary-container animate-pulse" : "bg-outline"}`} />
+            <span className="font-micro-label text-micro-label text-primary-container">
+              {activeJob && !["completed", "failed", "cancelled"].includes(activeJob.status) ? "WORKING" : "READY"}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          {activeJob && !["completed", "failed", "cancelled"].includes(activeJob.status) ? (
+            <button
+              onClick={() => void handleCancelJob(activeJob.id)}
+              className="bg-error/10 border border-error/30 text-error hover:bg-error/20 px-3 py-1.5 rounded text-xs font-bold transition-colors"
+            >
+              Cancel Workflow
+            </button>
+          ) : activeJob ? (
+            <button
+              onClick={() => { setActiveJob(null); setPlanTasks([]); setRequestText(""); }}
+              className="bg-primary/10 border border-primary/30 text-primary hover:bg-primary/20 px-3 py-1.5 rounded text-xs font-bold transition-colors"
+            >
+              + New Task
+            </button>
+          ) : null}
+          <div className="text-on-surface-variant flex items-center gap-2 font-code-block text-[11px] sm:text-xs bg-surface-container py-1 px-2.5 rounded border border-white/5">
+            <span className="material-symbols-outlined text-xs sm:text-sm">timer</span>
+            <span>{activeJob ? `${activeJob.duration.toFixed(1)}s` : "00:00:00"}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Main Layout Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-6 flex-1 min-h-0">
+        {/* Left Column: Input & Actions */}
+        <div className="lg:col-span-7 flex flex-col gap-3 sm:gap-6">
+          {/* Instruction Input Card */}
+          <div className="glass-panel rounded-lg p-3 sm:p-4 md:p-6 flex flex-col gap-2 sm:gap-4">
+            <div className="flex justify-between items-center mb-1 flex-wrap gap-1">
+              <span className="font-micro-label text-micro-label text-outline uppercase">Agent Instruction</span>
+              <ProviderSelector
+                value={providerConfig}
+                onChange={setProviderConfig}
+                configuredKeys={configuredKeys}
+                models={models}
+                compact
+              />
+            </div>
+            <textarea
+              className="w-full bg-surface-container-lowest border-0 border-b-2 border-primary/30 focus:border-primary focus:ring-0 text-on-surface font-code-block text-xs sm:text-sm resize-none h-24 sm:h-32 p-2 sm:p-3 transition-colors outline-none rounded"
+              placeholder="Enter task instruction here (e.g. Add a rate-limiting middleware to the auth routes with unit tests...)"
+              value={requestText}
+              onChange={(e) => setRequestText(e.target.value)}
+              disabled={loading}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void handleGeneratePlan(); }}
+            />
+            <div className="flex justify-between items-center mt-1 flex-wrap gap-2">
+              <label className="flex items-center gap-1.5 text-[11px] sm:text-xs text-on-surface-variant cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={quickMode}
+                  onChange={(e) => setQuickMode(e.target.checked)}
+                  disabled={loading}
+                  className="rounded border-white/20 bg-surface text-primary focus:ring-primary"
+                />
+                <span>⚡ Quick Edit Mode</span>
+              </label>
+
+              <button
+                onClick={() => void handleGeneratePlan()}
+                disabled={loading || !requestText.trim()}
+                className="bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 px-3 sm:px-6 py-1.5 sm:py-2 rounded-full text-xs sm:text-sm font-semibold transition-all flex items-center gap-1.5 shadow-[0_0_15px_rgba(0,229,255,0.15)] disabled:opacity-50"
+              >
+
+                <span className="material-symbols-outlined text-sm">play_arrow</span>
+                <span>{loading ? "Planning..." : "Generate Plan"}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Pending Approval / Planned Tasks */}
+          {planTasks.length > 0 && (
+            <div className="glass-panel rounded-lg p-6 flex flex-col gap-4 border-primary/30 bg-primary/5">
+              <div className="flex justify-between items-center">
+                <span className="font-micro-label text-micro-label text-primary uppercase font-bold">PLANNED WORKFLOW ({planTasks.length} TASKS)</span>
+                <button
+                  onClick={() => void handleStartWorkflow()}
+                  disabled={loading}
+                  className="bg-primary-container text-on-primary-container font-micro-label text-micro-label px-4 py-2 rounded-full font-bold uppercase tracking-wider shadow-[0_0_12px_rgba(0,229,255,0.4)]"
+                >
+                  Execute Planned Agent Workflow
+                </button>
+              </div>
+              <div className="space-y-2">
+                {planTasks.map((t, idx) => (
+                  <div key={t.id} className="p-3 rounded bg-surface-container-low border border-white/5 flex items-center justify-between text-xs">
+                    <div>
+                      <span className="font-bold text-on-surface">Step {idx + 1}: {t.agent_role}</span>
+                      <p className="text-on-surface-variant text-[11px] mt-0.5">{t.title}</p>
                     </div>
+                    <span className="font-micro-label text-micro-label text-outline uppercase">{t.estimated_effort}</span>
                   </div>
                 ))}
               </div>
-              <div className="flex gap-2 pt-1">
-                <button
-                  className="flex-1 flex items-center justify-center gap-1.5 bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-semibold text-xs py-2 px-3 rounded-lg shadow-md shadow-emerald-500/20 hover:shadow-emerald-500/30 transition-all active:scale-[0.98] border border-emerald-500/30"
-                  onClick={() => void handleStartWorkflow()}
-                >
-                  <Play size={12} className="shrink-0" /> Approve & Execute Graph
-                </button>
-                <button
-                  className="px-3 py-2 text-xs text-slate-400 hover:text-slate-200 border border-surface-700 hover:border-surface-600 rounded-lg transition-colors"
-                  onClick={() => setPlanTasks([])}
-                >
-                  Cancel
-                </button>
-              </div>
             </div>
           )}
 
-          {/* ── Active Job Timeline & Console ──────────────────────────────── */}
-          {activeJob && (
-            <div className="space-y-3">
+          {/* Approval Required Card (when active task requires user input) */}
+          {activeTask?.pending_action && (
+            <div className={`glass-panel rounded-lg p-6 flex flex-col gap-4 relative overflow-hidden ${
+              activeTask.pending_action.type === "clarification" ? "border-amber-500/40 bg-amber-950/20" : "border-error/30 bg-error-container/10"
+            }`}>
+              <div className={`absolute top-0 left-0 w-1 h-full ${
+                activeTask.pending_action.type === "clarification" ? "bg-amber-500" : "bg-error"
+              }`} />
+              <div className={`flex items-center gap-3 ${
+                activeTask.pending_action.type === "clarification" ? "text-amber-400" : "text-error"
+              }`}>
+                <span className="material-symbols-outlined">
+                  {activeTask.pending_action.type === "llm_failure" ? "error_med" :
+                   activeTask.pending_action.type === "clarification" ? "help" : "warning"}
+                </span>
+                <span className="font-headline-md text-headline-md text-base font-bold">
+                  {activeTask.pending_action.type === "llm_failure" ? "LLM CONNECTION FAILURE" :
+                   activeTask.pending_action.type === "clarification" ? "CLARIFICATION NEEDED" : "APPROVAL REQUIRED"}
+                </span>
+              </div>
+              <p className="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">
+                {activeTask.pending_action.details}
+              </p>
 
-              {/* Overall Progress */}
-              <div className="space-y-1">
-                <div className="flex justify-between items-center text-[10px] text-slate-400 font-semibold">
-                  <span className="truncate max-w-[160px] font-mono">
-                    Job: {activeJob.id.slice(0, 8)}…
-                    <span className={`ml-1.5 px-1 rounded text-[8px] font-bold uppercase ${
-                      activeJob.status === "completed" ? "text-emerald-400 bg-emerald-950/40" :
-                      activeJob.status === "failed" ? "text-rose-400 bg-rose-950/40" :
-                      activeJob.status === "cancelled" ? "text-slate-500 bg-surface-800" :
-                      "text-blue-400 bg-blue-950/40 animate-pulse"
-                    }`}>
-                      {activeJob.status}
-                    </span>
-                  </span>
-                  <span>{activeJob.progress}%</span>
-                </div>
-                <div className="w-full bg-surface-800 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all duration-700 ${
-                      activeJob.status === "completed" ? "bg-emerald-500" :
-                      activeJob.status === "failed" ? "bg-rose-500" :
-                      "bg-gradient-to-r from-violet-500 to-accent-500"
-                    }`}
-                    style={{ width: `${activeJob.progress}%` }}
+              {activeTask.pending_action.type === "clarification" ? (
+                <div className="flex flex-col gap-3 mt-1">
+                  <textarea
+                    rows={3}
+                    value={clarificationText}
+                    onChange={(e) => setClarificationText(e.target.value)}
+                    placeholder="Type your clarification answer for the agent..."
+                    className="w-full bg-surface-container-lowest text-on-surface text-xs sm:text-sm border border-amber-500/30 focus:border-amber-400 p-3 rounded outline-none font-mono resize-none"
                   />
-                </div>
-              </div>
-
-              {/* ── Live Plan Card (appears when plan is emitted) ───────────── */}
-              {livePlan && (
-                <LivePlanCard plan={livePlan} />
-              )}
-
-              {/* Task Nodes */}
-              <div className="space-y-1">
-                <span className="font-semibold text-slate-300 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
-                  <Cpu size={10} className="text-slate-500" /> DAG Task Checklist
-                </span>
-                <div className="space-y-1 max-h-40 overflow-auto pr-1 border border-surface-800 p-1.5 rounded-lg bg-surface-900/30">
-                  {activeJob.tasks.map((task) => (
-                    <div key={task.id} className="p-2 rounded border border-surface-800/80 bg-surface-900/60 space-y-1.5">
-                      <div className="flex justify-between items-start gap-2">
-                        <span className="font-semibold text-slate-200 truncate pr-2 max-w-[200px] text-[11px]">{task.title}</span>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {task.structured_data?.model && (
-                            <span className="rounded bg-surface-800 border border-surface-700/65 px-1 py-0.5 text-[8px] font-mono text-slate-400 font-semibold uppercase">
-                              {task.structured_data.model}
-                            </span>
-                          )}
-                          <span className={`text-[9px] font-mono uppercase px-1.5 py-0.5 rounded font-bold shrink-0 border ${
-                            task.status === "completed" ? "bg-emerald-950/40 text-emerald-400 border-emerald-900/30" :
-                            task.status === "running" ? "bg-blue-950/40 text-blue-400 border-blue-900/30 animate-pulse" :
-                            task.status === "waiting" ? "bg-amber-950/40 text-amber-400 border-amber-900/30 animate-pulse" :
-                            task.status === "failed" ? "bg-rose-950/40 text-rose-400 border-rose-900/30" :
-                            "bg-surface-800 text-slate-500 border-surface-700"
-                          }`}>{task.status}</span>
-                        </div>
-                      </div>
-
-                      {/* Granular Active Status Line */}
-                      {task.status === "running" && (
-                        <div className="text-[10px] text-blue-350 font-mono animate-pulse flex items-center gap-1.5 mt-0.5">
-                          {(() => {
-                            const statusInfo = getCurrentStatusLine(activeJob.logs);
-                            if (statusInfo) {
-                              return (
-                                <>
-                                  <span className="shrink-0">{statusInfo.icon}</span>
-                                  <span className="truncate">{statusInfo.text}</span>
-                                </>
-                              );
-                            }
-                            return <span>⏳ Executing task...</span>;
-                          })()}
-                        </div>
-                      )}
-
-                      {/* File Modification checklist */}
-                      {task.status === "running" && livePlan && livePlan.files_to_touch && livePlan.files_to_touch.length > 0 && (
-                        <div className="mt-1.5 pl-2.5 border-l-2 border-violet-850 bg-violet-950/5 p-1 rounded space-y-1">
-                          <div className="text-[8px] uppercase tracking-wider text-slate-500 font-bold select-none">Planned files checklist:</div>
-                          {livePlan.files_to_touch.map((file) => {
-                            const isEdited = activeJob.logs.some(l => l.includes(`✓ [EDITED] ${file}`));
-                            const isEditing = !isEdited && activeJob.logs.some(l => l.includes(`✍️ [EDITING] ${file}`));
-                            return (
-                              <div key={file} className="flex items-center gap-1.5 text-[9px] font-mono select-none">
-                                {isEdited ? (
-                                  <CheckCircle2 size={8} className="text-emerald-400 shrink-0" />
-                                ) : isEditing ? (
-                                  <Loader2 size={8} className="text-blue-400 animate-spin shrink-0" />
-                                ) : (
-                                  <Circle size={8} className="text-slate-600 shrink-0" />
-                                )}
-                                <span className={`${isEdited ? "text-slate-500 line-through decoration-slate-700" : isEditing ? "text-blue-300 font-semibold" : "text-slate-600"} truncate`}>
-                                  {file.split(/[/\\]/).pop()}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      {/* Duo loop escalation info */}
-                      {task.structured_data?.duo_escalation && (
-                        <div className="mt-1 bg-surface-950/20 p-1.5 rounded border border-violet-900/10 text-[9px] flex items-center gap-1.5 font-mono text-violet-300">
-                          <Brain size={10} className="text-violet-400 shrink-0 animate-pulse" />
-                          <span>Escalated to Duo Loop ({task.structured_data.duo_escalation.rounds} rounds, {task.structured_data.duo_escalation.status})</span>
-                        </div>
-                      )}
-
-                      {/* Permission Gate Prompt or LLM Failure */}
-                      {task.status === "waiting" && task.pending_action && (
-                        <div className="mt-2 border-t border-surface-800 pt-2">
-                          {(task.pending_action.type as string) === "llm_failure" ? (
-                            <div className="rounded-md border border-danger/40 bg-danger/5 p-2 text-[10px] text-danger space-y-2">
-                              <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider">
-                                <Brain size={12} className="shrink-0" /> LLM Execution Failed
-                              </div>
-                              <p className="font-mono text-danger/80 leading-relaxed max-h-16 overflow-y-auto">{task.pending_action.details}</p>
-                              <div className="flex gap-2 pt-1">
-                                <button type="button" onClick={() => void handleRecoverAction(activeJob.id, task.id, "retry")} className="rounded border border-danger/40 px-2 py-1.5 font-semibold hover:bg-danger/10 transition-colors flex-1">Retry Task</button>
-                                <button type="button" onClick={() => void handleRecoverAction(activeJob.id, task.id, "switch_to_api")} className="rounded border border-danger/40 px-2 py-1.5 font-semibold hover:bg-danger/10 transition-colors flex-1">Switch to API</button>
-                                <button type="button" onClick={() => void handleRecoverAction(activeJob.id, task.id, "cancel")} className="rounded border border-danger/40 px-2 py-1.5 font-semibold hover:bg-danger/10 transition-colors flex-1">Cancel Job</button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="space-y-2">
-                              {/* Permission gate — show what the agent wants to do */}
-                              <div className="rounded-md border border-amber-700/50 bg-amber-950/20 p-2 space-y-1.5">
-                                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-400">
-                                  <ShieldCheck size={11} className="shrink-0" />
-                                  Agent Permission Request
-                                </div>
-                                <p className="text-[10px] text-amber-200/80 font-mono leading-relaxed max-h-20 overflow-y-auto whitespace-pre-wrap">
-                                  {task.pending_action.details || "Agent is requesting approval to proceed."}
-                                </p>
-                                {task.pending_action.command && (
-                                  <div className="text-[9px] font-mono text-slate-500 bg-surface-950 px-1.5 py-1 rounded border border-surface-800 truncate">
-                                    ref: {task.pending_action.command}
-                                  </div>
-                                )}
-                              </div>
-                              <div className="flex gap-2">
-                                <button type="button" onClick={() => void handleApproveAction(activeJob.id, task.id)} className="rounded bg-emerald-600 hover:bg-emerald-500 px-3 py-1.5 font-semibold text-white text-xs transition-colors flex-1 flex items-center justify-center gap-1.5">
-                                  <ShieldCheck size={11} /> Approve & Apply
-                                </button>
-                                <button type="button" onClick={() => void handleRejectAction(activeJob.id, task.id)} className="rounded border border-rose-800/50 px-3 py-1.5 font-semibold text-rose-400 hover:bg-rose-950/30 text-xs transition-colors flex-1">Reject</button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Structured Agent Output */}
-                      {task.status === "completed" && renderStructuredOutput(task)}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Observability Inspector */}
-              {activeJob && (
-                <div className="bg-surface-850 p-3 rounded-lg border border-surface-700 space-y-2">
-                  <div className="flex justify-between items-center text-[10px] uppercase font-bold text-slate-500 border-b border-surface-700 pb-1.5">
-                    <span className="flex items-center gap-1"><Terminal size={9} /> Inspector</span>
-                    {activeTask ? (
-                      <span className="text-accent-400 animate-pulse flex items-center gap-1">
-                        <Loader2 size={9} className="animate-spin" /> {activeTask.agent_role}
-                      </span>
-                    ) : (
-                      <span className="text-slate-600">Idle</span>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[10px]">
-                    <div>
-                      <span className="text-slate-600 block text-[9px] uppercase font-semibold">Runtime</span>
-                      <span className="font-mono text-slate-200">{activeJob.duration.toFixed(1)}s</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-600 block text-[9px] uppercase font-semibold">Tokens</span>
-                      <span className="font-mono text-slate-200">{activeJob.token_usage.toLocaleString()}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-600 block text-[9px] uppercase font-semibold">Files</span>
-                      <span className="font-mono text-slate-200">{activeJob.files_modified?.length || 0}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-600 block text-[9px] uppercase font-semibold">Est. Cost</span>
-                      <span className="font-mono text-emerald-400">${((activeJob.token_usage / 1_000_000) * 15.0).toFixed(4)}</span>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Execution Logs */}
-              <div className="space-y-1">
-                <span className="font-semibold text-slate-400 text-[10px] uppercase tracking-wider flex items-center gap-1.5">
-                  <Terminal size={10} /> Execution Logs
-                </span>
-                <div className="h-28 overflow-auto font-mono text-[9px] p-2 bg-surface-950 text-slate-400 rounded-lg border border-surface-800 space-y-0.5">
-                  {(activeJob.logs || []).filter(l => !l.includes("[PLAN_EMITTED]")).map((log, idx) => (
-                    <div
-                      key={idx}
-                      className={`leading-relaxed ${
-                        log.includes("failed") || log.includes("Failed") ? "text-rose-400" :
-                        log.includes("passed") || log.includes("approved") ? "text-emerald-400" :
-                        log.includes("Phase") || log.includes("Grounding") ? "text-violet-300 font-semibold" :
-                        log.includes("Permission") ? "text-amber-300" :
-                        "text-slate-400"
-                      }`}
+                  <div className="flex gap-3 justify-end">
+                    <button
+                      onClick={() => void handleRejectAction(activeJob!.id, activeTask.id)}
+                      className="bg-surface-container border border-outline px-4 py-1.5 rounded font-body-sm text-body-sm text-on-surface hover:bg-white/5 transition-colors"
                     >
-                      {log}
-                    </div>
-                  ))}
-                  {(!activeJob.logs || activeJob.logs.length === 0) && (
-                    <div className="text-slate-600">No logs emitted.</div>
-                  )}
-                  <div ref={logsEndRef} />
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void handleAnswerClarification(activeJob!.id, activeTask.id)}
+                      disabled={!clarificationText.trim()}
+                      className="bg-amber-500 text-slate-950 px-5 py-1.5 rounded font-body-sm text-body-sm font-bold hover:bg-amber-400 transition-colors disabled:opacity-40"
+                    >
+                      Submit Answer
+                    </button>
+                  </div>
                 </div>
-              </div>
-
-              {/* Cancel */}
-              {!["completed", "failed", "cancelled"].includes(activeJob.status) && (
-                <button
-                  className="w-full flex items-center justify-center gap-1.5 bg-rose-950/30 hover:bg-rose-900/40 text-rose-300 border border-rose-900/30 hover:border-rose-800/50 py-2 rounded-lg text-xs font-semibold transition-all"
-                  onClick={() => void handleCancelJob(activeJob.id)}
-                >
-                  <Square size={12} /> Terminate Agent Execution
-                </button>
-              )}
-
-              {["completed", "failed", "cancelled"].includes(activeJob.status) && (
-                <button
-                  className="w-full py-2 text-xs text-slate-400 hover:text-slate-200 border border-surface-700 hover:border-surface-600 rounded-lg transition-colors font-semibold"
-                  onClick={() => { setActiveJob(null); setPlanTasks([]); }}
-                >
-                  Clear & Start New Request
-                </button>
+              ) : activeTask.pending_action.type === "task_failure" ? (
+                <div className="flex flex-wrap gap-3 mt-2">
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "retry")}
+                    className="bg-primary text-on-primary px-4 py-2 rounded font-body-sm text-body-sm font-semibold hover:bg-primary/90 transition-colors flex items-center gap-1.5"
+                  >
+                    <span>🔄</span>
+                    <span>Try Again (Re-ground & Retry)</span>
+                  </button>
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "reduced_pipeline")}
+                    className="bg-amber-500 text-slate-950 px-4 py-2 rounded font-body-sm text-body-sm font-bold hover:bg-amber-400 transition-colors flex items-center gap-1.5"
+                  >
+                    <span>⚡</span>
+                    <span>Continue with Reduced Pipeline (Skip Review/Docs)</span>
+                  </button>
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "cancel")}
+                    className="bg-surface-container border border-outline px-4 py-2 rounded font-body-sm text-body-sm text-on-surface hover:bg-white/5 transition-colors flex items-center gap-1.5"
+                  >
+                    <span>🛑</span>
+                    <span>Cancel Workflow</span>
+                  </button>
+                </div>
+              ) : activeTask.pending_action.type === "llm_failure" ? (
+                <div className="flex flex-wrap gap-3 mt-2">
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "retry")}
+                    className="bg-primary text-on-primary px-4 py-1.5 rounded font-body-sm text-body-sm font-semibold hover:bg-primary/90 transition-colors"
+                  >
+                    Retry Local Model
+                  </button>
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "switch_to_api")}
+                    className="bg-secondary text-on-secondary px-4 py-1.5 rounded font-body-sm text-body-sm font-semibold hover:bg-secondary/90 transition-colors"
+                  >
+                    Switch to Cloud API
+                  </button>
+                  <button
+                    onClick={() => void handleRecoverAction(activeJob!.id, activeTask.id, "cancel")}
+                    className="bg-surface-container border border-outline px-4 py-1.5 rounded font-body-sm text-body-sm text-on-surface hover:bg-white/5 transition-colors"
+                  >
+                    Cancel Workflow
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-3 mt-2">
+                  <button
+                    onClick={() => void handleRejectAction(activeJob!.id, activeTask.id)}
+                    className="bg-error text-on-error px-4 py-1.5 rounded font-body-sm text-body-sm font-semibold hover:bg-error/90 transition-colors"
+                  >
+                    Deny Action
+                  </button>
+                  <button
+                    onClick={() => void handleApproveAction(activeJob!.id, activeTask.id)}
+                    className="bg-surface-container border border-outline px-4 py-1.5 rounded font-body-sm text-body-sm text-on-surface hover:bg-white/5 transition-colors"
+                  >
+                    Approve
+                  </button>
+                </div>
               )}
             </div>
           )}
         </div>
+
+        {/* Right Column: Timeline & Logs */}
+        <div className="lg:col-span-5 flex flex-col gap-3 sm:gap-6 h-full min-w-0">
+          {/* Execution Flow Timeline */}
+          <div className="glass-panel rounded-lg p-3 sm:p-4 md:p-6 flex-1 flex flex-col min-h-[180px]">
+            <span className="font-micro-label text-micro-label text-outline uppercase mb-3 sm:mb-6 block">Execution Flow</span>
+            <div className="relative pl-5 sm:pl-6 flex-1 overflow-y-auto max-h-[300px] lg:max-h-none">
+              <div className="absolute top-2 bottom-2 left-[11px] w-px bg-white/10" />
+
+              {activeJob?.tasks.map((task, idx) => (
+                <div key={task.id} className="relative mb-4 sm:mb-6">
+                  <div className={`absolute left-[-22px] sm:left-[-24px] top-1 w-3 h-3 rounded-full z-10 flex items-center justify-center ${
+                    task.status === "completed" ? "bg-primary-container shadow-[0_0_8px_rgba(0,229,255,0.5)]" :
+                    task.status === "running" ? "bg-surface-container border-2 border-primary-container animate-pulse" :
+                    "bg-surface-container border border-outline-variant"
+                  }`}>
+                    {task.status === "completed" && <span className="material-symbols-outlined text-[10px] text-on-primary-container font-bold">check</span>}
+                  </div>
+                  <div className={`rounded p-2.5 sm:p-3 border ${
+                    task.status === "completed" ? "bg-surface-container-low border-white/5 opacity-80" :
+                    task.status === "running" ? "bg-surface-container border-primary/30" :
+                    "bg-surface-container-lowest border-white/5 opacity-50"
+                  }`}>
+                    <div className="flex justify-between items-center mb-1 flex-wrap gap-1">
+                      <span className="font-body-sm text-[11px] sm:text-xs font-semibold text-on-surface">Step {idx + 1}: {task.agent_role}</span>
+                      <span className="font-micro-label text-[9px] text-primary-container uppercase">{task.status}</span>
+                    </div>
+                    <p className="font-code-block text-[10px] sm:text-xs text-on-surface-variant leading-snug">{task.title}</p>
+                    {renderStructuredOutput(task)}
+                  </div>
+                </div>
+              )) ?? (
+                <div className="text-xs text-outline-variant italic">No active workflow running. Generate a plan to begin execution.</div>
+              )}
+            </div>
+          </div>
+
+          {/* Live Terminal Logs */}
+          <div className="glass-panel rounded-lg flex flex-col overflow-hidden h-[180px] sm:h-[200px] shrink-0">
+            <div className="bg-surface-container-high px-3 py-1.5 border-b border-white/5 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-xs sm:text-sm text-on-surface-variant">terminal</span>
+                <span className="font-micro-label text-[9px] sm:text-micro-label text-outline uppercase">Live Terminal Logs</span>
+              </div>
+              <span className="w-1.5 h-1.5 rounded-full bg-[#00ff00] animate-pulse" />
+            </div>
+            <div className="p-2.5 sm:p-4 font-code-block text-[10px] sm:text-[11px] leading-relaxed text-on-surface-variant overflow-y-auto flex-1 bg-surface-container-lowest font-mono">
+
+              {activeJob?.logs.map((log, i) => (
+                <div key={i} className="mb-1">{log}</div>
+              )) ?? (
+                <div className="text-outline-variant">[00:00:00] System initialized. Waiting for task...</div>
+              )}
+              <div ref={logsEndRef} />
+            </div>
+          </div>
+        </div>
       </div>
-    </section>
+    </main>
   );
 }

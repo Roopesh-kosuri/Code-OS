@@ -6,8 +6,8 @@ from threading import Lock
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-from backend.app.core.paths import IGNORED_DIRS
-from backend.app.features.indexing.service import index_manager
+from ...core.paths import IGNORED_DIRS
+from ..indexing.service import index_manager
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +47,19 @@ class WorkspaceWatcher:
             self._watched.add(resolved)
             logger.info("workspace.watch started path=%s watched_count=%s", resolved, len(self._watched))
 
+    def stop(self) -> None:
+        with self._lock:
+            if self._observer.is_alive():
+                logger.info("Stopping workspace file watcher observer...")
+                self._observer.stop()
+                self._observer.join(timeout=3.0)
+            self._watched.clear()
+            self._observer = Observer()
+            logger.info("Workspace file watcher stopped.")
+
     def status(self) -> dict[str, object]:
         return {"running": self._observer.is_alive(), "watched": sorted(self._watched)}
 
 
 watcher = WorkspaceWatcher()
+

@@ -1,7 +1,7 @@
 import math
 import re
 from pathlib import Path
-from backend.app.db.database import get_connection
+from ...db.database import get_db
 
 # Common stopwords and programming keywords to ignore during TF-IDF calculations
 STOPWORDS = {
@@ -44,14 +44,11 @@ async def semantic_search(workspace: str, query: str, limit: int = 50) -> list[d
         return []
     
     # 1. Fetch all indexed files for the workspace from the DB
-    db = await get_connection()
-    try:
-        rows = await db.execute_fetchall(
-            "SELECT path, relative_path, language FROM repo_index_files WHERE workspace = ?",
-            (workspace,)
-        )
-    finally:
-        await db.close()
+    db = await get_db()
+    rows = await db.execute_fetchall(
+        "SELECT path, relative_path, language FROM repo_index_files WHERE workspace = ?",
+        (workspace,)
+    )
     
     if not rows:
         return []

@@ -1,10 +1,10 @@
 from fastapi import APIRouter, WebSocket, HTTPException
 
-from backend.app.features.terminal.schemas import (
+from .schemas import (
   CommandResult, TerminalCommandRequest, TerminalCreateRequest,
   TerminalRenameRequest, TerminalSessionDto
 )
-from backend.app.features.terminal.service import (
+from .service import (
   clear_session, create_session, kill_session, list_sessions,
   rename_session, run_command, handle_terminal_websocket
 )
@@ -13,7 +13,7 @@ router = APIRouter()
 
 
 async def _ensure_trusted(workspace: str):
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
+    from ..workspaces.trust_service import get_workspace_trust
     trust = await get_workspace_trust(workspace)
     if not trust.get("trusted", False):
         raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. Terminal execution is disabled.")
@@ -33,12 +33,15 @@ async def create(payload: TerminalCreateRequest) -> TerminalSessionDto:
 
 @router.post("/sessions/{session_id}/command", response_model=CommandResult)
 async def command(session_id: str, payload: TerminalCommandRequest) -> CommandResult:
+    from app.core.rate_limiter import rate_limiter
+    rate_limiter.check("terminal_exec", max_requests=10, window_seconds=10.0)
     session = next((s for s in list_sessions() if s.id == session_id), None)
     if not session:
         raise HTTPException(status_code=404, detail="Terminal session not found")
     await _ensure_trusted(session.cwd)
     output, exit_code, background = await run_command(session_id, payload.command, payload.background)
     return CommandResult(output=output, exit_code=exit_code, background=background, cwd=session.cwd)
+
 
 
 @router.post("/sessions/{session_id}/clear")
@@ -62,12 +65,19 @@ async def kill(session_id: str) -> dict[str, str]:
 @router.websocket("/ws")
 async def terminal_websocket(websocket: WebSocket) -> None:
     cwd = websocket.query_params.get("cwd")
-    if cwd:
-        from backend.app.features.workspaces.trust_service import get_workspace_trust
-        trust = await get_workspace_trust(cwd)
-        if not trust.get("trusted", False):
-            await websocket.accept()
-            await websocket.send_text("\r\n\x1b[31m[Workspace is in Restricted Mode. Terminal execution is disabled.]\x1b[0m\r\n")
-            await websocket.close(code=4003)
-            return
+    # SECURITY: reject WebSocket connections that do not supply a workspace path.
+    # Without a cwd we cannot determine trust, so granting a shell would be a
+    # trust-check bypass.
+    if not cwd:
+        await websocket.accept()
+        await websocket.send_text("\r\n\x1b[31m[No workspace path provided. Terminal connection rejected.]\x1b[0m\r\n")
+        await websocket.close(code=4003)
+        return
+    from ..workspaces.trust_service import get_workspace_trust
+    trust = await get_workspace_trust(cwd)
+    if not trust.get("trusted", False):
+        await websocket.accept()
+        await websocket.send_text("\r\n\x1b[31m[Workspace is in Restricted Mode. Terminal execution is disabled.]\x1b[0m\r\n")
+        await websocket.close(code=4003)
+        return
     await handle_terminal_websocket(websocket)

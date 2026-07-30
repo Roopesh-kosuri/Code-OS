@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from pydantic import BaseModel
 from typing import Dict, List, Optional
-from backend.app.features.settings.service import list_settings, set_setting as save_setting
+from ...features.settings.service import list_settings, set_setting as save_setting
 
 logger = logging.getLogger(__name__)
 

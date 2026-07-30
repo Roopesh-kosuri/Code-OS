@@ -8,10 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.app.core.paths import IGNORED_DIRS, normalize_path
-from backend.app.db.database import get_connection
-from backend.app.features.indexing.language import detect_language
-from backend.app.features.indexing.parsers import ParsedSymbol, parse_package_json, parse_requirements, parse_source
+from ...core.paths import IGNORED_DIRS, normalize_path
+from ...db.database import get_db
+from .language import detect_language
+from .parsers import ParsedSymbol, parse_package_json, parse_requirements, parse_source
 
 logger = logging.getLogger(__name__)
 
@@ -244,89 +244,83 @@ def _detect_entry_points(root: Path) -> list[str]:
 
 
 async def _load_previous_file_state(workspace: str) -> dict[str, tuple[int, int, str]]:
-    db = await get_connection()
-    try:
-        rows = await db.execute_fetchall("SELECT path, mtime_ns, size, content_hash FROM repo_index_files WHERE workspace = ?", (workspace,))
-        return {row["path"]: (row["mtime_ns"], row["size"], row["content_hash"]) for row in rows}
-    finally:
-        await db.close()
+    db = await get_db()
+    rows = await db.execute_fetchall("SELECT path, mtime_ns, size, content_hash FROM repo_index_files WHERE workspace = ?", (workspace,))
+    return {row["path"]: (row["mtime_ns"], row["size"], row["content_hash"]) for row in rows}
 
 
 async def _store_index(result: WorkspaceIndexResult) -> None:
-    db = await get_connection()
-    try:
-        current_paths = {item.path for item in result.files}
-        existing_rows = await db.execute_fetchall("SELECT path FROM repo_index_files WHERE workspace = ?", (result.workspace,))
-        removed_paths = [row["path"] for row in existing_rows if row["path"] not in current_paths]
-        await db.executemany("DELETE FROM repo_index_files WHERE workspace = ? AND path = ?", [(result.workspace, path) for path in removed_paths])
-        await db.executemany("DELETE FROM repo_symbols WHERE workspace = ? AND path = ?", [(result.workspace, path) for path in removed_paths])
-        await db.executemany("DELETE FROM repo_import_edges WHERE workspace = ? AND source_path = ?", [(result.workspace, path) for path in removed_paths])
-        await db.execute("DELETE FROM repo_dependencies WHERE workspace = ?", (result.workspace,))
-        await db.execute("DELETE FROM repo_folders WHERE workspace = ?", (result.workspace,))
+    db = await get_db()
+    current_paths = {item.path for item in result.files}
+    existing_rows = await db.execute_fetchall("SELECT path FROM repo_index_files WHERE workspace = ?", (result.workspace,))
+    removed_paths = [row["path"] for row in existing_rows if row["path"] not in current_paths]
+    await db.executemany("DELETE FROM repo_index_files WHERE workspace = ? AND path = ?", [(result.workspace, path) for path in removed_paths])
+    await db.executemany("DELETE FROM repo_symbols WHERE workspace = ? AND path = ?", [(result.workspace, path) for path in removed_paths])
+    await db.executemany("DELETE FROM repo_import_edges WHERE workspace = ? AND source_path = ?", [(result.workspace, path) for path in removed_paths])
+    await db.execute("DELETE FROM repo_dependencies WHERE workspace = ?", (result.workspace,))
+    await db.execute("DELETE FROM repo_folders WHERE workspace = ?", (result.workspace,))
 
-        await db.executemany(
-            """
-            INSERT INTO repo_index_files(workspace, path, relative_path, language, size, mtime_ns, content_hash, symbol_count, imports_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(workspace, path) DO UPDATE SET
-                relative_path = excluded.relative_path,
-                language = excluded.language,
-                size = excluded.size,
-                mtime_ns = excluded.mtime_ns,
-                content_hash = excluded.content_hash,
-                symbol_count = excluded.symbol_count,
-                imports_json = excluded.imports_json,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            [
-                (
-                    result.workspace,
-                    item.path,
-                    item.relative_path,
-                    item.language,
-                    item.size,
-                    item.mtime_ns,
-                    item.content_hash,
-                    len(item.symbols),
-                    json.dumps(item.imports),
-                )
-                for item in result.files
-                if item.changed
-            ],
-        )
-        symbol_rows = []
-        edge_rows = []
-        for item in result.files:
-            if not item.changed:
-                continue
-            await db.execute("DELETE FROM repo_symbols WHERE workspace = ? AND path = ?", (result.workspace, item.path))
-            await db.execute("DELETE FROM repo_import_edges WHERE workspace = ? AND source_path = ?", (result.workspace, item.path))
-            for symbol in item.symbols:
-                symbol_rows.append((result.workspace, item.path, symbol.name, symbol.kind, item.language, symbol.line, symbol.column, symbol.signature, symbol.parent))
-            for module in item.imports:
-                edge_rows.append((result.workspace, item.path, module, _resolve_import(result, item.path, module), "import"))
-        await db.executemany(
-            """
-            INSERT INTO repo_symbols(workspace, path, name, kind, language, line, column, signature, parent)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            symbol_rows,
-        )
-        await db.executemany(
-            "INSERT OR REPLACE INTO repo_import_edges(workspace, source_path, module, target_path, kind) VALUES (?, ?, ?, ?, ?)",
-            edge_rows,
-        )
-        await db.executemany(
-            "INSERT OR REPLACE INTO repo_dependencies(workspace, name, version, source) VALUES (?, ?, ?, ?)",
-            [(result.workspace, name, version, source) for name, version, source in result.dependencies],
-        )
-        await db.executemany(
-            "INSERT OR REPLACE INTO repo_folders(workspace, path, relative_path, file_count, folder_count) VALUES (?, ?, ?, ?, ?)",
-            [(result.workspace, path, rel, file_count, folder_count) for path, (rel, file_count, folder_count) in result.folders.items()],
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.executemany(
+        """
+        INSERT INTO repo_index_files(workspace, path, relative_path, language, size, mtime_ns, content_hash, symbol_count, imports_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace, path) DO UPDATE SET
+            relative_path = excluded.relative_path,
+            language = excluded.language,
+            size = excluded.size,
+            mtime_ns = excluded.mtime_ns,
+            content_hash = excluded.content_hash,
+            symbol_count = excluded.symbol_count,
+            imports_json = excluded.imports_json,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        [
+            (
+                result.workspace,
+                item.path,
+                item.relative_path,
+                item.language,
+                item.size,
+                item.mtime_ns,
+                item.content_hash,
+                len(item.symbols),
+                json.dumps(item.imports),
+            )
+            for item in result.files
+            if item.changed
+        ],
+    )
+    symbol_rows = []
+    edge_rows = []
+    for item in result.files:
+        if not item.changed:
+            continue
+        await db.execute("DELETE FROM repo_symbols WHERE workspace = ? AND path = ?", (result.workspace, item.path))
+        await db.execute("DELETE FROM repo_import_edges WHERE workspace = ? AND source_path = ?", (result.workspace, item.path))
+        for symbol in item.symbols:
+            symbol_rows.append((result.workspace, item.path, symbol.name, symbol.kind, item.language, symbol.line, symbol.column, symbol.signature, symbol.parent))
+        for module in item.imports:
+            edge_rows.append((result.workspace, item.path, module, _resolve_import(result, item.path, module), "import"))
+    await db.executemany(
+        """
+        INSERT INTO repo_symbols(workspace, path, name, kind, language, line, column, signature, parent)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        symbol_rows,
+    )
+    await db.executemany(
+        "INSERT OR REPLACE INTO repo_import_edges(workspace, source_path, module, target_path, kind) VALUES (?, ?, ?, ?, ?)",
+        edge_rows,
+    )
+    await db.executemany(
+        "INSERT OR REPLACE INTO repo_dependencies(workspace, name, version, source) VALUES (?, ?, ?, ?)",
+        [(result.workspace, name, version, source) for name, version, source in result.dependencies],
+    )
+    await db.executemany(
+        "INSERT OR REPLACE INTO repo_folders(workspace, path, relative_path, file_count, folder_count) VALUES (?, ?, ?, ?, ?)",
+        [(result.workspace, path, rel, file_count, folder_count) for path, (rel, file_count, folder_count) in result.folders.items()],
+    )
+    await db.commit()
 
 
 def _resolve_import(result: WorkspaceIndexResult, source_path: str, module: str) -> str | None:
@@ -359,94 +353,86 @@ async def _mark_status(
     entry_points: list[str] | None = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
-    db = await get_connection()
-    try:
-        await db.execute(
-            """
-            INSERT INTO repo_index_status(workspace, status, message, started_at, completed_at, total_files, indexed_files, changed_files, project_type, language_summary, frameworks, entry_points)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(workspace) DO UPDATE SET
-                status = excluded.status,
-                message = excluded.message,
-                started_at = COALESCE(excluded.started_at, repo_index_status.started_at),
-                completed_at = COALESCE(excluded.completed_at, repo_index_status.completed_at),
-                total_files = excluded.total_files,
-                indexed_files = excluded.indexed_files,
-                changed_files = excluded.changed_files,
-                project_type = excluded.project_type,
-                language_summary = excluded.language_summary,
-                frameworks = excluded.frameworks,
-                entry_points = excluded.entry_points
-            """,
-            (
-                workspace,
-                status,
-                message,
-                now if started else None,
-                now if completed else None,
-                total_files or 0,
-                indexed_files or 0,
-                changed_files or 0,
-                project_type or "unknown",
-                json.dumps(language_summary or {}),
-                json.dumps(frameworks or []),
-                json.dumps(entry_points or []),
-            ),
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    db = await get_db()
+    await db.execute(
+        """
+        INSERT INTO repo_index_status(workspace, status, message, started_at, completed_at, total_files, indexed_files, changed_files, project_type, language_summary, frameworks, entry_points)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace) DO UPDATE SET
+            status = excluded.status,
+            message = excluded.message,
+            started_at = COALESCE(excluded.started_at, repo_index_status.started_at),
+            completed_at = COALESCE(excluded.completed_at, repo_index_status.completed_at),
+            total_files = excluded.total_files,
+            indexed_files = excluded.indexed_files,
+            changed_files = excluded.changed_files,
+            project_type = excluded.project_type,
+            language_summary = excluded.language_summary,
+            frameworks = excluded.frameworks,
+            entry_points = excluded.entry_points
+        """,
+        (
+            workspace,
+            status,
+            message,
+            now if started else None,
+            now if completed else None,
+            total_files or 0,
+            indexed_files or 0,
+            changed_files or 0,
+            project_type or "unknown",
+            json.dumps(language_summary or {}),
+            json.dumps(frameworks or []),
+            json.dumps(entry_points or []),
+        ),
+    )
+    await db.commit()
 
 
 async def get_index_status(workspace: str) -> dict[str, Any] | None:
     normalized = str(normalize_path(workspace))
-    db = await get_connection()
-    try:
-        cursor = await db.execute("SELECT * FROM repo_index_status WHERE workspace = ?", (normalized,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        return _status_from_row(row)
-    finally:
-        await db.close()
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM repo_index_status WHERE workspace = ?", (normalized,))
+    row = await cursor.fetchone()
+    if not row:
+        return None
+    return _status_from_row(row)
 
 
 async def get_index_summary(workspace: str, limit: int = 50) -> dict[str, Any]:
     normalized = str(normalize_path(workspace))
-    db = await get_connection()
-    try:
-        status_cursor = await db.execute("SELECT * FROM repo_index_status WHERE workspace = ?", (normalized,))
-        status_row = await status_cursor.fetchone()
-        files = await db.execute_fetchall(
-            "SELECT * FROM repo_index_files WHERE workspace = ? ORDER BY relative_path LIMIT ?",
-            (normalized, limit),
-        )
-        symbols = await db.execute_fetchall(
-            "SELECT path, name, kind, language, line, column, signature, parent FROM repo_symbols WHERE workspace = ? ORDER BY path, line LIMIT ?",
-            (normalized, limit),
-        )
-        dependencies = await db.execute_fetchall(
-            "SELECT name, version, source FROM repo_dependencies WHERE workspace = ? ORDER BY source, name LIMIT ?",
-            (normalized, limit),
-        )
-        return {
-            "status": _status_from_row(status_row) if status_row else None,
-            "files": [
-                {
-                    "path": row["path"],
-                    "relative_path": row["relative_path"],
-                    "language": row["language"],
-                    "size": row["size"],
-                    "symbol_count": row["symbol_count"],
-                    "imports": json.loads(row["imports_json"]),
-                }
-                for row in files
-            ],
-            "symbols": [dict(row) for row in symbols],
-            "dependencies": [dict(row) for row in dependencies],
-        }
-    finally:
-        await db.close()
+    db = await get_db()
+    status_cursor = await db.execute("SELECT * FROM repo_index_status WHERE workspace = ?", (normalized,))
+    status_row = await status_cursor.fetchone()
+    files = await db.execute_fetchall(
+        "SELECT * FROM repo_index_files WHERE workspace = ? ORDER BY relative_path LIMIT ?",
+        (normalized, limit),
+    )
+    symbols = await db.execute_fetchall(
+        "SELECT path, name, kind, language, line, column, signature, parent FROM repo_symbols WHERE workspace = ? ORDER BY path, line LIMIT ?",
+        (normalized, limit),
+    )
+    dependencies = await db.execute_fetchall(
+        "SELECT name, version, source FROM repo_dependencies WHERE workspace = ? ORDER BY source, name LIMIT ?",
+        (normalized, limit),
+    )
+
+    return {
+        "status": _status_from_row(status_row) if status_row else None,
+        "files": [
+            {
+                "path": row["path"],
+                "relative_path": row["relative_path"],
+                "language": row["language"],
+                "size": row["size"],
+                "symbol_count": row["symbol_count"],
+                "imports": json.loads(row["imports_json"]),
+            }
+            for row in files
+        ],
+        "symbols": [dict(row) for row in symbols],
+        "dependencies": [dict(row) for row in dependencies],
+    }
 
 
 def _status_from_row(row: Any) -> dict[str, Any]:

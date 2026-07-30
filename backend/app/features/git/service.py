@@ -3,7 +3,7 @@ import logging
 from fastapi import HTTPException
 from git import GitCommandError, Repo
 
-from backend.app.core.paths import normalize_path
+from ...core.paths import normalize_path
 
 logger = logging.getLogger(__name__)
 
@@ -45,16 +45,65 @@ def diff(workspace: str, path: str | None = None) -> str:
     return repo.git.diff(*args)
 
 
-def commit(workspace: str, message: str) -> str:
+import fnmatch
+from pathlib import Path
+
+DANGEROUS_PATTERNS = [
+    ".env*", "*.pem", "*.key", "*secret*", "*credential*", "*credentials*", "id_rsa*", "id_ed25519*"
+]
+
+
+
+def is_dangerous_file(filepath: str) -> bool:
+    path_obj = Path(filepath)
+    name = path_obj.name.lower()
+    for pat in DANGEROUS_PATTERNS:
+        if fnmatch.fnmatch(name, pat):
+            return True
+        for part in path_obj.parts:
+            if fnmatch.fnmatch(part.lower(), pat):
+                return True
+    return False
+
+
+def commit(workspace: str, message: str, files: list[str] | None = None) -> str:
     if not message.strip():
         raise HTTPException(status_code=400, detail="Commit message is required")
     repo = repo_for(workspace)
+    from ...core.paths import ensure_within_workspace, normalize_workspace
+    norm_workspace = str(normalize_workspace(workspace))
+
     try:
-        repo.git.add(A=True)
+        if files:
+            # Stage ONLY specific valid, non-dangerous files inside workspace
+            for f in files:
+                valid_path = ensure_within_workspace(norm_workspace, f)
+                rel_path = str(valid_path.relative_to(norm_workspace))
+
+                if is_dangerous_file(rel_path):
+                    logger.warning("Refusing to stage dangerous file: %s", rel_path)
+                    continue
+
+                repo.git.add(rel_path)
+        else:
+            # Stage ONLY tracked modifications (git add -u), NOT untracked files
+            repo.git.add(u=True)
+
+        # Safety Check: Unstage any file matching secret patterns before committing
+        staged_items = [item.a_path for item in repo.index.diff("HEAD")] if repo.head.is_valid() else []
+        for item_path in staged_items:
+            if is_dangerous_file(item_path):
+                logger.warning("Unstaging dangerous secret file from commit: %s", item_path)
+                try:
+                    repo.git.restore("--staged", item_path)
+                except Exception:
+                    repo.git.reset("HEAD", "--", item_path)
+
         commit_obj = repo.index.commit(message)
         return commit_obj.hexsha
     except GitCommandError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 
 def pull(workspace: str) -> str:

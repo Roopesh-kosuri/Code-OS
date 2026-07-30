@@ -1,29 +1,31 @@
 from fastapi import APIRouter, Query
 
-from backend.app.features.search.schemas import FileSearchResult, ReplaceRequest, ReplaceResult, SymbolResult, TextMatch, SemanticSearchResult
-from backend.app.features.search.service import replace_text, search_files, search_symbols, search_text
-from backend.app.features.search.semantic_service import semantic_search
-from backend.app.db.database import get_connection
+from .schemas import FileSearchResult, ReplaceRequest, ReplaceResult, SymbolResult, TextMatch, SemanticSearchResult
+from .service import replace_text, search_files, search_symbols, search_text
+from .semantic_service import semantic_search
+from ...db.database import get_db
 
 router = APIRouter()
 
 
 async def _ensure_trusted(workspace: str):
     from fastapi import HTTPException
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
+    from ..workspaces.trust_service import get_workspace_trust
     trust = await get_workspace_trust(workspace)
     if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. File modifications are disabled.")
+        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode.")
 
 
 @router.get("/semantic", response_model=list[SemanticSearchResult])
 async def semantic(workspace: str = Query(...), query: str = Query(""), limit: int = Query(50)) -> list[SemanticSearchResult]:
+    await _ensure_trusted(workspace)
     results = await semantic_search(workspace, query, limit)
     return [SemanticSearchResult(**item) for item in results]
 
 
 @router.get("/files", response_model=list[FileSearchResult])
 async def files(workspace: str = Query(...), query: str = Query("")) -> list[FileSearchResult]:
+    await _ensure_trusted(workspace)
     return [FileSearchResult(path=str(path), name=path.name) for path in search_files(workspace, query)]
 
 
@@ -35,6 +37,7 @@ async def text(
     case_sensitive: bool = Query(False),
     whole_word: bool = Query(False),
 ) -> list[TextMatch]:
+    await _ensure_trusted(workspace)
     return [
         TextMatch(path=str(path), line=line, column=column, preview=preview)
         for path, line, column, preview in search_text(workspace, query, regex=regex, case_sensitive=case_sensitive, whole_word=whole_word)
@@ -61,9 +64,10 @@ async def replace(payload: ReplaceRequest) -> list[ReplaceResult]:
 
 @router.get("/symbols", response_model=list[SymbolResult])
 async def symbols(workspace: str = Query(...), query: str = Query("")) -> list[SymbolResult]:
+    await _ensure_trusted(workspace)
     # Normalize workspace path to lowercase forward-slashes for comparison
     normalized_ws = workspace.lower().replace("\\", "/").rstrip("/")
-    db = await get_connection()
+    db = await get_db()
     try:
         # The DB may store workspace as absolute path with any slash style.
         # Query all symbols whose workspace normalizes to the same value.
@@ -81,7 +85,5 @@ async def symbols(workspace: str = Query(...), query: str = Query("")) -> list[S
             return [SymbolResult(path=row["path"], line=row["line"], symbol=row["name"], kind=row["kind"]) for row in matched]
     except Exception:
         pass
-    finally:
-        await db.close()
     # Fallback to live scanning if index is empty or query fails
     return [SymbolResult(path=str(path), line=line, symbol=symbol, kind=kind) for path, line, symbol, kind in search_symbols(workspace, query)]

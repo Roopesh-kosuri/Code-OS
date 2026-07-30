@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from backend.app.features.ai.job_service import get_job, update_job_status, update_task_status, add_job_log
-from backend.app.features.ai.event_bus import event_bus
+from .job_service import get_job, update_job_status, update_task_status, add_job_log
+from .event_bus import event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +63,16 @@ class DAGEngine:
                             runnable_tasks.append(t)
                 
                 if not runnable_tasks and not any(t["status"] == "running" for t in tasks):
-                    # If there are no runnable tasks and none are currently running, we have a cycle/deadlock
+                    has_waiting = any(t["status"] == "waiting" for t in tasks)
+                    if has_waiting:
+                        # A task is waiting for user permission or clarification — keep polling silently
+                        await asyncio.sleep(1)
+                        continue
+                    # If there are no runnable tasks and none are currently running or waiting, we have a cycle/deadlock
                     await update_job_status(job_id, "failed", errors="Deadlock detected in task dependencies.")
                     await add_job_log(job_id, "Workflow aborted: deadlock in task dependencies.")
                     break
+
                 
                 # Launch runnable tasks in parallel
                 futures = []
@@ -96,11 +102,11 @@ class DAGEngine:
         await event_bus.publish("task_started", {"job_id": job_id, "task_id": task_id, "role": role})
         
         try:
-            from backend.app.features.ai.agents.agent_factory import AgentFactory
-            from backend.app.features.ai.context_service import gather_context
-            from backend.app.features.ai.service import create_proposal
-            from backend.app.features.ai.schemas import EditProposalRequest, FileChange
-            from backend.app.features.ai.job_service import add_job_modified_file
+            from .agents.agent_factory import AgentFactory
+            from .context_service import gather_context
+            from .service import create_proposal
+            from .schemas import EditProposalRequest, FileChange
+            from .job_service import add_job_modified_file
             
             job_data = await get_job(job_id)
             workspace = job_data["workspace"] if job_data else ""
@@ -150,8 +156,48 @@ class DAGEngine:
             await event_bus.publish("task_completed", {"job_id": job_id, "task_id": task_id})
             
         except Exception as exc:
-            await update_task_status(task_id, "failed", reasoning_summary=str(exc))
-            await add_job_log(job_id, f"Agent [{role}] failed task '{task['title']}': {exc}")
-            await event_bus.publish("task_failed", {"job_id": job_id, "task_id": task_id, "error": str(exc)})
+            logger.warning("Agent [%s] task '%s' failed: %s. Prompting user for fallback recovery...", role, task['title'], exc)
+            await add_job_log(job_id, f"Agent [{role}] encountered error on '{task['title']}': {exc}")
+            
+            # Prompt user with Graceful Degradation fallback options
+            from .agents import permission_state as perm_state
+            from .job_service import update_task_pending_action
+            
+            event = asyncio.Event()
+            perm_state.pending_permission_events[task_id] = event
+            
+            action_payload = {
+                "type": "task_failure",
+                "details": f"Agent [{role}] encountered an internal issue on task '{task['title']}': {exc}",
+                "error": str(exc)
+            }
+            await update_task_pending_action(task_id, action_payload)
+            await update_task_status(task_id, "waiting", reasoning_summary=str(exc))
+            
+            await event.wait()
+            
+            perm_state.pending_permission_events.pop(task_id, None)
+            decision = perm_state.pending_permission_decisions.pop(task_id, "cancel")
+            await update_task_pending_action(task_id, None)
+            
+            if decision == "retry":
+                await add_job_log(job_id, f"User selected 'Try Again'. Re-queuing task '{task['title']}'...")
+                await update_task_status(task_id, "queued")
+            elif decision == "reduced_pipeline":
+                await add_job_log(job_id, f"User selected 'Continue with Reduced Pipeline'. Skipping Review & Documentation tasks...")
+                await update_task_status(task_id, "completed", reasoning_summary=f"Completed with reduced pipeline (Skipped: {exc})")
+                
+                # Skip Review Agent and Documentation Agent tasks in this job
+                job_data = await get_job(job_id)
+                if job_data:
+                    for t in job_data.get("tasks", []):
+                        if t["agent_role"] in ("Review Agent", "Documentation Agent") and t["status"] in ("queued", "waiting"):
+                            await update_task_status(t["id"], "completed", reasoning_summary="Skipped by user choice (Reduced Pipeline)")
+                            await add_job_log(job_id, f"Task '{t['title']}' ({t['agent_role']}) skipped by user choice.")
+                await event_bus.publish("task_completed", {"job_id": job_id, "task_id": task_id})
+            else:
+                await update_task_status(task_id, "failed", reasoning_summary=str(exc))
+                await add_job_log(job_id, f"Workflow cancelled by user after task failure: {exc}")
+                await event_bus.publish("task_failed", {"job_id": job_id, "task_id": task_id, "error": str(exc)})
 
 dag_engine = DAGEngine()

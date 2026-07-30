@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Query
 
-from backend.app.features.settings.schemas import ApiKeyRequest, ApiKeyStatus, SettingDto, SettingUpdateRequest, MemoryUpdateRequest
-from backend.app.features.settings.service import list_api_key_status, list_settings, set_setting, store_api_key, clear_api_keys, clear_all_history
-from backend.app.features.settings.memory_service import get_all_memory, save_memory_key, clear_memory
+from .schemas import ApiKeyRequest, ApiKeyStatus, SettingDto, SettingUpdateRequest, MemoryUpdateRequest
+from .service import list_api_key_status, list_settings, set_setting, store_api_key, clear_api_keys, clear_all_history
+from .memory_service import get_all_memory, save_memory_key, clear_memory
 
 router = APIRouter()
 

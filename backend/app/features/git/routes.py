@@ -1,32 +1,35 @@
 from fastapi import APIRouter, Query, HTTPException
 
-from backend.app.features.git.schemas import BranchCreateRequest, BranchSwitchRequest, CommitHistoryItem, CommitRequest, DiffResponse, GitStatusResponse
-from backend.app.features.git.service import commit, create_branch, diff, history, pull, push, status, switch_branch
+from .schemas import BranchCreateRequest, BranchSwitchRequest, CommitHistoryItem, CommitRequest, DiffResponse, GitStatusResponse
+from .service import commit, create_branch, diff, history, pull, push, status, switch_branch
 
 router = APIRouter()
 
 
 async def _ensure_trusted(workspace: str):
-    from backend.app.features.workspaces.trust_service import get_workspace_trust
+    from ..workspaces.trust_service import get_workspace_trust
     trust = await get_workspace_trust(workspace)
     if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. Git mutation operations are disabled.")
+        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode.")
 
 
 @router.get("/status", response_model=GitStatusResponse)
 async def git_status(workspace: str = Query(...)) -> GitStatusResponse:
+    await _ensure_trusted(workspace)
     return GitStatusResponse(**status(workspace))
 
 
 @router.get("/diff", response_model=DiffResponse)
 async def git_diff(workspace: str = Query(...), path: str | None = Query(default=None)) -> DiffResponse:
+    await _ensure_trusted(workspace)
     return DiffResponse(diff=diff(workspace, path))
 
 
 @router.post("/commit")
 async def git_commit(payload: CommitRequest) -> dict[str, str]:
     await _ensure_trusted(payload.workspace)
-    return {"sha": commit(payload.workspace, payload.message)}
+    return {"sha": commit(payload.workspace, payload.message, payload.files)}
+
 
 
 @router.post("/pull")
@@ -55,4 +58,5 @@ async def branch_create(payload: BranchCreateRequest) -> dict[str, str]:
 
 @router.get("/history", response_model=list[CommitHistoryItem])
 async def git_history(workspace: str = Query(...), limit: int = Query(30, ge=1, le=100)) -> list[CommitHistoryItem]:
+    await _ensure_trusted(workspace)
     return [CommitHistoryItem(**item) for item in history(workspace, limit)]

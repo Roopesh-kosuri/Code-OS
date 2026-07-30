@@ -39,22 +39,19 @@ export function GitPanel() {
 
   if (!workspace) {
     return (
-      <section className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2 select-none border-b border-surface-700 bg-surface-900">
-        <GitBranch size={22} className="text-slate-600 mb-1 animate-pulse" />
-        <span className="text-xs text-slate-500">Open a workspace to view Git status.</span>
+      <section className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2 select-none border-b border-outline-variant/20 bg-surface-container-low/90 glass-panel">
+        <GitBranch size={22} className="text-on-surface-variant/40 mb-1 animate-pulse" />
+        <span className="text-xs text-on-surface-variant/60">Open a workspace to view Git status.</span>
       </section>
     );
   }
 
   return (
-    <section className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[auto_38px_minmax(0,1fr)_auto]">
-      <div className="bg-rose-950 text-white text-[10px] p-1 font-mono break-all select-all">
-        DEBUG: ws={workspace?.path || "NULL"} msg={message || "EMPTY"} status={status ? "OK" : "NULL"}
-      </div>
-      <div className="flex items-center justify-between px-3 min-w-0 w-full">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
-          <GitBranch size={15} />
-          Git
+    <section className="grid h-full min-h-0 w-full min-w-0 grid-cols-1 grid-rows-[42px_minmax(0,1fr)_auto] border-b border-outline-variant/20 bg-surface-container-low/90 glass-panel">
+      <div className="flex items-center justify-between border-b border-outline-variant/20 px-3.5 min-w-0 w-full bg-surface-container-low/70">
+        <div className="flex items-center gap-2 font-headline-md text-headline-md font-semibold text-on-surface">
+          <GitBranch size={16} className="text-primary" />
+          <span>Source Control</span>
         </div>
         <IconButton label="Refresh Git" icon={<RefreshCw size={15} />} onClick={() => void refresh()} disabled={!workspace} />
       </div>

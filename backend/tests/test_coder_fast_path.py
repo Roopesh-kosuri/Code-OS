@@ -1,8 +1,8 @@
 import unittest
 
-from backend.app.features.ai.agents.coder import CoderAgent, PlanModel
-from backend.app.features.ai.schemas import FileChange
-from backend.app.features.ai.service import _provider_resilience
+from app.features.ai.agents.coder import CoderAgent, PlanModel
+from app.features.ai.schemas import FileChange
+from app.features.ai.service import _provider_resilience
 
 
 def plan(*, files=None, risks=None, goal="Add a print statement"):

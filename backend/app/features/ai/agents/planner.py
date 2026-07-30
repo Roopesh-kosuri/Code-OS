@@ -1,21 +1,20 @@
 import json
 import logging
-from backend.app.features.ai.service import provider_for
-from backend.app.features.ai.schemas import ChatRequest, ChatMessage
+from ..service import provider_for
+from ..schemas import ChatRequest, ChatMessage
 
 logger = logging.getLogger(__name__)
 
 PLANNER_SYSTEM_PROMPT = """You are the Lead Task Planner for CODE OS. Your role is to decompose a complex software engineering request into a Directed Acyclic Graph (DAG) of dependent subtasks.
 
 Available Agent Roles:
-- Coding Agent: Writes/modifies workspace code and logic.
-- Review Agent: Audits code quality, style, and structure.
+- Coding Agent: Writes/modifies workspace code, logic, refactoring, security fixes, and performance optimization.
+- Review Agent: Audits code quality, style, security risks, and architecture.
 - Testing Agent: Writes unit tests and executes code validation tests.
 - Documentation Agent: Updates module summaries, API lists, and README.md.
-- Research Agent: Inspects directories, summaries APIs, and references references.
-- Security Agent: Performs vulnerability scans and secures implementations.
-- Performance Agent: Profiles execution bottlenecks and refactors code.
-- Git Agent: Summarizes differences, generates release notes, and stages commits.
+
+CRITICAL: Assign tasks ONLY to the 4 Available Agent Roles listed above. For security analysis or performance profiling, assign to 'Coding Agent' or 'Review Agent' with specialized instructions in the task title.
+
 
 Format your output EXACTLY as a JSON object matching this structure:
 {
@@ -119,26 +118,21 @@ class PlannerAgent:
         # Simple generic fallback task graph if the LLM fails.
         # Each call generates fresh UUIDs so concurrent jobs never collide on
         # the UNIQUE constraint in the agent_tasks table.
+        # NOTE: Only use the 4 valid agent roles: Coding Agent, Review Agent,
+        # Testing Agent, Documentation Agent. "Research Agent" is NOT valid
+        # and will cause the DAG engine to fail with an unhandled role error.
         import uuid
         sfx = uuid.uuid4().hex[:8]
-        id_research = f"task_research_{sfx}"
         id_coding   = f"task_coding_{sfx}"
         id_review   = f"task_review_{sfx}"
         id_testing  = f"task_testing_{sfx}"
         id_docs     = f"task_docs_{sfx}"
         return [
             {
-                "id": id_research,
-                "title": f"Research implementation details for '{user_request}'",
-                "agent_role": "Research Agent",
-                "dependencies": [],
-                "estimated_effort": "15 mins"
-            },
-            {
                 "id": id_coding,
-                "title": f"Implement core changes for '{user_request}'",
+                "title": f"Implement changes for '{user_request}'",
                 "agent_role": "Coding Agent",
-                "dependencies": [id_research],
+                "dependencies": [],
                 "estimated_effort": "1 hour"
             },
             {

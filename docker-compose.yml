@@ -1,12 +1,9 @@
-version: '3.8'
-
 services:
   code-os:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "5173:5173"
       - "8000:8000"
     volumes:
       - code-os-data:/workspace-data

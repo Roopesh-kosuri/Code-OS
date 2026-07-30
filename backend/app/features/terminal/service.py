@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from backend.app.core.paths import normalize_path
+from ...core.paths import normalize_path
 
 logger = logging.getLogger(__name__)
 
@@ -44,42 +44,132 @@ def create_session(cwd: str, shell: str | None = None) -> TerminalSession:
     return session
 
 
+# ---------------------------------------------------------------------------
+# Environment allowlist for terminal subprocess execution.
+#
+# SECURITY: We use an ALLOWLIST (not a blacklist) to control which environment
+# variables are passed to processes spawned by the terminal.  A blacklist is
+# broken by design: pattern-matching on substrings like "key" would kill
+# legitimate variables such as SSH_AUTH_SOCK, KEYBOARD_LAYOUT, GPG_KEY_ID,
+# MONKEY_PATCH, etc.
+#
+# Only variables that are operationally necessary for a shell to function are
+# forwarded.  Secrets (API keys, cloud credentials, database passwords, tokens)
+# are never forwarded even if they happen to be present in the parent process.
+# ---------------------------------------------------------------------------
+
+# Variables passed through unconditionally (exact name, case-insensitive on
+# Windows but exact-case on POSIX because Unix env vars are case-sensitive).
+_ALLOWED_ENV_VARS: frozenset[str] = frozenset({
+    # Shell / session identity
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "USERNAME",          # Windows equivalent of USER
+    "USERPROFILE",       # Windows home directory
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_MESSAGES",
+    "LC_CTYPE",
+    "LANGUAGE",
+    "TERM",
+    "TERM_PROGRAM",
+    "COLORTERM",
+    "COLUMNS",
+    "LINES",
+
+    # SSH agent forwarding (the socket path is not a secret)
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+
+    # GPG agent
+    "GPG_AGENT_INFO",
+
+    # Python runtime
+    "PYTHONPATH",
+    "PYTHONIOENCODING",
+    "VIRTUAL_ENV",
+    "CONDA_PREFIX",
+    "CONDA_DEFAULT_ENV",
+
+    # Node/npm toolchain
+    "NVM_DIR",
+    "NODE_PATH",
+    "NPM_CONFIG_PREFIX",
+
+    # Rust toolchain
+    "CARGO_HOME",
+    "RUSTUP_HOME",
+
+    # Go toolchain
+    "GOPATH",
+    "GOROOT",
+
+    # Java
+    "JAVA_HOME",
+
+    # macOS specifics
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+
+    # Windows specifics
+    "COMSPEC",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMFILES",
+    "PROGRAMDATA",
+    "COMPUTERNAME",
+
+    # Display / Wayland / X11
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XDG_SESSION_TYPE",
+    "DBUS_SESSION_BUS_ADDRESS",
+})
+
+
+def _build_safe_environment() -> dict[str, str]:
+    """
+    Return a copy of the environment containing ONLY the variables in
+    _ALLOWED_ENV_VARS.  This prevents secrets (API keys, cloud credentials,
+    tokens, passwords) from leaking into terminal subprocesses — including
+    commands executed automatically by the AI agent.
+    """
+    safe: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key in _ALLOWED_ENV_VARS:
+            safe[key] = value
+    # Always inject a sane TERM value so TUI programs behave correctly.
+    safe.setdefault("TERM", "xterm-256color")
+    return safe
+
+
+def _is_cd_command(command: str) -> bool:
+    cmd_lower = command.strip().lower()
+    return cmd_lower == "cd" or cmd_lower.startswith("cd ") or cmd_lower.startswith("cd\t")
+
+
+def _sanitize_env(env_dict: dict[str, str] | None = None) -> dict[str, str]:
+    if env_dict is None:
+        env_dict = dict(os.environ)
+    safe: dict[str, str] = {}
+    for key, value in env_dict.items():
+        if key in _ALLOWED_ENV_VARS:
+            safe[key] = value
+    safe.setdefault("TERM", "xterm-256color")
+    return safe
+
+
+# Keep the old name as an alias so call-sites don't need updating yet.
 def _sanitize_environment() -> dict[str, str]:
-    """Create a sanitized copy of environment variables, stripping credentials and API keys."""
-    env = os.environ.copy()
-    
-    # 1. Explicitly enumerated variables from codebase configuration
-    explicit_keys = {
-        "CODE_OS_DATA_DIR",
-        "CODE_OS_DATABASE_NAME",
-        "CODE_OS_ENCRYPTION_KEY_NAME",
-        "CODE_OS_OLLAMA_BASE_URL",
-        "CODE_OS_HOME",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-        "GROQ_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "MISTRAL_API_KEY",
-        "OPENROUTER_API_KEY",
-        "NVIDIA_API_KEY",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "GITHUB_TOKEN",
-        "GIT_AUTH_TOKEN",
-        "NPM_TOKEN",
-    }
-    
-    # 2. Case-insensitive substring patterns to cover custom credential variables
-    patterns = ["key", "secret", "token", "password", "passwd", "credential", "auth", "private"]
-    
-    for key in list(env.keys()):
-        key_upper = key.upper()
-        if key_upper in explicit_keys or any(pat in key.lower() for pat in patterns):
-            env.pop(key, None)
-            
-    return env
+    return _build_safe_environment()
 
 
 async def run_command(session_id: str, command: str, background: bool) -> tuple[str, int | None, bool]:
@@ -89,8 +179,9 @@ async def run_command(session_id: str, command: str, background: bool) -> tuple[
     if not command.strip():
         return "", 0, False
 
-    if command.strip().lower().startswith("cd"):
-        return _change_directory(session, command)
+    if _is_cd_command(command):
+        return _change_directory(session, command, workspace_root=session.cwd)
+
 
     if os.name == "nt":
         args = [session.shell, "-NoLogo", "-NoProfile", "-Command", command]
@@ -110,18 +201,33 @@ async def run_command(session_id: str, command: str, background: bool) -> tuple[
     if background:
         return f"Started background process {process.pid}", None, True
 
-    stdout, _ = await process.communicate()
-    return stdout.decode("utf-8", errors="replace"), process.returncode, False
+    try:
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=60.0)
+        return stdout.decode("utf-8", errors="replace"), process.returncode, False
+    except asyncio.TimeoutError:
+        try:
+            process.kill()
+            await process.wait()
+        except Exception:
+            pass
+        return f"Command timed out after 60 seconds: {command}", 124, False
 
 
-def _change_directory(session: TerminalSession, command: str) -> tuple[str, int | None, bool]:
+
+def _change_directory(session: TerminalSession, command: str, workspace_root: str | None = None) -> tuple[str, int | None, bool]:
     parts = command.strip().split(maxsplit=1)
     if len(parts) > 1:
         raw_target = parts[1].strip("\"'")
         target = raw_target if os.path.isabs(raw_target) else os.path.join(session.cwd, raw_target)
+        # Do NOT call expanduser on client-supplied paths.
         next_dir = normalize_path(target)
     else:
-        next_dir = normalize_path(os.path.expanduser("~"))
+        # bare 'cd' — in a sandboxed terminal we stay in the workspace root
+        # rather than navigating to the user's home directory.
+        if workspace_root:
+            next_dir = normalize_path(workspace_root)
+        else:
+            next_dir = normalize_path(session.cwd)
     if not next_dir.is_dir():
         return f"Directory not found: {next_dir}", 1, False
     session.cwd = str(next_dir)
@@ -227,8 +333,7 @@ def _write_to_pty(proc: Any, data: str) -> None:
 
 def create_pty_session(cwd: str, session_id: str) -> PtySession:
   """Create and start a real PTY session (sync, thread-safe)."""
-  from pathlib import Path
-  cwd_path = Path(cwd).resolve()
+  cwd_path = normalize_path(cwd)
   if not cwd_path.is_dir():
     raise HTTPException(status_code=404, detail="Working directory not found")
 
@@ -257,7 +362,12 @@ def kill_pty_session(session_id: str) -> None:
 
 async def handle_terminal_websocket(websocket: WebSocket) -> None:
   await websocket.accept()
-  cwd = websocket.query_params.get("cwd", os.getcwd())
+  # The route handler guarantees cwd is present and trusted before calling us.
+  cwd = websocket.query_params.get("cwd")
+  if not cwd:
+    await websocket.send_text("\r\n\x1b[31m[Internal error: no workspace path in WebSocket session.]\x1b[0m\r\n")
+    await websocket.close()
+    return
   session_id = websocket.query_params.get("session_id", f"ws-term-{uuid.uuid4()}")
 
   loop = asyncio.get_event_loop()
@@ -307,8 +417,11 @@ async def handle_terminal_websocket(websocket: WebSocket) -> None:
 
       try:
         msg = json.loads(raw)
-      except json.JSONDecodeError:
+        if not isinstance(msg, dict):
+          msg = {"type": "input", "data": raw}
+      except Exception:
         msg = {"type": "input", "data": raw}
+
 
       if msg.get("type") == "input" and msg.get("data") and session.proc:
         try:

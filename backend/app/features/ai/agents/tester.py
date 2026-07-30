@@ -4,12 +4,12 @@ import re
 import json
 from pathlib import Path
 from typing import Optional, Dict, Any
-from backend.app.features.ai.agents.agent_interface import BaseAgent, AgentOutput
-from backend.app.features.ai.service import provider_for
-from backend.app.features.ai.schemas import ChatRequest, ChatMessage
-from backend.app.features.ai.job_service import add_job_log
-from backend.app.features.ai.event_bus import event_bus
-from backend.app.core.paths import normalize_path
+from .agent_interface import BaseAgent, AgentOutput
+from ..service import provider_for
+from ..schemas import ChatRequest, ChatMessage
+from ..job_service import add_job_log
+from ..event_bus import event_bus
+from ....core.paths import normalize_path
 
 logger = logging.getLogger(__name__)
 

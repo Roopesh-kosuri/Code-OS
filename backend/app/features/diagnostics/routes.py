@@ -3,8 +3,8 @@ import sys
 import threading
 from typing import Dict, Any
 
-from backend.app.core.plugins.plugin_manager import plugin_manager
-from backend.app.db.database import get_connection
+from ...core.plugins.plugin_manager import plugin_manager
+from ...db.database import get_db
 
 router = APIRouter()
 
@@ -78,25 +78,22 @@ async def get_metrics():
     estimated_cost_usd = 0.0
 
     try:
-        db = await get_connection()
-        try:
-            # Query active (running) jobs
-            cursor = await db.execute("SELECT COUNT(*) FROM agent_jobs WHERE status = 'running'")
-            active_jobs_count = (await cursor.fetchone())[0]
+        db = await get_db()
+        # Query active (running) jobs
+        cursor = await db.execute("SELECT COUNT(*) FROM agent_jobs WHERE status = 'running'")
+        active_jobs_count = (await cursor.fetchone())[0]
 
-            # Query overall tokens/duration
-            cursor = await db.execute(
-                "SELECT SUM(token_usage) as total_tokens, AVG(duration) as avg_duration, COUNT(*) as total_jobs FROM agent_jobs"
-            )
-            row = await cursor.fetchone()
-            if row and row["total_jobs"] > 0:
-                total_tokens = row["total_tokens"] or 0
-                avg_duration_sec = row["avg_duration"] or 0.0
-                total_jobs = row["total_jobs"]
-                # Assuming $0.0015 per 1k tokens average (combining input/output costs)
-                estimated_cost_usd = (total_tokens / 1000.0) * 0.0015
-        finally:
-            await db.close()
+        # Query overall tokens/duration
+        cursor = await db.execute(
+            "SELECT SUM(token_usage) as total_tokens, AVG(duration) as avg_duration, COUNT(*) as total_jobs FROM agent_jobs"
+        )
+        row = await cursor.fetchone()
+        if row and row["total_jobs"] > 0:
+            total_tokens = row["total_tokens"] or 0
+            avg_duration_sec = row["avg_duration"] or 0.0
+            total_jobs = row["total_jobs"]
+            # Assuming $0.0015 per 1k tokens average (combining input/output costs)
+            estimated_cost_usd = (total_tokens / 1000.0) * 0.0015
     except Exception:
         pass
 

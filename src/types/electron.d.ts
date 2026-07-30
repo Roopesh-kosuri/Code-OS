@@ -18,6 +18,12 @@ export type CodeOSDesktopApi = {
   terminalKill: (sessionId: string) => void;
   terminalList: () => TerminalSession[];
   onTerminalOutput: (sessionId: string, callback: (data: string) => void) => () => void;
+
+  /**
+   * Returns the backend session token so the API client can include it in
+   * Authorization headers.  Call once at startup and keep in memory only.
+   */
+  getSessionToken: () => Promise<string | null>;
 };
 
 declare global {
