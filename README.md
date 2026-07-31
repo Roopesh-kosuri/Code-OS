@@ -242,7 +242,9 @@ Bug reports, feature ideas, and pull requests are genuinely welcome — particul
 
 ## 📄 License
 
-This project is licensed under the MIT License — see [LICENSE](./LICENSE).
+## 📄 License
+
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE.md) — free for personal, educational, and non-commercial use. For commercial use, please reach out first (see [Links](#-links) below).
 
 ---
 
