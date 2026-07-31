@@ -240,7 +240,6 @@ Built iteratively, hardened by actually testing behavior — not by assuming cod
 
 Bug reports, feature ideas, and pull requests are genuinely welcome — particularly around **plugin execution, macOS support, code signing, LSP integration, and testing improvements**, but any contribution counts. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** to get set up. PRs need to pass CI (typecheck, build, backend test suite) before merge.
 
-## 📄 License
 
 ## 📄 License
 
