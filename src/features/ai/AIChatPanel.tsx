@@ -156,6 +156,8 @@ export function AIChatPanel() {
   const agentToolHistory = useAIStore((s) => s.agentToolHistory);
   const pendingApproval = useAIStore((s) => s.pendingApproval);
   const pendingApprovals = useAIStore((s) => s.pendingApprovals);
+  const pendingUserResponse = useAIStore((s) => s.pendingUserResponse);
+  const respondToUserQuestion = useAIStore((s) => s.respondToUserQuestion);
   const toggleAgentMode = useAIStore((s) => s.toggleAgentMode);
   const setAgentMode = useAIStore((s) => s.setAgentMode);
   const approveAction = useAIStore((s) => s.approveAction);
@@ -549,6 +551,34 @@ export function AIChatPanel() {
           onApprove={approveAction}
           onReject={rejectAction}
         />
+      )}
+
+      {/* ── Interactive Clarification Card (ask_user) ──────────────────────── */}
+      {pendingUserResponse && (
+        <div className="border-t border-b px-4 py-3 shrink-0 bg-[#12141a]/95 border-primary/40 shadow-lg z-20 animate-docked-in backdrop-blur-xl">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="p-1 rounded-md bg-primary/20 text-primary">
+              <Bot size={14} />
+            </div>
+            <span className="font-bold text-xs text-primary">Clarification Requested</span>
+          </div>
+          <p className="text-xs text-on-surface mb-2.5 leading-relaxed">{pendingUserResponse.question}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {pendingUserResponse.options.map((opt, oIdx) => (
+              <button
+                key={oIdx}
+                type="button"
+                onClick={() => {
+                  void respondToUserQuestion(pendingUserResponse.action_id, opt);
+                  void sendMessage(opt, attachedPaths);
+                }}
+                className="px-3 py-1.5 rounded-full bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 text-xs font-medium cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* ── Chat Input Container (Google Stitch Footer) ───────────────────── */}

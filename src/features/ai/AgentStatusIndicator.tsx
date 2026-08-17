@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import {
   Bot,
   ChevronDown,
-  ChevronUp,
   Loader2,
   Terminal,
   FileCode,
@@ -14,17 +13,20 @@ import {
   Sparkles,
   RefreshCw,
   ListChecks,
+  BookmarkCheck,
   Check,
-  X,
-  Clock,
-  ExternalLink,
+  Zap,
+  Brain,
+  Layers,
+  Ban,
+  HelpCircle,
 } from "lucide-react";
 import {
   useAIStore,
   type AgentStatus,
   type AgentPlan,
   type ToolEvent,
-  type PendingApprovalState,
+  type DAGPlanStep,
 } from "../../stores/aiStore";
 
 interface AgentStatusIndicatorProps {
@@ -42,12 +44,12 @@ export function AgentStatusIndicator({
 }: AgentStatusIndicatorProps) {
   const [expanded, setExpanded] = useState(false);
   const pendingApproval = useAIStore((s) => s.pendingApproval);
-  const approveAction = useAIStore((s) => s.approveAction);
-  const rejectAction = useAIStore((s) => s.rejectAction);
+  const currentTier = useAIStore((s) => s.currentTier);
+  const currentTierLabel = useAIStore((s) => s.currentTierLabel);
 
-  // Auto-expand when user approval is requested
+  // Auto-expand when user approval or replanning occurs
   useEffect(() => {
-    if (pendingApproval || status?.type === "approval_required") {
+    if (pendingApproval || status?.type === "approval_required" || status?.type === "replan") {
       setExpanded(true);
     }
   }, [pendingApproval, status?.type]);
@@ -82,6 +84,42 @@ export function AgentStatusIndicator({
     }
 
     switch (status.type) {
+      case "tier_routing":
+        return {
+          icon: status.tier === 2 ? <Brain size={13} className="text-purple-400" /> : <Zap size={13} className="text-emerald-400" />,
+          text: status.message || `Routing: ${status.label || "Adaptive path"}`,
+          colorClass: status.tier === 2 ? "border-purple-500/30 bg-purple-500/10 text-purple-300" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+        };
+      case "memory_updated":
+        return {
+          icon: <BookmarkCheck size={13} className="text-cyan-400" />,
+          text: status.message || "Saved to project memory (RONY.md)",
+          colorClass: "border-cyan-500/30 bg-cyan-500/10 text-cyan-300",
+        };
+      case "verified_disk":
+        return {
+          icon: <CheckCircle2 size={13} className="text-emerald-400" />,
+          text: status.message || "Post-apply read-back confirmed on disk",
+          colorClass: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300",
+        };
+      case "self_critique":
+        return {
+          icon: <Sparkles size={13} className="text-primary" />,
+          text: status.message || "Running self-critique pass...",
+          colorClass: "border-primary/30 bg-primary/10 text-primary",
+        };
+      case "replan":
+        return {
+          icon: <RefreshCw size={13} className="animate-spin text-amber-400" />,
+          text: status.message || "Re-planning step...",
+          colorClass: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+        };
+      case "tool_skipped":
+        return {
+          icon: <Ban size={13} className="text-amber-400" />,
+          text: status.message || "Skipped repeated failure",
+          colorClass: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+        };
       case "thinking":
         return {
           icon: <Loader2 size={13} className="animate-spin text-primary" />,
@@ -90,10 +128,14 @@ export function AgentStatusIndicator({
         };
       case "tool": {
         let toolIcon = <Terminal size={13} className="text-secondary" />;
-        if (status.tool === "read_file" || status.tool === "edit_file") {
+        if (status.tool === "read_file" || status.tool === "edit_file" || status.tool === "append_file") {
           toolIcon = <FileCode size={13} className="text-amber-400" />;
         } else if (status.tool === "search_code" || status.tool === "semantic_search") {
           toolIcon = <Search size={13} className="text-cyan-400" />;
+        } else if (status.tool === "memory_write") {
+          toolIcon = <BookmarkCheck size={13} className="text-cyan-400" />;
+        } else if (status.tool === "ask_user") {
+          toolIcon = <HelpCircle size={13} className="text-primary" />;
         }
         const desc = status.detail
           ? `${status.tool || "Working"}: ${status.detail}`
@@ -172,6 +214,18 @@ export function AgentStatusIndicator({
           <span className={`truncate font-ui-label-reg text-ui-label-reg font-medium ${isReasoning ? "shimmer-text" : ""}`}>
             {text}
           </span>
+          {currentTier !== null && (
+            <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-full font-mono font-bold flex items-center gap-1 ${
+              currentTier === 2
+                ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                : currentTier === 1
+                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+            }`}>
+              {currentTier === 2 ? <Brain size={10} /> : <Zap size={10} />}
+              {currentTierLabel || (currentTier === 0 ? "Fast path" : (currentTier === 1 ? "Quick task" : "Deep think"))}
+            </span>
+          )}
           {hasPlan && (
             <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-surface-variant text-on-surface-variant font-mono">
               Step {plan.current + 1}/{plan.steps.length}
@@ -194,43 +248,68 @@ export function AgentStatusIndicator({
       {/* ── Expanded Drawer (Plan & Tool Activity) ─────────────────────────── */}
       {expanded && (
         <div className="p-3 space-y-3 bg-[#111215] text-[11px] leading-relaxed max-h-72 overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-200">
-          {/* Step Plan Checklist */}
+          {/* Dependency-Aware DAG Plan Checklist */}
           {hasPlan && (
             <div className="space-y-1.5">
               <div className="flex items-center justify-between font-bold uppercase text-[10px] text-on-surface-variant tracking-wider">
                 <div className="flex items-center gap-1.5">
                   <ListChecks size={12} className="text-primary" />
-                  <span>Task Execution Plan</span>
+                  <span>Execution Plan (DAG)</span>
                 </div>
                 <span className="text-[9px] font-mono opacity-60">
                   {plan.current + 1} of {plan.steps.length}
                 </span>
               </div>
               <div className="space-y-1 pl-1">
-                {plan.steps.map((step, idx) => {
-                  const isDone = idx < plan.current;
-                  const isCurrent = idx === plan.current;
+                {plan.steps.map((stepItem, idx) => {
+                  const isObj = typeof stepItem === "object" && stepItem !== null;
+                  const title = isObj ? (stepItem as DAGPlanStep).title : String(stepItem);
+                  const statusVal = isObj ? (stepItem as DAGPlanStep).status : (idx < plan.current ? "done" : (idx === plan.current ? "running" : "pending"));
+                  const deps = isObj && (stepItem as DAGPlanStep).depends_on ? (stepItem as DAGPlanStep).depends_on : [];
+
                   return (
                     <div
                       key={idx}
-                      className={`flex items-start gap-2 py-0.5 transition-colors ${
-                        isDone
-                          ? "text-on-surface-variant line-through opacity-70"
-                          : isCurrent
-                          ? "text-primary font-bold"
+                      className={`flex items-start gap-2 py-1 px-1.5 rounded transition-colors ${
+                        statusVal === "done"
+                          ? "text-on-surface-variant/70 bg-white/[0.02]"
+                          : statusVal === "running"
+                          ? "text-primary font-bold bg-primary/10 border border-primary/20"
+                          : statusVal === "failed"
+                          ? "text-rose-400 font-bold bg-rose-500/10 border border-rose-500/20"
+                          : statusVal === "blocked"
+                          ? "text-on-surface-variant/40 bg-white/[0.01]"
                           : "text-on-surface-variant/60"
                       }`}
                     >
                       <div className="shrink-0 mt-0.5">
-                        {isDone ? (
+                        {statusVal === "done" ? (
                           <CheckCircle2 size={12} className="text-emerald-400" />
-                        ) : isCurrent ? (
+                        ) : statusVal === "running" ? (
                           <Loader2 size={12} className="animate-spin text-primary" />
+                        ) : statusVal === "failed" ? (
+                          <AlertCircle size={12} className="text-rose-400" />
+                        ) : statusVal === "blocked" ? (
+                          <Ban size={12} className="text-on-surface-variant/40" />
                         ) : (
                           <Circle size={12} className="text-outline-variant" />
                         )}
                       </div>
-                      <span className="flex-1 break-words">{step}</span>
+                      <div className="flex-1 flex flex-col min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`break-words ${statusVal === "done" ? "line-through" : ""}`}>{title}</span>
+                          {statusVal === "blocked" && (
+                            <span className="shrink-0 text-[9px] px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 font-mono">
+                              blocked
+                            </span>
+                          )}
+                        </div>
+                        {deps && deps.length > 0 && (
+                          <span className="text-[9px] text-outline-variant font-mono mt-0.5">
+                            deps: {deps.join(", ")}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   );
                 })}

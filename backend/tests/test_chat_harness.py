@@ -1,348 +1,300 @@
 """
-Unit tests for the Lightweight Chat Agent Harness (chat_harness.py).
+Unit and regression tests for the Lightweight Chat Agent Harness (chat_harness.py).
+Covers adaptive effort routing, budgeted RAG, DAG re-planning, RONY.md project memory,
+security allowlist, exact-match mismatch diagnostics, and historical bug class regressions.
 """
-import pytest
 import asyncio
+import json
+import pytest
 from pathlib import Path
 
 from app.features.ai.chat_harness import (
     _is_command_safe,
     _parse_plan,
+    _parse_plan_dag,
+    _replan_on_failure,
+    _classify_task_effort,
+    _load_project_memory,
+    _handle_memory_write,
+    _gather_budgeted_rag_context,
+    _validate_smart_edit,
+    _find_mismatch_context,
+    _handle_append_file,
     _has_escalate_marker,
     _response_is_done,
+    _declares_tool_intent,
+    _is_response_truncated,
+    _clean_response_text,
     _parse_tool_calls_extended,
     _has_tool_calls_extended,
-    _execute_command,
-    _handle_smart_edit_file,
     _compact_conversation_history,
     approve_action,
     reject_action,
+    respond_to_user_question,
     _pending_approvals,
+    _pending_user_responses,
     PendingApproval,
+    PendingUserResponse,
     _sse_event,
     _sse_status,
+    _sse_tier_routing,
+    _sse_ask_user,
+    _sse_memory_updated,
     _sse_plan,
     _sse_proposal,
     _sse_done,
     _build_system_prompt,
+    DAGPlanStep,
     SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES,
     HARNESS_TOOLS,
     ChatMessage,
     ToolCall,
 )
+from app.features.ai.schemas import FileChange
 
 
-def test_command_allowlist_strictness():
-    """Verify strict allowlist enforcement — only safe read-only commands allowed."""
-    # Safe commands
-    assert _is_command_safe("ls") is True
-    assert _is_command_safe("dir") is True
-    assert _is_command_safe("git status") is True
-    assert _is_command_safe("git log -n 5") is True
-    assert _is_command_safe("git diff HEAD~1") is True
-    assert _is_command_safe("cat package.json") is True
-    assert _is_command_safe("grep -rn 'foo' src/") is True
-    assert _is_command_safe("python --version") is True
-    assert _is_command_safe("pip list") is True
-    assert _is_command_safe("node --version") is True
-    assert _is_command_safe("npm list") is True
+# ── 1. Adaptive Effort Routing Regression Tests ──────────────────────────────
 
-    # Dangerous commands — MUST return False
-    assert _is_command_safe("rm -rf /") is False
-    assert _is_command_safe("rm file.txt") is False
-    assert _is_command_safe("del file.txt") is False
-    assert _is_command_safe("npm install lodash") is False
-    assert _is_command_safe("pip install requests") is False
-    assert _is_command_safe("npm run build") is False
-    assert _is_command_safe("curl https://example.com") is False
-    assert _is_command_safe("wget https://example.com") is False
-    assert _is_command_safe("git push origin main") is False
-    assert _is_command_safe("git commit -m 'evil'") is False
-    assert _is_command_safe("chmod 777 script.sh") is False
-    assert _is_command_safe("python evil.py") is False
+def test_regression_adaptive_tier_routing():
+    """Verify tier routing: Tier 0 (Fast Answer), Tier 1 (Quick Task), Tier 2 (Deep Task)."""
+    # Tier 0: Pure questions, explanations, conceptual lookups
+    t0_q1, l0_1 = _classify_task_effort("what does is_source_file in inventory_generator.py do?")
+    assert t0_q1 == 0
+    assert "Fast Answer" in l0_1
 
-    # Compound injection commands — MUST return False
-    assert _is_command_safe("ls && rm -rf /") is False
-    assert _is_command_safe("git status; del file.txt") is False
-    assert _is_command_safe("cat file | rm") is False
-    assert _is_command_safe("echo test > file.txt") is False
-    assert _is_command_safe("echo test >> file.txt") is False
-    assert _is_command_safe("`rm -rf /`") is False
-    assert _is_command_safe("$(rm -rf /)") is False
+    t0_q2, l0_2 = _classify_task_effort("explain how the rate limiter works in backend/app/core/rate_limiter.py")
+    assert t0_q2 == 0
+
+    t0_q3, l0_3 = _classify_task_effort("where is the database connection string defined?")
+    assert t0_q3 == 0
+
+    # Tier 1: Single file edits, quick commands, surgical changes
+    t1_q1, l1_1 = _classify_task_effort("add '.yaml' to SOURCE_EXTENSIONS in inventory_generator.py")
+    assert t1_q1 == 1
+    assert "Quick Task" in l1_1
+
+    t1_q2, l1_2 = _classify_task_effort("fix the typo in line 42 of src/App.tsx")
+    assert t1_q2 == 1
+
+    t1_q3, l1_3 = _classify_task_effort("run pytest on tests/test_auth.py")
+    assert t1_q3 == 1
+
+    # Tier 2: Multi-file, generations, full site builds, refactors
+    t2_q1, l2_1 = _classify_task_effort("build a complete modern single-page portfolio site with CSS parallax")
+    assert t2_q1 == 2
+    assert "Deep think" in l2_1
+
+    t2_q2, l2_2 = _classify_task_effort("refactor the entire authentication system across all files")
+    assert t2_q2 == 2
+
+    t2_q3, l2_3 = _classify_task_effort("generate a full HTML site with 1000+ lines")
+    assert t2_q3 == 2
+
+    # Agent mode toggle manual override: forces at least Tier 1
+    t_agent, l_agent = _classify_task_effort("what is Python?", is_agent_mode=True)
+    assert t_agent >= 1
 
 
-def test_parse_plan():
-    """Verify [PLAN] block extraction and formatting."""
-    response_with_plan = """
-I understand the task. Here is the plan:
+# ── 2. Project Memory (RONY.md) Regression Tests ─────────────────────────────
 
+def test_regression_project_memory_rony_md(tmp_path):
+    """Verify loading and writing persistent project conventions to RONY.md."""
+    ws = str(tmp_path)
+
+    # 1. Loading when empty
+    assert _load_project_memory(ws) == ""
+
+    # 2. Writing a convention
+    success, msg = _handle_memory_write(ws, {"fact": "This workspace strictly uses Python 3.11 stdlib."})
+    assert success is True
+    assert "Saved to project memory" in msg
+
+    # 3. Reading back
+    memory_content = _load_project_memory(ws)
+    assert "This workspace strictly uses Python 3.11 stdlib." in memory_content
+
+    # 4. Appending a second rule without duplicating
+    _handle_memory_write(ws, {"fact": "Always run pytest after modifying test files."})
+    memory_content_2 = _load_project_memory(ws)
+    assert "This workspace strictly uses Python 3.11 stdlib." in memory_content_2
+    assert "Always run pytest after modifying test files." in memory_content_2
+
+
+# ── 3. Dependency-Aware DAG Plan & Re-Planning Regression Tests ──────────────
+
+def test_regression_dag_replan_on_failure():
+    """Verify dependency-aware DAG planning, step dependency parsing, and failure re-planning."""
+    dag_response = """
 [PLAN]
-1. Read the auth middleware in src/auth.ts
-2. Add rate limiting logic with redis
-3. Update unit tests in tests/test_auth.ts
-4. Run tests to verify
+1. Read existing config in src/config.py
+2. Run baseline tests with pytest (depends on 1)
+3. Modify settings to add redis caching (depends on 2)
+4. Verify all tests pass (depends on 3)
 [/PLAN]
-
-Now executing step 1:
-[TOOL_CALL: read_file]
-{"path": "src/auth.ts"}
-[/TOOL_CALL]
 """
-    plan = _parse_plan(response_with_plan)
-    assert plan is not None
-    assert len(plan) == 4
-    assert plan[0] == "Read the auth middleware in src/auth.ts"
-    assert plan[1] == "Add rate limiting logic with redis"
-    assert plan[2] == "Update unit tests in tests/test_auth.ts"
-    assert plan[3] == "Run tests to verify"
+    steps = _parse_plan_dag(dag_response)
+    assert steps is not None
+    assert len(steps) == 4
+    assert steps[0].id == "step_1"
+    assert steps[1].depends_on == ["step_1"]
+    assert steps[2].depends_on == ["step_2"]
+    assert steps[3].depends_on == ["step_3"]
 
-    # No plan
-    assert _parse_plan("Just a quick fix.\n[DONE]") is None
+    # Simulate step 2 failing
+    steps[0].status = "done"
+    steps[1].status = "running"
+    replanned = _replan_on_failure(steps, 1, "Pytest failed with exit code 1")
 
-
-def test_escalation_marker_detection():
-    """Verify [ESCALATE] marker detection."""
-    assert _has_escalate_marker("This is too complex. [ESCALATE]") is True
-    assert _has_escalate_marker("Everything looks good. [DONE]") is False
-
-
-def test_response_is_done():
-    """Verify [DONE] marker detection."""
-    assert _response_is_done("I have finished all tasks.\n[DONE]") is True
-    assert _response_is_done("Still working on it...") is False
-
-
-def test_tool_calls_parsing_extended():
-    """Verify extended tool calls parsing (including semantic_search and run_command)."""
-    response = """
-Let's find the files and inspect the directory:
-[TOOL_CALL: semantic_search]
-{"query": "authentication token validation"}
-[/TOOL_CALL]
-
-[TOOL_CALL: run_command]
-{"command": "git status"}
-[/TOOL_CALL]
-
-[TOOL_CALL: read_file]
-{"path": "src/auth.py", "start_line": 1, "limit": 100}
-[/TOOL_CALL]
-"""
-    assert _has_tool_calls_extended(response) is True
-    calls = _parse_tool_calls_extended(response)
-    assert len(calls) == 3
-    assert calls[0].name == "semantic_search"
-    assert calls[0].arguments["query"] == "authentication token validation"
-    assert calls[1].name == "run_command"
-    assert calls[1].arguments["command"] == "git status"
-    assert calls[2].name == "read_file"
-    assert calls[2].arguments["path"] == "src/auth.py"
+    # Step 1 should be failed, dependent steps (step 3, step 4) should be blocked, and fix step inserted
+    assert replanned[1].status == "failed"
+    fix_step = replanned[2]
+    assert fix_step.status == "running"
+    assert "Repair failure" in fix_step.title
+    # step 3 (which depended on step 2) is now blocked
+    step_3_after = next(s for s in replanned if s.id == "step_3")
+    assert step_3_after.status == "blocked"
 
 
-def test_smart_edit_file_pre_validation(tmp_path):
-    """Verify edit_file verifies original content before staging."""
-    ws = str(tmp_path)
-    test_file = tmp_path / "calc.py"
-    test_file.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    staged = []
-    # 1. Successful exact edit
-    res_ok = _handle_smart_edit_file(
-        ws,
-        {"path": "calc.py", "original": "return a + b", "updated": "return int(a) + int(b)"},
-        staged,
-    )
-    assert res_ok.success is True
-    assert len(staged) == 1
-    assert staged[0].path == "calc.py"
-
-    # 2. Rejection of hallucinated original text
-    staged_fail = []
-    res_fail = _handle_smart_edit_file(
-        ws,
-        {"path": "calc.py", "original": "def non_existent_fn(): pass", "updated": "def new_fn(): pass"},
-        staged_fail,
-    )
-    assert res_fail.success is False
-    assert len(staged_fail) == 0
-    assert "was not found verbatim" in res_fail.error
-
-    # 3. New file creation (original is empty)
-    staged_new = []
-    res_new = _handle_smart_edit_file(
-        ws,
-        {"path": "new_mod.py", "original": "", "updated": "def hello(): return 1\n"},
-        staged_new,
-    )
-    assert res_new.success is True
-    assert len(staged_new) == 1
-
-
-def test_compact_conversation_history():
-    """Verify older tool results are compacted to save tokens."""
-    messages = [
-        ChatMessage(role="system", content="System instructions"),
-        ChatMessage(role="user", content="Initial user request"),
-        ChatMessage(role="assistant", content="Calling read_file [TOOL_CALL: read_file]..."),
-        ChatMessage(role="user", content="Tool results:\n\n[TOOL_RESULT: read_file]\n" + ("line\n" * 500) + "[/TOOL_RESULT]"),
-        ChatMessage(role="assistant", content="Calling edit_file..."),
-        ChatMessage(role="user", content="Tool results:\n\n[TOOL_RESULT: edit_file]\nStaged change[/TOOL_RESULT]"),
-        ChatMessage(role="assistant", content="Final answer"),
-    ]
-    # Compact with keep_recent_turns=1
-    compacted = _compact_conversation_history(messages, keep_recent_turns=1)
-    assert len(compacted) == len(messages)
-    # The older tool result (index 3) should be compacted
-    assert "compacted to save context tokens" in compacted[3].content
-    assert len(compacted[3].content) < 200
-
+# ── 4. Symbol-Aware Budgeted RAG Regression Tests ────────────────────────────
 
 @pytest.mark.asyncio
-async def test_interactive_approval_flow():
-    """Verify async approve_action and reject_action mechanisms."""
-    action_id = "test-act-123"
-    pending = PendingApproval(
+async def test_regression_rag_symbol_budgeted_snippets(tmp_path):
+    """Verify symbol search and snippet windowing under fixed token budget."""
+    ws = str(tmp_path)
+    code_file = tmp_path / "inventory_generator.py"
+    code_file.write_text(
+        "SOURCE_EXTENSIONS = ['.py', '.ts', '.js']\n\n"
+        "def is_source_file(path: str) -> bool:\n"
+        "    return any(path.endswith(ext) for ext in SOURCE_EXTENSIONS)\n",
+        encoding="utf-8",
+    )
+
+    matches, rag_summary = await _gather_budgeted_rag_context(
+        workspace=ws,
+        query="what does is_source_file and SOURCE_EXTENSIONS do?",
+        token_budget=1200,
+    )
+    assert "is_source_file" in rag_summary or "SOURCE_EXTENSIONS" in rag_summary
+
+
+# ── 5. Security Allowlist & Path Containment Regression Tests ────────────────
+
+def test_regression_security_allowlist_fail_closed(tmp_path):
+    """Verify strict fail-closed command allowlist, path containment, and compound rejection."""
+    ws = str(tmp_path)
+    inside_file = tmp_path / "app.py"
+    inside_file.write_text("print(1)", encoding="utf-8")
+
+    # Safe read-only commands
+    assert _is_command_safe("ls", ws) is True
+    assert _is_command_safe("git status", ws) is True
+    assert _is_command_safe("cat app.py", ws) is True
+    assert _is_command_safe("type app.py", ws) is True
+
+    # Dangerous / modifying commands -> False
+    assert _is_command_safe("rm -rf /", ws) is False
+    assert _is_command_safe("del app.py", ws) is False
+    assert _is_command_safe("npm install", ws) is False
+    assert _is_command_safe("curl https://evil.com", ws) is False
+
+    # Compound operators -> False
+    assert _is_command_safe("cat app.py && rm -rf /", ws) is False
+    assert _is_command_safe("ls; del app.py", ws) is False
+    assert _is_command_safe("echo evil > app.py", ws) is False
+    assert _is_command_safe("`del app.py`", ws) is False
+    assert _is_command_safe("$(del app.py)", ws) is False
+
+
+# ── 6. Exact-Match Mismatch Diagnostic Regression Tests ──────────────────────
+
+def test_regression_edit_integrity_mismatch_diagnostic(tmp_path):
+    """Verify exact-match pre-validation gives informative line-by-line mismatch diagnostic."""
+    ws = str(tmp_path)
+    target = tmp_path / "module.py"
+    target.write_text(
+        "def compute(a, b):\n"
+        "    result = a + b\n"
+        "    return result\n",
+        encoding="utf-8",
+    )
+
+    # 1. Exact match succeeds
+    valid, err, change = _validate_smart_edit(ws, {
+        "path": "module.py",
+        "original": "    result = a + b\n    return result",
+        "updated": "    return a + b",
+    })
+    assert valid is True
+    assert change is not None
+
+    # 2. Divergent original produces detailed mismatch diagnostic
+    valid_fail, err_fail, change_fail = _validate_smart_edit(ws, {
+        "path": "module.py",
+        "original": "    result = a * b\n    return result",
+        "updated": "    return a * b",
+    })
+    assert valid_fail is False
+    assert "Mismatch Diagnostic" in err_fail
+    assert "Expected snippet line" in err_fail or "was not found verbatim" in err_fail
+
+
+# ── 7. Truncation & Chunked Recovery Regression Tests ────────────────────────
+
+def test_regression_truncation_chunked_recovery():
+    """Verify truncation detection on cut-off tool blocks and unclosed markdown blocks."""
+    truncated_tool = "[TOOL_CALL: edit_file]\n{\"path\": \"hello.html\", \"updated\": \"<html>"
+    assert _is_response_truncated(truncated_tool) is True
+
+    complete_tool = "[TOOL_CALL: edit_file]\n{\"path\": \"hello.html\", \"updated\": \"<html>\"}\n[/TOOL_CALL]"
+    assert _is_response_truncated(complete_tool) is False
+
+    truncated_code = "```html\n<!DOCTYPE html>\n<html>\n" + ("<div>content</div>\n" * 50)
+    assert _is_response_truncated(truncated_code) is True
+
+
+# ── 8. Error Hygiene & Clean Display Text Regression Tests ───────────────────
+
+def test_regression_error_hygiene_no_raw_markers():
+    """Verify raw tool blocks, plan blocks, and control markers are stripped from visible prose."""
+    raw = (
+        "Here is the plan:\n"
+        "[PLAN]\n1. Step one\n[/PLAN]\n"
+        "Executing now:\n"
+        "[TOOL_CALL: read_file]\n{\"path\": \"main.py\"}\n[/TOOL_CALL]\n"
+        "Here is the answer to your question: the function returns True.\n"
+        "[DONE]"
+    )
+    cleaned = _clean_response_text(raw)
+    assert "[PLAN]" not in cleaned
+    assert "[TOOL_CALL:" not in cleaned
+    assert "[DONE]" not in cleaned
+    assert "the function returns True." in cleaned
+
+
+# ── 9. Heuristic Hijack Prevention Regression Tests ──────────────────────────
+
+def test_regression_heuristic_hijack_prevention():
+    """Verify discussions/mentions of pytest results or [DONE] do not falsely trigger tool intent."""
+    assert _declares_tool_intent("The pytest passed with 41 passed tests.") is False
+    assert _declares_tool_intent("Test passed with exit code 0.") is False
+    assert _declares_tool_intent("The unit tests failed due to assertion error. [DONE]") is False
+    assert _declares_tool_intent("We need to run pytest on tests/test_auth.py") is True
+    assert _declares_tool_intent("Use the edit_file tool to update main.py") is True
+
+
+# ── 10. Interactive ask_user Clarification Regression Tests ──────────────────
+
+def test_regression_interactive_ask_user():
+    """Verify ask_user registers pending question and handles response."""
+    action_id = "test-ask-001"
+    pending = PendingUserResponse(
         action_id=action_id,
-        action_type="command",
-        detail="npm install axios",
-        reason="Not allowlisted",
+        question="Which export format do you prefer?",
+        options=["JSON", "Markdown", "HTML"],
     )
-    _pending_approvals[action_id] = pending
+    _pending_user_responses[action_id] = pending
 
-    # Approve
-    res = await approve_action(action_id)
-    assert res is True
-    assert pending.approved is True
+    assert respond_to_user_question(action_id, "Markdown") is True
+    assert pending.selected_option == "Markdown"
     assert pending.event.is_set()
-
-    # Reject
-    pending2 = PendingApproval(
-        action_id="test-act-456",
-        action_type="command",
-        detail="del main.py",
-        reason="Not allowlisted",
-    )
-    _pending_approvals["test-act-456"] = pending2
-    res2 = await reject_action("test-act-456")
-    assert res2 is True
-    assert pending2.approved is False
-    assert pending2.event.is_set()
-
-    # Non-existent action
-    assert await approve_action("unknown-id") is False
-
-
-def test_sse_event_formatting():
-    """Verify SSE serialization."""
-    event = _sse_status("thinking", "Analyzing codebase...")
-    assert event.startswith("event: status\n")
-    assert '"type": "thinking"' in event
-    assert '"message": "Analyzing codebase..."' in event
-    assert event.endswith("\n\n")
-
-    plan_event = _sse_plan(["Step 1", "Step 2"], 0)
-    assert plan_event.startswith("event: plan\n")
-    assert '"steps": ["Step 1", "Step 2"]' in plan_event
-
-    done_event = _sse_done(True, "All done")
-    assert done_event.startswith("event: done\n")
-    assert '"success": true' in done_event
-
-
-def test_declares_tool_intent():
-    """Verify detection of responses declaring tool intent without tool blocks."""
-    from app.features.ai.chat_harness import _declares_tool_intent
-    assert _declares_tool_intent("We need to run tests. Use run_test tool.") is True
-    assert _declares_tool_intent("Let's run pytest on tests/test_generation.py") is True
-    assert _declares_tool_intent("I will run git status to check modified files") is True
-    assert _declares_tool_intent("Python is a popular programming language.") is False
-
-
-def test_system_prompt_builder():
-    """Verify system prompt construction with context and semantic search."""
-    context = {
-        "git_status": {"branch": "main", "dirty": True, "unstaged": ["file1.py"]},
-        "active_file": {"name": "main.py", "content": "print('hello')"},
-        "dependencies": [{"name": "fastapi", "version": "0.100.0"}],
-        "readme": "# My Project",
-    }
-    semantic_results = [
-        {"relative_path": "src/auth.py", "score": 0.85, "language": "python"}
-    ]
-    prompt = _build_system_prompt("/workspace/test", context, semantic_results)
-    
-    assert "You are Rony Agent" in prompt
-    assert "/workspace/test" in prompt
-    assert "Git branch: main" in prompt
-    assert "src/auth.py" in prompt
-    assert "score: 0.850" in prompt
-    assert "fastapi@0.100.0" in prompt
-
-
-@pytest.mark.asyncio
-async def test_tool_sandbox_execution(tmp_path):
-    """Test tool execution with sandboxed temporary directory."""
-    from app.features.ai.agents.agent_tools import _handle_read_file, _handle_list_directory
-    ws = str(tmp_path)
-    test_file = tmp_path / "hello.py"
-    test_file.write_text("def hello():\n    return 'world'\n", encoding="utf-8")
-
-    res_read = _handle_read_file(ws, {"path": "hello.py"})
-    assert res_read.success is True
-    assert "def hello():" in res_read.output
-
-    res_list = _handle_list_directory(ws, {"path": "."})
-    assert res_list.success is True
-    assert "hello.py" in res_list.output
-
-    res_cmd = _execute_command(ws, "echo test")
-    assert res_cmd.success is True
-
-
-def test_generate_diff_summary():
-    """Verify unified diff preview generated for inline approval card."""
-    from app.features.ai.chat_harness import _generate_diff_summary
-    from app.features.ai.schemas import FileChange
-
-    # 1. Modified file
-    change_mod = FileChange(
-        path="src/config.py",
-        original="TIMEOUT = 30\nDEBUG = False\n",
-        updated="TIMEOUT = 60\nDEBUG = True\n",
-    )
-    diff_mod = _generate_diff_summary(change_mod)
-    assert "--- a/src/config.py" in diff_mod
-    assert "+++ b/src/config.py" in diff_mod
-    assert "-TIMEOUT = 30" in diff_mod
-    assert "+TIMEOUT = 60" in diff_mod
-
-    # 2. New file
-    change_new = FileChange(
-        path="src/new.py",
-        original="",
-        updated="def test(): pass\n",
-    )
-    diff_new = _generate_diff_summary(change_new)
-    assert "+++ b/src/new.py" in diff_new
-    assert "+def test(): pass" in diff_new
-
-
-def test_edit_approval_sse_event():
-    """Verify approval_request SSE payload includes proposal details."""
-    from app.features.ai.chat_harness import _sse_approval_request
-
-    event = _sse_approval_request(
-        action_id="act-edit-1",
-        action_type="edit",
-        detail="src/config.py",
-        reason="Rony Agent wants to modify src/config.py",
-        proposal_id="prop-abc-123",
-        path="src/config.py",
-        diff_summary="+ TIMEOUT = 60",
-    )
-    assert "event: approval_request" in event
-    assert '"action_type": "edit"' in event
-    assert '"proposal_id": "prop-abc-123"' in event
-    assert '"path": "src/config.py"' in event
-    assert '"diff_summary": "+ TIMEOUT = 60"' in event

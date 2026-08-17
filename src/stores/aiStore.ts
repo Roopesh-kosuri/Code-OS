@@ -7,14 +7,43 @@ import { useEditorStore } from "./editorStore";
 
 // ── Extended types ────────────────────────────────────────────────────────────
 
+export interface DAGPlanStep {
+  id: string;
+  title: string;
+  status: "pending" | "running" | "done" | "failed" | "blocked";
+  depends_on?: string[];
+}
+
 export interface AgentStatus {
-  type: "thinking" | "tool" | "step_complete" | "duo_escalation" | "proposal_created" | "approval_required" | "done" | "error";
+  type:
+    | "thinking"
+    | "tool"
+    | "step_complete"
+    | "duo_escalation"
+    | "proposal_created"
+    | "approval_required"
+    | "done"
+    | "error"
+    | "tier_routing"
+    | "ask_user"
+    | "memory_updated"
+    | "verified_disk"
+    | "self_critique"
+    | "tool_skipped"
+    | "replan"
+    | "partial_report"
+    | "audit";
   message: string;
   tool?: string;
   detail?: string;
   command?: string;
   step?: number;
   total?: number;
+  tier?: number;
+  label?: string;
+  action_id?: string;
+  options?: string[];
+  confirmed?: boolean;
 }
 
 export interface PendingApprovalState {
@@ -28,8 +57,14 @@ export interface PendingApprovalState {
   diff_summary?: string;
 }
 
+export interface PendingUserResponseState {
+  action_id: string;
+  question: string;
+  options: string[];
+}
+
 export interface AgentPlan {
-  steps: string[];
+  steps: (string | DAGPlanStep)[];
   current: number;
 }
 
@@ -82,13 +117,16 @@ type AIState = {
   streaming: boolean;
   error: string | null;
 
-  // Agent mode state (Cursor/Antigravity-style autonomous loop)
+  // Agent mode & Adaptive Routing state
   agentMode: boolean;
+  currentTier: number | null;
+  currentTierLabel: string | null;
   agentStatus: AgentStatus | null;
   agentPlan: AgentPlan | null;
   agentToolHistory: ToolEvent[];
   pendingApproval: PendingApprovalState | null;
   pendingApprovals: PendingApprovalState[];
+  pendingUserResponse: PendingUserResponseState | null;
 
   // Multi-thread state
   currentThreadId: string | null;
@@ -100,12 +138,13 @@ type AIState = {
   refreshModels: () => Promise<void>;
   stopGeneration: () => void;
 
-  // Agent mode actions
+  // Agent mode & interaction actions
   toggleAgentMode: () => void;
   setAgentMode: (enabled: boolean) => void;
   clearAgentState: () => void;
   approveAction: (actionId: string) => Promise<void>;
   rejectAction: (actionId: string) => Promise<void>;
+  respondToUserQuestion: (actionId: string, answer: string) => Promise<void>;
   sendAgentMessage: (content: string, attachedPaths?: string[]) => Promise<void>;
 
   // Actions
@@ -142,11 +181,14 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   // Agent mode defaults (OFF by default)
   agentMode: false,
+  currentTier: null,
+  currentTierLabel: null,
   agentStatus: null,
   agentPlan: null,
   agentToolHistory: [],
   pendingApproval: null,
   pendingApprovals: [],
+  pendingUserResponse: null,
 
   currentThreadId: null,
   threads: [],
@@ -160,7 +202,16 @@ export const useAIStore = create<AIState>((set, get) => ({
   },
 
   clearAgentState: () => {
-    set({ agentStatus: null, agentPlan: null, agentToolHistory: [], pendingApproval: null, pendingApprovals: [] });
+    set({
+      currentTier: null,
+      currentTierLabel: null,
+      agentStatus: null,
+      agentPlan: null,
+      agentToolHistory: [],
+      pendingApproval: null,
+      pendingApprovals: [],
+      pendingUserResponse: null,
+    });
   },
 
   approveAction: async (actionId: string) => {
@@ -190,6 +241,15 @@ export const useAIStore = create<AIState>((set, get) => ({
       });
     } catch (err) {
       console.error("Failed to reject action:", err);
+    }
+  },
+
+  respondToUserQuestion: async (actionId: string, answer: string) => {
+    try {
+      await api.post(`/api/ai/chat-agent/respond/${actionId}`, { answer });
+      set({ pendingUserResponse: null });
+    } catch (err) {
+      console.error("Failed to submit question response:", err);
     }
   },
 
@@ -253,7 +313,6 @@ export const useAIStore = create<AIState>((set, get) => ({
         base_url: currentBaseUrl,
         api_key_provider: currentApiKeyProvider,
       });
-      // CRITICAL: NEVER overwrite user's selected model if it is already non-empty!
       const currentModel = get().model;
       if (!currentModel && models.length > 0) {
         const fallback = models[0]?.name || "";
@@ -262,14 +321,12 @@ export const useAIStore = create<AIState>((set, get) => ({
         }
         set({ models, model: fallback });
       } else {
-        // Just store the fetched models catalog without touching model!
         set({ models });
       }
     } catch {
-      // Keep existing models array and current model on failure
+      // Keep existing models on failure
     }
   },
-
 
   stopGeneration: () => {
     activeController?.abort();
@@ -283,7 +340,6 @@ export const useAIStore = create<AIState>((set, get) => ({
     try {
       const list = await api.get<ChatThread[]>("/api/ai/threads", { workspace });
       set({ threads: list });
-      // Auto-load most recent thread if current is empty and list is not
       if (!get().currentThreadId && list.length > 0) {
         await get().switchThread(list[0].id);
       }
@@ -332,7 +388,6 @@ export const useAIStore = create<AIState>((set, get) => ({
           messages: nextThreadId ? state.messages : [],
         };
       });
-      // Switch if we changed current
       const nextId = get().currentThreadId;
       if (nextId) {
         await get().switchThread(nextId);
@@ -342,157 +397,9 @@ export const useAIStore = create<AIState>((set, get) => ({
     }
   },
 
-  // ── Message Actions ─────────────────────────────────────────────────────────
+  // ── Message Actions with Adaptive Tier Routing ──────────────────────────────
 
   sendMessage: async (content, attachedPaths = []) => {
-    if (get().agentMode) {
-      return get().sendAgentMessage(content, attachedPaths);
-    }
-
-    const workspace = useWorkspaceStore.getState().currentWorkspace?.path;
-    const restrictedMode = useWorkspaceStore.getState().restrictedMode;
-    
-    if (!workspace) return;
-
-    // Block AI file-write operations in restricted mode
-    if (restrictedMode && (content.toLowerCase().includes("write") || content.toLowerCase().includes("edit") || content.toLowerCase().includes("modify") || content.toLowerCase().includes("change"))) {
-      set({ error: "File operations are disabled in Restricted Mode. Switch to Trusted mode to enable AI file writes." });
-      return;
-    }
-
-    let threadId = get().currentThreadId;
-    if (!threadId) {
-      // Auto-create thread
-      const id = crypto.randomUUID();
-      // Generate clean title from prompt preview
-      const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "…" : "");
-      try {
-        const newT = await api.post<ChatThread>("/api/ai/threads", { id, workspace, title: cleanTitle });
-        set((state) => ({
-          currentThreadId: id,
-          threads: [newT, ...state.threads],
-        }));
-        threadId = id;
-      } catch {
-        set({ error: "Failed to initialize thread" });
-        return;
-      }
-    }
-
-    // If it was the first user message, rename thread from default
-    const activeThread = get().threads.find((t) => t.id === threadId);
-    if (activeThread?.title === "New Conversation") {
-      const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "…" : "");
-      void get().renameThread(threadId, cleanTitle);
-    }
-
-    const userMessage: ExtendedChatMessage = {
-      role: "user",
-      content,
-      attached_paths: attachedPaths,
-      created_at: new Date().toISOString(),
-    };
-    const assistantMessage: ExtendedChatMessage = {
-      role: "assistant",
-      content: "",
-      model: get().model,
-      created_at: new Date().toISOString(),
-    };
-
-    activeController = new AbortController();
-    set((state) => ({
-      messages: [...state.messages, userMessage, assistantMessage],
-      streaming: true,
-      error: null,
-    }));
-
-    // Sync user message to db immediately
-    try {
-      await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
-    } catch (err) {
-      console.warn("Messages out of sync in DB:", err);
-    }
-
-    const requestMessages = get().messages.slice(0, -1).map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
-
-    const activePath = useEditorStore.getState().activePath;
-    const openPaths = useEditorStore.getState().openFiles.map(f => f.path);
-    const combinedAttachedPaths = Array.from(
-      new Set([
-        ...(activePath ? [activePath] : []),
-        ...attachedPaths,
-        ...openPaths,
-      ])
-    );
-
-    let pendingBuffer = "";
-    let flushTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const flushBuffer = () => {
-      if (!pendingBuffer) return;
-      const chunkToFlush = pendingBuffer;
-      pendingBuffer = "";
-      set((state) => {
-        const messages = [...state.messages];
-        const last = messages[messages.length - 1];
-        if (last?.role === "assistant") {
-          messages[messages.length - 1] = { ...last, content: last.content + chunkToFlush };
-        }
-        return { messages };
-      });
-    };
-
-    try {
-      await api.stream(
-        "/api/ai/chat/stream",
-        {
-          provider: get().provider,
-          model: get().model,
-          base_url: get().baseUrl,
-          api_key_provider: get().apiKeyProvider,
-          messages: requestMessages,
-          attached_paths: combinedAttachedPaths,
-          workspace,
-        },
-        (token) => {
-          if (token.includes("[EDIT_PROPOSAL_CREATED:")) {
-            window.dispatchEvent(new CustomEvent("code-os:proposal-created"));
-          }
-          pendingBuffer += token;
-          if (!flushTimer) {
-            flushTimer = setTimeout(() => {
-              flushTimer = null;
-              flushBuffer();
-            }, 60);
-          }
-        },
-        activeController.signal
-      );
-
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = null;
-      }
-      flushBuffer();
-
-      // Sync final response to db
-      await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
-    } catch (error) {
-      if (flushTimer) clearTimeout(flushTimer);
-      flushBuffer();
-      if (!(error instanceof DOMException && error.name === "AbortError")) {
-        set({ error: error instanceof Error ? error.message : "AI request failed" });
-      }
-    } finally {
-      activeController = null;
-      set({ streaming: false });
-    }
-  },
-
-  sendAgentMessage: async (content, attachedPaths = []) => {
     const workspace = useWorkspaceStore.getState().currentWorkspace?.path;
     const restrictedMode = useWorkspaceStore.getState().restrictedMode;
     
@@ -537,7 +444,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       content: "",
       model: get().model,
       created_at: new Date().toISOString(),
-      agentStatus: { type: "thinking", message: "Starting agent..." },
+      agentStatus: { type: "thinking", message: "Connecting..." },
       agentPlan: null,
       agentToolHistory: [],
     };
@@ -547,7 +454,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       messages: [...state.messages, userMessage, assistantMessage],
       streaming: true,
       error: null,
-      agentStatus: { type: "thinking", message: "Analyzing request..." },
+      agentStatus: { type: "thinking", message: "Connecting..." },
       agentPlan: null,
       agentToolHistory: [],
     }));
@@ -584,10 +491,17 @@ export const useAIStore = create<AIState>((set, get) => ({
           messages: requestMessages,
           attached_paths: combinedAttachedPaths,
           workspace,
-          agent_mode: true,
+          agent_mode: get().agentMode,
         },
         (eventType, data: any) => {
-          if (eventType === "status") {
+          if (eventType === "tier_routing") {
+            const tierVal = typeof data.tier === "number" ? data.tier : 0;
+            const labelVal = data.label || (tierVal === 0 ? "Fast Answer" : (tierVal === 1 ? "Quick Task" : "Deep think"));
+            set({
+              currentTier: tierVal,
+              currentTierLabel: labelVal,
+            });
+          } else if (eventType === "status") {
             const statusObj: AgentStatus = {
               type: data.type || "thinking",
               message: data.message || "",
@@ -596,6 +510,11 @@ export const useAIStore = create<AIState>((set, get) => ({
               command: data.command,
               step: data.step,
               total: data.total,
+              tier: data.tier,
+              label: data.label,
+              action_id: data.action_id,
+              options: data.options,
+              confirmed: data.confirmed,
             };
             set((state) => {
               const messages = [...state.messages];
@@ -613,6 +532,13 @@ export const useAIStore = create<AIState>((set, get) => ({
               }
               return { agentStatus: statusObj, agentToolHistory: newHistory, pendingApproval: statusObj.type === "tool" ? null : state.pendingApproval, messages };
             });
+          } else if (eventType === "ask_user") {
+            const askObj: PendingUserResponseState = {
+              action_id: data.action_id,
+              question: data.question || "Please select an option:",
+              options: data.options || [],
+            };
+            set({ pendingUserResponse: askObj });
           } else if (eventType === "plan") {
             const planObj: AgentPlan = {
               steps: data.steps || [],
@@ -716,7 +642,6 @@ export const useAIStore = create<AIState>((set, get) => ({
         activeController.signal
       );
 
-      // Sync final response to db
       await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
@@ -728,22 +653,23 @@ export const useAIStore = create<AIState>((set, get) => ({
     }
   },
 
+  sendAgentMessage: async (content, attachedPaths = []) => {
+    return get().sendMessage(content, attachedPaths);
+  },
+
   regenerate: async () => {
     const threadId = get().currentThreadId;
     if (!threadId) return;
 
     const messages = get().messages;
-    // Find index of the last user query
     const lastUserIndex = [...messages].reverse().findIndex((m) => m.role === "user");
     if (lastUserIndex === -1) return;
     const actualIndex = messages.length - 1 - lastUserIndex;
 
     const lastUser = messages[actualIndex];
-    // Truncate message history from user message
     const nextMessages = messages.slice(0, actualIndex);
     set({ messages: nextMessages });
 
-    // Re-send query
     await get().sendMessage(lastUser.content, lastUser.attached_paths);
   },
 
@@ -752,38 +678,36 @@ export const useAIStore = create<AIState>((set, get) => ({
     if (!threadId) return;
 
     const messages = get().messages;
-    const targetMessage = messages[index];
-    if (!targetMessage || targetMessage.role !== "user") return;
+    const targetMsg = messages[index];
+    if (!targetMsg || targetMsg.role !== "user") return;
 
-    // Truncate list from this user message onwards
     const nextMessages = messages.slice(0, index);
     set({ messages: nextMessages });
 
-    // Sync truncation to backend immediately to clean up subsequent history
-    try {
-      await api.post(`/api/ai/threads/${threadId}/messages`, { messages: nextMessages });
-    } catch {}
-
-    // Send edited content
-    await get().sendMessage(newContent, targetMessage.attached_paths);
+    await get().sendMessage(newContent, targetMsg.attached_paths);
   },
 
   deleteMessagePair: async (index) => {
     const threadId = get().currentThreadId;
     if (!threadId) return;
 
-    const messages = [...get().messages];
-    // Delete the clicked message and the next assistant message if it is pair
-    const nextAssistantIdx = index + 1;
-    if (messages[nextAssistantIdx]?.role === "assistant") {
-      messages.splice(index, 2);
+    const messages = get().messages;
+    const nextMessages = [...messages];
+    if (nextMessages[index]?.role === "user") {
+      if (nextMessages[index + 1]?.role === "assistant") {
+        nextMessages.splice(index, 2);
+      } else {
+        nextMessages.splice(index, 1);
+      }
     } else {
-      messages.splice(index, 1);
+      nextMessages.splice(index, 1);
     }
 
-    set({ messages });
+    set({ messages: nextMessages });
     try {
-      await api.post(`/api/ai/threads/${threadId}/messages`, { messages });
-    } catch {}
+      await api.post(`/api/ai/threads/${threadId}/messages`, { messages: nextMessages });
+    } catch (err) {
+      console.warn("Failed to sync message deletion to DB:", err);
+    }
   },
 }));
