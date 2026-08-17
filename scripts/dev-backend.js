@@ -46,9 +46,12 @@ function findPython() {
   process.exit(1);
 }
 
+import path from "node:path";
+
 const pythonCmd = findPython();
-const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"];
-const proc = spawn(pythonCmd, args, { stdio: "inherit", shell: true, cwd: "backend", env: { ...process.env, PYTHONPATH: "D:/HTML/CODE OS/backend" } });
+const backendDir = path.resolve("backend");
+const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"];
+const proc = spawn(pythonCmd, args, { stdio: "inherit", cwd: backendDir, env: { ...process.env, PYTHONPATH: backendDir } });
 
 proc.on("exit", (code) => {
   process.exit(code || 0);

@@ -1,8 +1,11 @@
 import { ChildProcessWithoutNullStreams, spawn, execSync } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs";
 import { app, dialog } from "electron";
 
 const isDev = !app.isPackaged;
+
+// ── Python version detection (fallback path only) ─────────────────────────────
 
 function getPythonVersion(cmd: string): string | null {
   try {
@@ -33,7 +36,7 @@ function isVersionSupported(versionStr: string): boolean {
   return false;
 }
 
-function findPythonCommand(): string {
+function findPythonCommand(): string | null {
   const candidates = ["python3", "python"];
   for (const cmd of candidates) {
     const version = getPythonVersion(cmd);
@@ -42,18 +45,27 @@ function findPythonCommand(): string {
       return cmd;
     }
   }
-
-  const errorMsg = "Error: A compatible Python interpreter (>= 3.11) was not found in PATH.\n" +
-    "Please install Python 3.11 or newer and add it to your environment variables.";
-  console.error(`[backend] ${errorMsg}`);
-
-  try {
-    dialog.showErrorBox("Python Required", errorMsg);
-  } catch {
-    // ignore dialog failures (e.g. if run before ready)
-  }
-  throw new Error("Python >= 3.11 not found");
+  return null;
 }
+
+// ── Bundled binary path resolution ────────────────────────────────────────────
+
+function getBundledBinaryPath(): string | null {
+  if (isDev) return null; // dev always uses system Python
+
+  const exeName = process.platform === "win32" ? "backend-server.exe" : "backend-server";
+  const candidatePath = path.join(process.resourcesPath, exeName);
+
+  if (fs.existsSync(candidatePath)) {
+    console.log(`[backend] Found bundled binary at: ${candidatePath}`);
+    return candidatePath;
+  }
+
+  console.warn(`[backend] Bundled binary NOT found at: ${candidatePath}`);
+  return null;
+}
+
+// ── BackendProcess class ──────────────────────────────────────────────────────
 
 export class BackendProcess {
   private process: ChildProcessWithoutNullStreams | null = null;
@@ -77,7 +89,7 @@ export class BackendProcess {
   }
 
   /** Wait until the backend has emitted its session token. */
-  waitForToken(timeoutMs = 15_000): Promise<string> {
+  waitForToken(timeoutMs = 30_000): Promise<string> {
     return Promise.race([
       this._tokenReady,
       new Promise<string>((_, reject) =>
@@ -93,10 +105,35 @@ export class BackendProcess {
 
     this.lastError = null;
 
+    if (isDev) {
+      // In dev mode, dev:backend is launched by concurrently (scripts/dev-backend.js).
+      // Electron attaches to it and reads the session token without spawning a duplicate uvicorn.
+      console.log("[backend] Dev mode active: attaching to dev backend on 127.0.0.1:8000");
+      for (let i = 0; i < 30; i++) {
+        try {
+          const os = await import("node:os");
+          const path_ = await import("node:path");
+          const tokenPath = path_.join(os.homedir(), ".code-os", "session_token");
+          if (fs.existsSync(tokenPath)) {
+            const token = fs.readFileSync(tokenPath, "utf-8").trim();
+            if (token.length === 64) {
+              this.sessionToken = token;
+              this._tokenResolve(token);
+              console.log("[backend] session token loaded from file");
+              return;
+            }
+          }
+        } catch {
+          // retry
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return;
+    }
+
     if (await this.isBackendHealthy()) {
       console.log("[backend] reusing existing backend on 127.0.0.1:8000");
       try {
-        const fs = await import("node:fs");
         const os = await import("node:os");
         const path_ = await import("node:path");
         const tokenPath = path_.join(os.homedir(), ".code-os", "session_token");
@@ -110,39 +147,77 @@ export class BackendProcess {
       return;
     }
 
-    const projectRoot = isDev ? process.cwd() : process.resourcesPath;
-    const args = ["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "8000"];
-
-    if (isDev) {
-      args.push("--reload");
-    }
-
-    let pythonCmd: string;
-    try {
-      pythonCmd = findPythonCommand();
-    } catch (err: any) {
-      this.lastError = err?.message || "Python >= 3.11 not found in system PATH";
-      console.error(`[backend] ${this.lastError}`);
-      return;
-    }
-
-    try {
-      this.process = spawn(pythonCmd, args, {
-        cwd: projectRoot,
+    // ── Strategy 1: Bundled PyInstaller binary (packaged builds) ──────────────
+    const bundledBinary = getBundledBinaryPath();
+    if (bundledBinary) {
+      console.log("[backend] Starting bundled backend binary (first start may take ~15-20s for extraction)...");
+      await this._spawnProcess(bundledBinary, [], {
+        cwd: path.dirname(bundledBinary),
         env: {
           ...process.env,
           CODE_OS_HOME: app.getPath("userData"),
-          PYTHONPATH: projectRoot
         }
       });
+      return;
+    }
+
+    // ── Strategy 2: System Python + uvicorn (dev mode, or bundled binary missing) ──
+    const backendDir = isDev ? path.join(process.cwd(), "backend") : path.join(process.resourcesPath, "backend");
+    const moduleTarget = "app.main:app";
+    const uvicornArgs = ["-m", "uvicorn", moduleTarget, "--host", "127.0.0.1", "--port", "8000"];
+
+    if (isDev) {
+      uvicornArgs.push("--reload");
+    }
+
+    const pythonCmd = findPythonCommand();
+
+    if (!pythonCmd) {
+      this.lastError =
+        "Python 3.11+ was not found on this system. " +
+        "Please install it from python.org/downloads and relaunch CODE OS. " +
+        "(On Windows, check 'Add Python to PATH' during setup.)";
+      console.error(`[backend] ${this.lastError}`);
+
+      try {
+        dialog.showErrorBox(
+          "Python Required — CODE OS",
+          "Python 3.11 or newer is required to run the CODE OS backend.\n\n" +
+          "Please install it from:\n  https://python.org/downloads\n\n" +
+          "On Windows: check 'Add Python to PATH' during installation.\n" +
+          "Then relaunch CODE OS."
+        );
+      } catch {
+        // ignore dialog failures
+      }
+      return;
+    }
+
+    await this._spawnProcess(pythonCmd, uvicornArgs, {
+      cwd: backendDir,
+      env: {
+        ...process.env,
+        CODE_OS_HOME: app.getPath("userData"),
+        PYTHONPATH: backendDir
+      }
+    });
+  }
+
+  private async _spawnProcess(
+    cmd: string,
+    args: string[],
+    options: { cwd: string; env: NodeJS.ProcessEnv }
+  ): Promise<void> {
+    try {
+      this.process = spawn(cmd, args, options) as ChildProcessWithoutNullStreams;
     } catch (err: any) {
-      this.lastError = `Failed to spawn Python process: ${err?.message || err}`;
+      this.lastError = `Failed to spawn backend process: ${err?.message || err}`;
       console.error(`[backend] ${this.lastError}`);
       return;
     }
 
     this.process.on("error", (err) => {
-      this.lastError = `Python process error: ${err.message}`;
+      this.lastError = `Backend process error: ${err.message}`;
       console.error(`[backend] ${this.lastError}`);
     });
 

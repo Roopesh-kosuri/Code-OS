@@ -43,6 +43,7 @@ _active_tasks: dict[str, asyncio.Task] = {}
 _pending_recovery_events: dict[str, asyncio.Event] = {}
 _pending_recovery_decisions: dict[str, str] = {}
 _pending_recovery_errors: dict[str, str] = {}
+_pending_recovery_data: dict[str, dict] = {}
 
 # ── JSON extraction helper ────────────────────────────────────────────────────
 
@@ -85,17 +86,29 @@ async def _build_provider(cfg: ModelConfig):
         temperature=cfg.temperature,
         api_key_provider=cfg.api_key_provider,
     )
-    return await provider_for(req)
+    provider = await provider_for(req)
+    cfg.model = req.model
+    cfg.provider = req.provider
+    cfg.base_url = req.base_url
+    cfg.api_key_provider = req.api_key_provider
+    logger.info("duo.loop.build_provider resolved: provider=%s model=%s (LIVE_PATCH_V2)", cfg.provider, cfg.model)
+    return provider
 
 
-async def _call_model(cfg: ModelConfig, messages: list[ChatMessage]) -> str:
-    """Call a model and return the full concatenated response text with fallback."""
-    try:
+async def _call_model(cfg: ModelConfig, messages: list[ChatMessage], timeout_seconds: float = 45.0) -> str:
+    """Call a model and return the full concatenated response text with fallback and bounded timeout."""
+    async def _invoke():
         provider = await _build_provider(cfg)
         tokens: list[str] = []
         async for token in provider.stream_chat(cfg.model, messages, cfg.temperature):
             tokens.append(token)
         return "".join(tokens).strip()
+
+    try:
+        return await asyncio.wait_for(_invoke(), timeout=timeout_seconds)
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        logger.error("duo.call_model.timeout model=%s provider=%s timeout=%.1fs", cfg.model, cfg.provider, timeout_seconds)
+        raise TimeoutError(f"Model call timed out after {timeout_seconds:.1f}s")
     except Exception as exc:
         if cfg.provider == "ollama":
             from ..ai.service import get_api_key
@@ -343,7 +356,7 @@ async def list_sessions(workspace: str) -> list[DuoSessionDto]:
 
 # ── Core loop ─────────────────────────────────────────────────────────────────
 
-async def _handle_duo_llm_failure(session_id: str, exc: Exception) -> str:
+async def _handle_duo_llm_failure(session_id: str, exc: Exception) -> dict:
     """Pauses Duo loop on LLM failure and waits for user decision."""
     event = asyncio.Event()
     _pending_recovery_events[session_id] = event
@@ -359,12 +372,18 @@ async def _handle_duo_llm_failure(session_id: str, exc: Exception) -> str:
     _pending_recovery_events.pop(session_id, None)
     _pending_recovery_errors.pop(session_id, None)
     decision = _pending_recovery_decisions.pop(session_id, "cancel")
+    recovery_data = _pending_recovery_data.pop(session_id, {})
     
     db = await get_db()
     await db.execute("UPDATE duo_sessions SET status='running', updated_at=? WHERE id=?", (_now_iso(), session_id))
     await db.commit()
         
-    return decision
+    return {
+        "action": decision,
+        "provider": recovery_data.get("provider"),
+        "model": recovery_data.get("model"),
+        "api_key_provider": recovery_data.get("api_key_provider"),
+    }
 
 
 
@@ -408,27 +427,49 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
         ]
 
         try:
-            while True:
+            auto_retries = 0
+            MAX_AUTO_RETRIES = 2
+            while auto_retries <= MAX_AUTO_RETRIES:
                 try:
-                    gen_output = await _call_model(req.generator, gen_messages)
+                    gen_output = await _call_model(req.generator, gen_messages, timeout_seconds=45.0)
                     break
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.error("duo.loop.generator_error session_id=%s round=%d: %s", session_id, round_num, exc)
-                    decision = await _handle_duo_llm_failure(session_id, exc)
-                    if decision == "retry":
+                    logger.error("duo.loop.generator_error session_id=%s round=%d (auto-retry %d/%d): %s", session_id, round_num, auto_retries, MAX_AUTO_RETRIES, exc)
+                    if req.internal:
+                        # Agent-invoked internal loop: limited auto-retries, then fail
+                        if auto_retries >= MAX_AUTO_RETRIES:
+                            logger.warning("duo.loop.internal_failure session_id=%s round=%d: exhausted retries", session_id, round_num)
+                            await _db_finish_session(session_id, "error", last_proposal_id)
+                            return
+                        auto_retries += 1
+                        await asyncio.sleep(1.5 * auto_retries)
                         continue
-                    elif decision == "switch_to_api":
-                        req.generator.provider = "groq"
-                        req.generator.model = "llama-3.3-70b-versatile"
-                        req.generator.api_key_provider = "groq"
-                        req.generator.base_url = None
-                        await _db_update_config(session_id, req.generator.model_dump_json(), req.critic.model_dump_json())
-                        continue
+                    # External (user-facing) mode: escalate after auto-retries
+                    if auto_retries >= MAX_AUTO_RETRIES:
+                        decision_res = await _handle_duo_llm_failure(session_id, exc)
+                        action = decision_res.get("action", "cancel")
+                        if action == "retry":
+                            auto_retries = 0
+                            continue
+                        elif action in ("switch_to_api", "change_model"):
+                            auto_retries = 0
+                            new_provider = decision_res.get("provider") or "groq"
+                            new_model = decision_res.get("model") or ("llama-3.3-70b-versatile" if new_provider == "groq" else "gpt-4o")
+                            new_key_provider = decision_res.get("api_key_provider") or new_provider
+                            req.generator.provider = new_provider
+                            req.generator.model = new_model
+                            req.generator.api_key_provider = new_key_provider
+                            req.generator.base_url = None
+                            await _db_update_config(session_id, req.generator.model_dump_json(), req.critic.model_dump_json())
+                            continue
+                        else:
+                            await _db_finish_session(session_id, "error", last_proposal_id)
+                            return
                     else:
-                        await _db_finish_session(session_id, "error", last_proposal_id)
-                        return
+                        auto_retries += 1
+                        await asyncio.sleep(1.5 * auto_retries)
         except asyncio.CancelledError:
             await _db_finish_session(session_id, "cancelled", last_proposal_id)
             logger.info("duo.loop.cancelled session_id=%s at round %d", session_id, round_num)
@@ -483,33 +524,57 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
         ]
 
         try:
-            while True:
+            auto_retries = 0
+            while auto_retries <= MAX_AUTO_RETRIES:
                 try:
-                    critic_raw = await _call_model(req.critic, critic_messages)
+                    critic_raw = await _call_model(req.critic, critic_messages, timeout_seconds=45.0)
                     break
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.error("duo.loop.critic_error session_id=%s round=%d: %s", session_id, round_num, exc)
-                    decision = await _handle_duo_llm_failure(session_id, exc)
-                    if decision == "retry":
+                    logger.error("duo.loop.critic_error session_id=%s round=%d (auto-retry %d/%d): %s", session_id, round_num, auto_retries, MAX_AUTO_RETRIES, exc)
+                    if req.internal:
+                        if auto_retries >= MAX_AUTO_RETRIES:
+                            logger.warning("duo.loop.critic_internal_fallback round=%d: treating failure as rejection", round_num)
+                            critic_raw = ""
+                            verdict = CriticVerdict(
+                                approved=False,
+                                reasoning=f"Critic call failed: {exc}",
+                                issues=[CriticIssue(description=str(exc), severity="high")],
+                            )
+                            break
+                        auto_retries += 1
+                        await asyncio.sleep(1.5 * auto_retries)
                         continue
-                    elif decision == "switch_to_api":
-                        req.critic.provider = "groq"
-                        req.critic.model = "llama-3.3-70b-versatile"
-                        req.critic.api_key_provider = "groq"
-                        req.critic.base_url = None
-                        await _db_update_config(session_id, req.generator.model_dump_json(), req.critic.model_dump_json())
-                        continue
+                    # External mode: escalate after auto-retries
+                    if auto_retries >= MAX_AUTO_RETRIES:
+                        decision_res = await _handle_duo_llm_failure(session_id, exc)
+                        action = decision_res.get("action", "cancel")
+                        if action == "retry":
+                            auto_retries = 0
+                            continue
+                        elif action in ("switch_to_api", "change_model"):
+                            auto_retries = 0
+                            new_provider = decision_res.get("provider") or "groq"
+                            new_model = decision_res.get("model") or ("llama-3.3-70b-versatile" if new_provider == "groq" else "gpt-4o")
+                            new_key_provider = decision_res.get("api_key_provider") or new_provider
+                            req.critic.provider = new_provider
+                            req.critic.model = new_model
+                            req.critic.api_key_provider = new_key_provider
+                            req.critic.base_url = None
+                            await _db_update_config(session_id, req.generator.model_dump_json(), req.critic.model_dump_json())
+                            continue
+                        else:
+                            critic_raw = ""
+                            verdict = CriticVerdict(
+                                approved=False,
+                                reasoning=f"Critic call failed: {exc}",
+                                issues=[CriticIssue(description=str(exc), severity="high")],
+                            )
+                            break
                     else:
-                        # Treat critic failure as rejection so the loop can continue
-                        critic_raw = ""
-                        verdict = CriticVerdict(
-                            approved=False,
-                            reasoning=f"Critic call failed: {exc}",
-                            issues=[CriticIssue(description=str(exc), severity="high")],
-                        )
-                        break
+                        auto_retries += 1
+                        await asyncio.sleep(1.5 * auto_retries)
         except asyncio.CancelledError:
             await _db_finish_session(session_id, "cancelled", last_proposal_id)
             return

@@ -1,8 +1,5 @@
 import { ChevronRight, Copy, File, Folder, FolderOpen, FolderPlus, MoreHorizontal, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-
-import { Button } from "../../components/ui/Button";
-import { IconButton } from "../../components/ui/IconButton";
 import { api } from "../../lib/api";
 import { useEditorStore } from "../../stores/editorStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -29,7 +26,7 @@ function TreeNode({
   onStartRename,
   onRenameChange,
   onRenameKeyDown,
-  onRenameBlur
+  onRenameBlur,
 }: {
   node: FileNode;
   depth: number;
@@ -44,18 +41,28 @@ function TreeNode({
   onRenameBlur: (node: FileNode) => void;
 }) {
   const openFile = useEditorStore((state) => state.openFile);
+  const activePath = useEditorStore((state) => state.activePath);
   const isDirectory = node.type === "directory";
   const isExpanded = expanded.has(node.path);
   const isEditing = node.path === editingPath;
+  const isActive = node.path === activePath;
+
+  const isPy = node.name.endsWith(".py");
+  const isHtml = node.name.endsWith(".html");
+  const isCss = node.name.endsWith(".css");
+  const isJs = node.name.endsWith(".js") || node.name.endsWith(".ts") || node.name.endsWith(".tsx");
 
   return (
     <div>
       <div
         role="treeitem"
         data-testid="file-tree-item"
-        className="group flex h-7 items-center gap-1 rounded px-2 text-sm text-on-surface-variant dark:text-on-surface-variant hover:bg-surface-bright/20 hover:text-on-surface dark:hover:text-on-surface"
-
-        style={{ paddingLeft: 8 + depth * 14 }}
+        className={`group flex h-6.5 items-center gap-1.5 px-2 font-code-sm text-code-sm cursor-pointer transition-all ${
+          isActive
+            ? "bg-primary/5 text-primary border-r-2 border-primary font-semibold"
+            : "text-on-surface-variant hover:bg-surface-variant/40 hover:text-on-surface"
+        }`}
+        style={{ paddingLeft: 8 + depth * 12 }}
         draggable={!isEditing}
         onDragStart={(event) => event.dataTransfer.setData("text/plain", node.path)}
         onDrop={(event) => {
@@ -75,26 +82,34 @@ function TreeNode({
         }}
       >
         {isDirectory ? (
-          <span className="material-symbols-outlined text-[16px] text-primary-fixed-dim/80 shrink-0">
+          <span className="material-symbols-outlined text-[16px] text-on-surface-variant/60 shrink-0">
             {isExpanded ? "keyboard_arrow_down" : "keyboard_arrow_right"}
           </span>
         ) : (
           <span className="w-[16px] shrink-0" />
         )}
+
         {isDirectory ? (
-          <span className="material-symbols-outlined text-[16px] text-tertiary-fixed-dim shrink-0">
-            {isExpanded ? "folder_open" : "folder"}
+          <span className="material-symbols-outlined text-[16px] text-tertiary shrink-0" style={{ fontVariationSettings: "'FILL' 1" }}>
+            folder
           </span>
         ) : (
-          <span className="material-symbols-outlined text-[16px] text-on-surface-variant/70 shrink-0">
-            {node.name.endsWith(".ts") || node.name.endsWith(".tsx") || node.name.endsWith(".js") ? "code" :
-             node.name.endsWith(".css") ? "style" :
-             node.name.endsWith(".json") ? "api" : "description"}
+          <span className={`material-symbols-outlined text-[15px] shrink-0 ${
+            isPy || isJs
+              ? "text-primary"
+              : isHtml
+                ? "text-error"
+                : isCss
+                  ? "text-secondary"
+                  : "text-on-surface-variant"
+          }`}>
+            {isPy || isJs ? "data_object" : isHtml ? "html" : isCss ? "style" : "description"}
           </span>
         )}
+
         {isEditing ? (
           <input
-            className="h-5 flex-1 min-w-0 bg-surface-dim/80 border border-outline-variant/30 rounded px-1 text-xs text-on-surface focus:border-primary/50 focus:outline-none select-text"
+            className="h-5 flex-1 min-w-0 bg-[#131315] border border-primary-container rounded px-1.5 text-xs text-on-surface focus:outline-none select-text font-mono"
             value={renameValue}
             onChange={(e) => onRenameChange(e.target.value)}
             onKeyDown={(e) => onRenameKeyDown(e, node)}
@@ -104,7 +119,7 @@ function TreeNode({
           />
         ) : (
           <span
-            className="min-w-0 flex-1 truncate"
+            className="min-w-0 flex-1 truncate font-mono text-[11px]"
             onDoubleClick={(e) => {
               e.stopPropagation();
               onStartRename(node.path, node.name);
@@ -113,17 +128,19 @@ function TreeNode({
             {node.name}
           </span>
         )}
+
         <button
           title="More actions"
-          className="hidden text-slate-400 hover:text-white group-hover:block"
+          className="hidden text-on-surface-variant hover:text-on-surface group-hover:block p-0.5 rounded"
           onClick={(event) => {
             event.stopPropagation();
             onContext({ node, x: event.clientX, y: event.clientY });
           }}
         >
-          <MoreHorizontal size={14} />
+          <MoreHorizontal size={12} />
         </button>
       </div>
+
       {isDirectory && isExpanded ? (
         node.children?.map((child) => (
           <TreeNode
@@ -152,18 +169,16 @@ export function FileExplorer() {
   const fileTrees = useWorkspaceStore((state) => state.fileTrees);
   const closeWorkspace = useWorkspaceStore((state) => state.closeWorkspace);
   const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
-  const tree = useWorkspaceStore((state) => state.fileTree);
   const refreshTree = useWorkspaceStore((state) => state.refreshTree);
+
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [context, setContext] = useState<ContextState>(null);
   
-  // Inline rename state
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
   const expandedWithRoot = expanded;
 
-  // Auto-expand root folder when a workspace is added
   useEffect(() => {
     setExpanded((current) => {
       const next = new Set(current);
@@ -224,7 +239,7 @@ export function FileExplorer() {
         setEditingPath(node.path);
         setRenameValue(node.name);
         setContext(null);
-        return; // Don't close context and resolve immediately
+        return;
       }
       if (action === "delete" && confirm(`Delete ${node.name}?`)) {
         await api.post("/api/files/delete", { workspace: activeWs.path, path: node.path });
@@ -266,37 +281,71 @@ export function FileExplorer() {
     <section
       role="tree"
       data-testid="file-tree-panel"
-      className="relative flex h-full min-h-0 w-full min-w-0 flex-col border-b border-outline-variant/20 bg-surface-container-lowest/80"
+      className="relative flex h-full min-h-0 w-full min-w-0 flex-col bg-surface-container-low text-on-surface select-none font-ui-label-reg text-ui-label-reg"
       onClick={() => setContext(null)}
     >
-
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-outline-variant/20 px-3 min-w-0 w-full bg-surface-container-low/70">
-        <div className="font-label-caps text-label-caps uppercase tracking-wider text-on-surface-variant">Explorer</div>
-        <div className="flex gap-0.5">
-          <IconButton label="Add folder to workspace" icon={<FolderPlus size={15} />} onClick={() => void openWorkspace()} />
-          <IconButton label="Refresh tree" icon={<RefreshCw size={15} />} onClick={() => void refreshTree()} disabled={activeWorkspaces.length === 0} />
+      {/* ── Explorer Header ──────────────────────────────────────────────── */}
+      <div className="px-3 py-2 border-b border-surface-variant flex justify-between items-center bg-surface-container/50 shrink-0">
+        <h2 className="font-ui-label-bold text-ui-label-bold text-on-surface uppercase tracking-wider text-[11px]">
+          {workspace?.name ?? "WORKSPACE"}
+        </h2>
+        <div className="flex gap-2 text-on-surface-variant">
+          <span
+            onClick={() => {
+              if (activeWorkspaces.length > 0) {
+                const root = fileTrees[activeWorkspaces[0].path];
+                if (root) void runAction("new-file", root);
+              }
+            }}
+            className="material-symbols-outlined text-[16px] hover:text-primary cursor-pointer transition-colors"
+            title="New File"
+          >
+            note_add
+          </span>
+          <span
+            onClick={() => {
+              if (activeWorkspaces.length > 0) {
+                const root = fileTrees[activeWorkspaces[0].path];
+                if (root) void runAction("new-folder", root);
+              }
+            }}
+            className="material-symbols-outlined text-[16px] hover:text-primary cursor-pointer transition-colors"
+            title="New Folder"
+          >
+            create_new_folder
+          </span>
+          <span
+            onClick={() => void refreshTree()}
+            className="material-symbols-outlined text-[16px] hover:text-primary cursor-pointer transition-colors"
+            title="Refresh Explorer"
+          >
+            refresh
+          </span>
         </div>
       </div>
-      <div className="min-h-0 flex-1 min-w-0 w-full overflow-auto px-1 pb-2">
+
+      {/* ── File Tree Scroll Area ────────────────────────────────────────── */}
+      <div className="min-h-0 flex-1 min-w-0 w-full overflow-auto py-2 font-code-sm text-code-sm text-on-surface-variant">
         {activeWorkspaces.length > 0 ? (
           activeWorkspaces.map((ws) => {
             const treeNode = fileTrees[ws.path];
             if (!treeNode) return null;
             return (
-              <div key={ws.path} className="mb-4">
-                <div className="mb-1 flex h-7 items-center justify-between rounded px-2 text-xs font-bold uppercase tracking-wider text-slate-500 bg-surface-850">
+              <div key={ws.path} className="mb-3">
+                <div className="mb-1 flex h-6 items-center justify-between px-3 text-[10px] font-bold uppercase tracking-wider text-outline-variant bg-surface-container-high/40">
                   <span className="truncate" title={ws.path}>{ws.name}</span>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
                       closeWorkspace(ws.path);
                     }}
-                    className="text-slate-500 hover:text-white"
+                    className="text-on-surface-variant hover:text-on-surface"
                     title="Remove folder from workspace"
                   >
-                    <X size={12} />
+                    <X size={11} />
                   </button>
                 </div>
+
                 <TreeNode
                   node={treeNode}
                   depth={0}
@@ -322,27 +371,34 @@ export function FileExplorer() {
             );
           })
         ) : (
-          <div className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2.5">
-            <span className="text-xs text-slate-500 select-none">No active workspace folder open.</span>
-            <Button
-              variant="primary"
+          <div className="flex h-full flex-col items-center justify-center p-6 text-center space-y-3">
+            <span className="text-xs text-on-surface-variant/50">No active workspace folder.</span>
+            <button
               onClick={() => void openWorkspace()}
-              className="h-8 text-xs font-semibold px-3"
+              className="bg-primary-container text-[#001f24] font-ui-label-bold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm hover:bg-primary-fixed transition-colors cursor-pointer"
             >
-              <FolderPlus size={13} /> Open Folder
-            </Button>
+              <FolderPlus size={13} />
+              <span>Open Folder</span>
+            </button>
           </div>
         )}
       </div>
+
+      {/* Context Menu */}
       {context ? (
-        <div className="fixed z-50 w-56 rounded-md border border-surface-700 bg-surface-900 py-1 text-sm shadow-xl" style={{ left: context.x, top: context.y }} onClick={(event) => event.stopPropagation()}>
-          <MenuButton icon={<Plus size={14} />} label="New File" onClick={() => void runAction("new-file", context.node)} />
-          <MenuButton icon={<FolderPlus size={14} />} label="New Folder" onClick={() => void runAction("new-folder", context.node)} />
-          <MenuButton icon={<MoreHorizontal size={14} />} label="Rename" onClick={() => void runAction("rename", context.node)} />
-          <MenuButton icon={<Copy size={14} />} label="Duplicate" onClick={() => void runAction("duplicate", context.node)} />
-          <MenuButton icon={<FolderOpen size={14} />} label="Reveal in System Explorer" onClick={() => void runAction("reveal", context.node)} />
-          <MenuButton icon={<Copy size={14} />} label="Copy Path" onClick={() => void runAction("copy-path", context.node)} />
-          <MenuButton icon={<Trash2 size={14} />} label="Delete" danger onClick={() => void runAction("delete", context.node)} />
+        <div
+          className="fixed z-50 w-52 rounded-xl border border-surface-container-high bg-[#1e1f24] py-1.5 text-xs shadow-2xl text-on-surface"
+          style={{ left: context.x, top: context.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <MenuButton icon={<Plus size={13} />} label="New File" onClick={() => void runAction("new-file", context.node)} />
+          <MenuButton icon={<FolderPlus size={13} />} label="New Folder" onClick={() => void runAction("new-folder", context.node)} />
+          <MenuButton icon={<MoreHorizontal size={13} />} label="Rename" onClick={() => void runAction("rename", context.node)} />
+          <MenuButton icon={<Copy size={13} />} label="Duplicate" onClick={() => void runAction("duplicate", context.node)} />
+          <MenuButton icon={<FolderOpen size={13} />} label="Reveal in Explorer" onClick={() => void runAction("reveal", context.node)} />
+          <MenuButton icon={<Copy size={13} />} label="Copy Path" onClick={() => void runAction("copy-path", context.node)} />
+          <div className="h-px bg-surface-variant my-1" />
+          <MenuButton icon={<Trash2 size={13} />} label="Delete" danger onClick={() => void runAction("delete", context.node)} />
         </div>
       ) : null}
     </section>
@@ -351,9 +407,14 @@ export function FileExplorer() {
 
 function MenuButton({ icon, label, danger, onClick }: { icon: ReactNode; label: string; danger?: boolean; onClick: () => void }) {
   return (
-    <button className={`flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-surface-800 ${danger ? "text-danger" : "text-slate-200"}`} onClick={onClick}>
+    <button
+      className={`flex w-full items-center gap-2.5 px-3 py-1.5 text-left transition-colors cursor-pointer ${
+        danger ? "text-error hover:bg-error/10" : "text-on-surface hover:bg-white/5"
+      }`}
+      onClick={onClick}
+    >
       {icon}
-      {label}
+      <span>{label}</span>
     </button>
   );
 }

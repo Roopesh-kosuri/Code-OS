@@ -7,11 +7,57 @@ import { useEditorStore } from "./editorStore";
 
 // ── Extended types ────────────────────────────────────────────────────────────
 
+export interface AgentStatus {
+  type: "thinking" | "tool" | "step_complete" | "duo_escalation" | "proposal_created" | "approval_required" | "done" | "error";
+  message: string;
+  tool?: string;
+  detail?: string;
+  command?: string;
+  step?: number;
+  total?: number;
+}
+
+export interface PendingApprovalState {
+  action_id: string;
+  action_type: string; // "command" | "edit"
+  command?: string;
+  detail?: string;
+  reason: string;
+  proposal_id?: string;
+  path?: string;
+  diff_summary?: string;
+}
+
+export interface AgentPlan {
+  steps: string[];
+  current: number;
+}
+
+export interface ToolEvent {
+  tool: string;
+  arguments?: Record<string, string>;
+  detail?: string;
+  timestamp: string;
+  success?: boolean;
+  output_preview?: string;
+}
+
+export interface CommandExecution {
+  command: string;
+  output: string;
+  exit_code: number;
+  success: boolean;
+}
+
 export interface ExtendedChatMessage extends ChatMessage {
   id?: string;
   model?: string;
   attached_paths?: string[];
   created_at?: string;
+  agentStatus?: AgentStatus | null;
+  agentPlan?: AgentPlan | null;
+  agentToolHistory?: ToolEvent[];
+  commands?: CommandExecution[];
 }
 
 export interface ChatThread {
@@ -36,15 +82,31 @@ type AIState = {
   streaming: boolean;
   error: string | null;
 
+  // Agent mode state (Cursor/Antigravity-style autonomous loop)
+  agentMode: boolean;
+  agentStatus: AgentStatus | null;
+  agentPlan: AgentPlan | null;
+  agentToolHistory: ToolEvent[];
+  pendingApproval: PendingApprovalState | null;
+  pendingApprovals: PendingApprovalState[];
+
   // Multi-thread state
   currentThreadId: string | null;
   threads: ChatThread[];
 
-  setPreset: (presetId: string, baseUrlOverride?: string) => void;
+  setPreset: (presetId: string, baseUrlOverride?: string, modelOverride?: string) => void;
   setModel: (model: string) => void;
   setBaseUrl: (baseUrl: string) => void;
   refreshModels: () => Promise<void>;
   stopGeneration: () => void;
+
+  // Agent mode actions
+  toggleAgentMode: () => void;
+  setAgentMode: (enabled: boolean) => void;
+  clearAgentState: () => void;
+  approveAction: (actionId: string) => Promise<void>;
+  rejectAction: (actionId: string) => Promise<void>;
+  sendAgentMessage: (content: string, attachedPaths?: string[]) => Promise<void>;
 
   // Actions
   loadThreads: (workspace: string) => Promise<void>;
@@ -54,65 +116,155 @@ type AIState = {
   deleteThread: (threadId: string) => Promise<void>;
   
   sendMessage: (content: string, attachedPaths?: string[]) => Promise<void>;
-  regenerate: () => Promise<void>;
+  regenerate: (messageIndex?: number) => Promise<void>;
   editMessage: (index: number, newContent: string) => Promise<void>;
   deleteMessagePair: (index: number) => Promise<void>;
 };
 
 let activeController: AbortController | null = null;
 
+const savedPreset = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_preset") || "auto" : "auto";
+const savedPresetObj = getPreset(savedPreset);
+const savedModel = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_model") ?? (savedPresetObj?.model_example || "") : "";
+const savedBaseUrl = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_base_url") ?? (savedPresetObj?.base_url || "") : "";
+const savedApiKeyProvider = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_api_key_provider") ?? (savedPresetObj?.api_key_provider || null) : null;
+
 export const useAIStore = create<AIState>((set, get) => ({
-  preset: "auto",
-  provider: "auto",
-  apiKeyProvider: null,
-  model: "",
-  baseUrl: "",
+  preset: savedPreset,
+  provider: savedPresetObj?.provider || "auto",
+  apiKeyProvider: savedApiKeyProvider,
+  model: savedModel,
+  baseUrl: savedBaseUrl,
   messages: [],
   models: [],
   streaming: false,
   error: null,
 
+  // Agent mode defaults (OFF by default)
+  agentMode: false,
+  agentStatus: null,
+  agentPlan: null,
+  agentToolHistory: [],
+  pendingApproval: null,
+  pendingApprovals: [],
+
   currentThreadId: null,
   threads: [],
 
-  setPreset: (presetId, baseUrlOverride) => {
+  toggleAgentMode: () => {
+    set((state) => ({ agentMode: !state.agentMode }));
+  },
+
+  setAgentMode: (enabled: boolean) => {
+    set({ agentMode: enabled });
+  },
+
+  clearAgentState: () => {
+    set({ agentStatus: null, agentPlan: null, agentToolHistory: [], pendingApproval: null, pendingApprovals: [] });
+  },
+
+  approveAction: async (actionId: string) => {
+    try {
+      await api.post(`/api/ai/chat-agent/approve/${actionId}`);
+      set((state) => {
+        const remaining = (state.pendingApprovals || []).filter((a) => a.action_id !== actionId);
+        return {
+          pendingApprovals: remaining,
+          pendingApproval: remaining[0] || null,
+        };
+      });
+    } catch (err) {
+      console.error("Failed to approve action:", err);
+    }
+  },
+
+  rejectAction: async (actionId: string) => {
+    try {
+      await api.post(`/api/ai/chat-agent/reject/${actionId}`);
+      set((state) => {
+        const remaining = (state.pendingApprovals || []).filter((a) => a.action_id !== actionId);
+        return {
+          pendingApprovals: remaining,
+          pendingApproval: remaining[0] || null,
+        };
+      });
+    } catch (err) {
+      console.error("Failed to reject action:", err);
+    }
+  },
+
+  setPreset: (presetId, baseUrlOverride, modelOverride) => {
     const p = getPreset(presetId);
     if (!p) return;
-    // Auto-fill the example model when switching to a new preset
-    // so users never need to type a model name for API providers
     const currentPreset = get().preset;
     const currentModel = get().model;
-    const autoModel = presetId !== currentPreset
-      ? (p.model_example || currentModel)   // switch → use example
-      : currentModel;                        // same preset → keep current
+    const oldPresetObj = getPreset(currentPreset);
+    const autoModel = modelOverride !== undefined
+      ? modelOverride
+      : (presetId !== currentPreset && (!currentModel || currentModel === oldPresetObj?.model_example))
+        ? (p.model_example || "")
+        : currentModel;
+    const nextBaseUrl = baseUrlOverride ?? p.base_url ?? "";
+    const nextApiKeyProvider = p.api_key_provider ?? null;
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem("code_os_ai_preset", presetId);
+      localStorage.setItem("code_os_ai_model", autoModel);
+      localStorage.setItem("code_os_ai_base_url", nextBaseUrl);
+      if (nextApiKeyProvider) {
+        localStorage.setItem("code_os_ai_api_key_provider", nextApiKeyProvider);
+      } else {
+        localStorage.removeItem("code_os_ai_api_key_provider");
+      }
+    }
+
     set({
       preset: presetId,
       provider: p.provider,
-      apiKeyProvider: p.api_key_provider,
-      baseUrl: baseUrlOverride ?? p.base_url,
+      apiKeyProvider: nextApiKeyProvider,
+      baseUrl: nextBaseUrl,
       model: autoModel,
       models: [],
     });
     void get().refreshModels();
   },
 
-  setModel: (model) => set({ model }),
-  setBaseUrl: (baseUrl) => set({ baseUrl }),
+  setModel: (model) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("code_os_ai_model", model);
+    }
+    set({ model });
+  },
+
+  setBaseUrl: (baseUrl) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("code_os_ai_base_url", baseUrl);
+    }
+    set({ baseUrl });
+  },
 
   refreshModels: async () => {
-    const state = get();
+    const currentProvider = get().provider;
+    const currentBaseUrl = get().baseUrl;
+    const currentApiKeyProvider = get().apiKeyProvider;
     try {
       const models = await api.get<ModelDto[]>("/api/ai/models", {
-        provider: state.provider,
-        base_url: state.baseUrl,
-        api_key_provider: state.apiKeyProvider,
+        provider: currentProvider,
+        base_url: currentBaseUrl,
+        api_key_provider: currentApiKeyProvider,
       });
-      const names = models.map((m) => m.name);
-      let bestModel = state.model;
-      if (!bestModel || (names.length > 0 && !names.includes(bestModel))) {
-        bestModel = models[0]?.name || state.model || "";
+      // CRITICAL: NEVER overwrite user's selected model if it is already non-empty!
+      const currentModel = get().model;
+      if (!currentModel && models.length > 0) {
+        const fallback = models[0]?.name || "";
+        if (typeof window !== "undefined") {
+          localStorage.setItem("code_os_ai_model", fallback);
+        }
+        set({ models, model: fallback });
+      } else {
+        // Just store the fetched models catalog without touching model!
+        set({ models });
       }
-      set({ models, model: bestModel });
     } catch {
       // Keep existing models array and current model on failure
     }
@@ -193,6 +345,10 @@ export const useAIStore = create<AIState>((set, get) => ({
   // ── Message Actions ─────────────────────────────────────────────────────────
 
   sendMessage: async (content, attachedPaths = []) => {
+    if (get().agentMode) {
+      return get().sendAgentMessage(content, attachedPaths);
+    }
+
     const workspace = useWorkspaceStore.getState().currentWorkspace?.path;
     const restrictedMode = useWorkspaceStore.getState().restrictedMode;
     
@@ -334,7 +490,242 @@ export const useAIStore = create<AIState>((set, get) => ({
       activeController = null;
       set({ streaming: false });
     }
+  },
 
+  sendAgentMessage: async (content, attachedPaths = []) => {
+    const workspace = useWorkspaceStore.getState().currentWorkspace?.path;
+    const restrictedMode = useWorkspaceStore.getState().restrictedMode;
+    
+    if (!workspace) return;
+
+    if (restrictedMode && (content.toLowerCase().includes("write") || content.toLowerCase().includes("edit") || content.toLowerCase().includes("modify") || content.toLowerCase().includes("change"))) {
+      set({ error: "File operations are disabled in Restricted Mode. Switch to Trusted mode to enable AI file writes." });
+      return;
+    }
+
+    let threadId = get().currentThreadId;
+    if (!threadId) {
+      const id = crypto.randomUUID();
+      const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "…" : "");
+      try {
+        const newT = await api.post<ChatThread>("/api/ai/threads", { id, workspace, title: cleanTitle });
+        set((state) => ({
+          currentThreadId: id,
+          threads: [newT, ...state.threads],
+        }));
+        threadId = id;
+      } catch {
+        set({ error: "Failed to initialize thread" });
+        return;
+      }
+    }
+
+    const activeThread = get().threads.find((t) => t.id === threadId);
+    if (activeThread?.title === "New Conversation") {
+      const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "…" : "");
+      void get().renameThread(threadId, cleanTitle);
+    }
+
+    const userMessage: ExtendedChatMessage = {
+      role: "user",
+      content,
+      attached_paths: attachedPaths,
+      created_at: new Date().toISOString(),
+    };
+    const assistantMessage: ExtendedChatMessage = {
+      role: "assistant",
+      content: "",
+      model: get().model,
+      created_at: new Date().toISOString(),
+      agentStatus: { type: "thinking", message: "Starting agent..." },
+      agentPlan: null,
+      agentToolHistory: [],
+    };
+
+    activeController = new AbortController();
+    set((state) => ({
+      messages: [...state.messages, userMessage, assistantMessage],
+      streaming: true,
+      error: null,
+      agentStatus: { type: "thinking", message: "Analyzing request..." },
+      agentPlan: null,
+      agentToolHistory: [],
+    }));
+
+    try {
+      await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
+    } catch (err) {
+      console.warn("Messages out of sync in DB:", err);
+    }
+
+    const requestMessages = get().messages.slice(0, -1).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    const activePath = useEditorStore.getState().activePath;
+    const openPaths = useEditorStore.getState().openFiles.map(f => f.path);
+    const combinedAttachedPaths = Array.from(
+      new Set([
+        ...(activePath ? [activePath] : []),
+        ...attachedPaths,
+        ...openPaths,
+      ])
+    );
+
+    try {
+      await api.streamSSE(
+        "/api/ai/chat-agent/stream",
+        {
+          provider: get().provider,
+          model: get().model,
+          base_url: get().baseUrl,
+          api_key_provider: get().apiKeyProvider,
+          messages: requestMessages,
+          attached_paths: combinedAttachedPaths,
+          workspace,
+          agent_mode: true,
+        },
+        (eventType, data: any) => {
+          if (eventType === "status") {
+            const statusObj: AgentStatus = {
+              type: data.type || "thinking",
+              message: data.message || "",
+              tool: data.tool,
+              detail: data.detail,
+              command: data.command,
+              step: data.step,
+              total: data.total,
+            };
+            set((state) => {
+              const messages = [...state.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant") {
+                messages[messages.length - 1] = { ...last, agentStatus: statusObj };
+              }
+              const newHistory = [...state.agentToolHistory];
+              if (statusObj.type === "tool" && statusObj.tool) {
+                newHistory.push({
+                  tool: statusObj.tool,
+                  detail: statusObj.detail,
+                  timestamp: new Date().toISOString(),
+                });
+              }
+              return { agentStatus: statusObj, agentToolHistory: newHistory, pendingApproval: statusObj.type === "tool" ? null : state.pendingApproval, messages };
+            });
+          } else if (eventType === "plan") {
+            const planObj: AgentPlan = {
+              steps: data.steps || [],
+              current: data.current || 0,
+            };
+            set((state) => {
+              const messages = [...state.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant") {
+                messages[messages.length - 1] = { ...last, agentPlan: planObj };
+              }
+              return { agentPlan: planObj, messages };
+            });
+          } else if (eventType === "token") {
+            const tokenStr = typeof data === "string" ? data : (data.content || "");
+            set((state) => {
+              const messages = [...state.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant") {
+                messages[messages.length - 1] = { ...last, content: last.content + tokenStr };
+              }
+              return { messages };
+            });
+          } else if (eventType === "proposal") {
+            window.dispatchEvent(new CustomEvent("code-os:proposal-created"));
+          } else if (eventType === "command_result") {
+            const cmdResult: CommandExecution = {
+              command: data.command || "",
+              output: data.output || "",
+              exit_code: typeof data.exit_code === "number" ? data.exit_code : (data.success ? 0 : 1),
+              success: data.success ?? true,
+            };
+            set((state) => {
+              const messages = [...state.messages];
+              const last = messages[messages.length - 1];
+              const toolEntry = {
+                tool: "run_command",
+                detail: cmdResult.command,
+                timestamp: new Date().toISOString(),
+                success: cmdResult.success,
+              };
+              const updatedHistory = [...state.agentToolHistory, toolEntry];
+              if (last && last.role === "assistant") {
+                const existing = last.commands || [];
+                messages[messages.length - 1] = {
+                  ...last,
+                  commands: [...existing, cmdResult],
+                  agentToolHistory: updatedHistory,
+                };
+              }
+              return { messages, agentToolHistory: updatedHistory, pendingApproval: null, pendingApprovals: [] };
+            });
+          } else if (eventType === "approval_request") {
+            const approvalObj: PendingApprovalState = {
+              action_id: data.action_id,
+              action_type: data.action_type || "command",
+              command: data.command || "",
+              detail: data.detail || data.command || data.path || "",
+              reason: data.reason || "Action requires user approval",
+              proposal_id: data.proposal_id,
+              path: data.path,
+              diff_summary: data.diff_summary,
+            };
+            set((state) => {
+              const currentList = state.pendingApprovals || [];
+              const list = [...currentList.filter((a) => a.action_id !== approvalObj.action_id), approvalObj];
+              return {
+                pendingApprovals: list,
+                pendingApproval: list[0] || approvalObj,
+                agentStatus: {
+                  type: "approval_required",
+                  message: data.reason || "Approval required",
+                  command: data.command,
+                  detail: data.path || data.detail,
+                },
+              };
+            });
+          } else if (eventType === "error") {
+            const errMsg = typeof data === "string" ? data : (data.message || "Agent error");
+            set({ error: errMsg, pendingApproval: null, pendingApprovals: [] });
+          } else if (eventType === "done") {
+            set((state) => {
+              const messages = [...state.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant") {
+                messages[messages.length - 1] = {
+                  ...last,
+                  agentStatus: { type: "done", message: data.message || "Task completed" },
+                  agentToolHistory: state.agentToolHistory,
+                };
+              }
+              return {
+                agentStatus: { type: "done", message: data.message || "Task completed" },
+                pendingApproval: null,
+                pendingApprovals: [],
+                messages,
+              };
+            });
+          }
+        },
+        activeController.signal
+      );
+
+      // Sync final response to db
+      await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === "AbortError")) {
+        set({ error: error instanceof Error ? error.message : "Agent request failed" });
+      }
+    } finally {
+      activeController = null;
+      set({ streaming: false });
+    }
   },
 
   regenerate: async () => {

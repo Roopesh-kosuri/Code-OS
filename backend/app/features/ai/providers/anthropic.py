@@ -82,7 +82,7 @@ class AnthropicProvider(AIProvider):
         payload = {
             "model": model or "claude-3-5-sonnet-latest",
             "messages": user_messages,
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "temperature": temperature,
             "stream": True,
         }

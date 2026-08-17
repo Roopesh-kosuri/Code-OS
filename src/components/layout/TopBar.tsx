@@ -1,8 +1,4 @@
-import { FolderOpen, RotateCw, Settings, X, ShieldCheck, ShieldAlert } from "lucide-react";
-
-import { Button } from "../ui/Button";
-import { CodeOsLogo } from "../branding/CodeOsLogo";
-import { IconButton } from "../ui/IconButton";
+import { FolderOpen, RotateCw, Settings, ShieldCheck, ShieldAlert, RefreshCw } from "lucide-react";
 import { useEditorStore } from "../../stores/editorStore";
 import { useIndexStore } from "../../stores/indexStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -17,10 +13,6 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
   const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
   const loading = useWorkspaceStore((state) => state.loading);
   const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
-  const refreshTree = useWorkspaceStore((state) => state.refreshTree);
-  const closeWorkspace = useWorkspaceStore((state) => state.closeWorkspace);
-  const error = useWorkspaceStore((state) => state.error);
-  const closeWorkspaceTabs = useEditorStore((state) => state.closeWorkspaceTabs);
   const indexStatus = useIndexStore((state) => state.status);
   const runIndex = useIndexStore((state) => state.run);
   const restrictedMode = useWorkspaceStore((state) => state.restrictedMode);
@@ -28,53 +20,110 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
 
   const indexLabel = indexStatus
     ? indexStatus.status === "ready"
-      ? `Index ready: ${indexStatus.indexed_files} files`
-      : `Index ${indexStatus.status}`
-    : "Index pending";
+      ? `Index: Ready`
+      : `Index: ${indexStatus.status}`
+    : "Index: Pending";
+
+  const navItems = [
+    { id: "main", label: "Main" },
+    { id: "agent", label: "Agent" },
+    { id: "duo", label: "Duo" },
+    { id: "verifier", label: "Verifier" },
+    { id: "diagnostics", label: "Diagnostics" },
+    { id: "proposals", label: "Proposals" },
+    { id: "settings", label: "Settings" },
+  ];
 
   return (
-    <header data-testid="top-nav" className="relative flex justify-between items-center w-full px-4 h-12 z-50 bg-[var(--bg-surface-900)]/90 backdrop-blur-xl border-b border-[var(--outline-variant)]/20 shadow-sm shrink-0 select-none text-[var(--on-surface)]">
-      {/* Left Section: Brand Logo & Top Nav Links */}
-      <div className="flex items-center gap-6 min-w-0">
-        <span 
+    <header className="bg-background flex justify-between items-center w-full px-6 py-2.5 border-b border-surface-container-low flex-shrink-0 z-50 select-none text-on-surface">
+      {/* Left: Brand Logo & Status Cluster */}
+      <div className="flex items-center gap-6">
+        <div 
           onClick={() => onViewChange("main")}
-          className="font-headline-md text-headline-md font-black tracking-tight text-primary cursor-pointer hover:opacity-90 transition-opacity"
+          className="flex items-center gap-2 cursor-pointer group"
         >
-          CODE OS
-        </span>
-        
-        {/* Navigation Links */}
-        <nav className="hidden lg:flex items-center gap-1 border-l border-[var(--outline-variant)]/20 pl-6 h-5">
-          {["main", "agent", "coder", "duo", "dual-coder", "verifier", "diagnostics", "proposals"].map((v) => (
-            <button
-              key={v}
-              onClick={() => onViewChange(v)}
-              className={`font-label-caps text-label-caps px-3 py-1 rounded cursor-pointer transition-all capitalize font-medium ${
-                activeView === v
-                  ? "text-primary border-b-2 border-primary bg-primary/10 font-bold shadow-[0_0_8px_rgba(0,229,255,0.2)]"
-                  : "text-[var(--on-surface-variant)] hover:text-[var(--on-surface)] hover:bg-[var(--outline-variant)]/10"
-              }`}
-            >
-              {v === "dual-coder" ? "Dual Coder" : v === "coder" ? "Coder" : v}
-            </button>
-          ))}
-          <button
-            onClick={onOpenSettings}
-            className="font-label-caps text-label-caps px-3 py-1 rounded cursor-pointer transition-all text-[var(--on-surface-variant)] hover:text-[var(--on-surface)] hover:bg-[var(--outline-variant)]/10 font-medium"
-          >
-            Settings
-          </button>
-        </nav>
+          <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center group-hover:bg-primary/20 transition-colors">
+            <span className="material-symbols-outlined text-primary text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>
+              terminal
+            </span>
+          </div>
+          <span className="font-headline-md text-headline-md font-bold tracking-tight text-on-surface">
+            CODE <span className="text-primary-container">OS</span>
+          </span>
+        </div>
+
+        {/* Status Cluster */}
+        <div className="flex items-center gap-2 ml-2">
+          {currentWorkspace && (
+            restrictedMode ? (
+              <button
+                onClick={async () => {
+                  if (currentWorkspace) {
+                    await setWorkspaceTrust(currentWorkspace.path, true);
+                  }
+                }}
+                className="bg-error-container/20 text-error border border-error-container/40 rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 hover:bg-error-container/30 transition-colors"
+                title="Workspace in Restricted Mode (Click to Trust workspace)"
+              >
+                <span className="material-symbols-outlined text-[14px]">gjt</span>
+                <span>Restricted</span>
+              </button>
+            ) : (
+              <button
+                onClick={async () => {
+                  if (currentWorkspace) {
+                    await setWorkspaceTrust(currentWorkspace.path, false);
+                  }
+                }}
+                className="bg-secondary-container/20 text-secondary border border-secondary-container rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 hover:bg-secondary-container/30 transition-colors"
+                title="Workspace is Trusted (Click to switch to Restricted Mode)"
+              >
+                <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
+                  verified_user
+                </span>
+                <span>Trusted</span>
+              </button>
+            )
+          )}
+
+          <span className="bg-surface-variant text-on-surface-variant rounded-full px-3 py-1 font-caption text-caption">
+            {indexLabel}
+          </span>
+        </div>
       </div>
 
-      {/* Right Section: Workspace Pill, Indexing Status & Tools */}
-      <div className="flex items-center gap-3">
-        {/* Workspace Selector Pill */}
+      {/* Center: Navigation Links */}
+      <nav className="flex items-center space-x-6">
+        {navItems.map(({ id, label }) => {
+          const isActive = id === "settings" ? false : activeView === id;
+          return (
+            <button
+              key={id}
+              onClick={() => {
+                if (id === "settings") {
+                  onOpenSettings();
+                } else {
+                  onViewChange(id);
+                }
+              }}
+              className={`transition-all scale-95 duration-150 py-1 cursor-pointer ${
+                isActive
+                  ? "text-primary font-ui-label-bold text-ui-label-bold border-b-2 border-primary pb-1"
+                  : "text-on-surface-variant font-ui-label-reg text-ui-label-reg hover:text-primary"
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </nav>
+
+      {/* Right: Actions */}
+      <div className="flex items-center gap-3 text-on-surface-variant">
         {currentWorkspace ? (
           <button
-            data-testid="workspace-selector"
             onClick={() => void openWorkspace()}
-            className="flex items-center gap-2 bg-surface-container-high hover:bg-surface-container-highest px-3 py-1 rounded-full border border-white/10 text-xs font-mono text-on-surface transition-all max-w-[200px] truncate"
+            className="flex items-center gap-2 bg-surface-container-low hover:bg-surface-container-high px-3 py-1 rounded-full border border-white/5 text-xs font-mono text-on-surface transition-all max-w-[180px] truncate"
             title={`Workspace: ${currentWorkspace.path} (Click to switch)`}
           >
             <FolderOpen size={13} className="text-primary shrink-0" />
@@ -82,75 +131,41 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
           </button>
         ) : (
           <button
-            data-testid="workspace-selector"
             onClick={() => void openWorkspace()}
             disabled={loading}
-            className="flex items-center gap-2 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 px-3 py-1 rounded-full text-xs font-bold transition-all shadow-[0_0_10px_rgba(0,229,255,0.15)]"
+            className="flex items-center gap-2 bg-primary-container/10 hover:bg-primary-container/20 text-primary-container border border-primary-container/30 px-3 py-1 rounded-full text-xs font-bold transition-all shadow-[0_0_10px_rgba(0,218,243,0.15)]"
           >
             <FolderOpen size={13} />
             <span>Open Folder</span>
           </button>
         )}
 
-        {/* Workspace Trust Status Pill */}
-        {currentWorkspace && (
-
-          restrictedMode ? (
-            <button
-              onClick={async () => {
-                if (currentWorkspace) {
-                  await setWorkspaceTrust(currentWorkspace.path, true);
-                }
-              }}
-              className="flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all cursor-pointer shrink-0"
-              title="Workspace in Restricted Mode (Click to Trust workspace for AI write & command execution)"
-            >
-              <ShieldAlert size={13} className="text-amber-400 shrink-0" />
-              <span>Restricted</span>
-            </button>
-          ) : (
-            <button
-              onClick={async () => {
-                if (currentWorkspace) {
-                  await setWorkspaceTrust(currentWorkspace.path, false);
-                }
-              }}
-              className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all cursor-pointer shrink-0"
-              title="Workspace is Trusted (Click to switch to Restricted Mode)"
-            >
-              <ShieldCheck size={13} className="text-emerald-400 shrink-0" />
-              <span>Trusted</span>
-            </button>
-          )
-        )}
-
-
-        {/* Index Status Chip */}
-        <div className="hidden sm:flex items-center gap-1.5 font-micro-label text-micro-label text-on-surface-variant bg-surface-container-low px-2.5 py-1 rounded border border-white/5 font-mono">
-          <span className="w-1.5 h-1.5 rounded-full bg-primary-container animate-pulse" />
-          <span>{indexLabel}</span>
-        </div>
-
-        {/* Action Buttons */}
         <button
           onClick={() => void runIndex()}
-          aria-label="Re-index workspace"
-          className="text-on-surface-variant hover:text-primary transition-colors p-1.5 rounded hover:bg-white/5"
-          title="Re-index Workspace"
+          className="hover:text-primary transition-colors p-1.5 rounded-full hover:bg-surface-variant/40"
+          title="Re-index workspace"
         >
-          <RotateCw size={14} />
+          <span className="material-symbols-outlined text-[18px]">refresh</span>
         </button>
 
         <button
           onClick={onOpenSettings}
-          aria-label="Settings"
-          className="text-on-surface-variant hover:text-primary transition-colors p-1.5 rounded hover:bg-white/5"
+          className="hover:text-primary transition-colors p-1.5 rounded-full hover:bg-surface-variant/40"
           title="Settings"
         >
-          <Settings size={14} />
+          <span className="material-symbols-outlined text-[18px]">settings</span>
         </button>
+
+        <div 
+          onClick={onOpenSettings}
+          className="w-8 h-8 rounded-full bg-surface-variant border border-outline-variant/40 overflow-hidden ml-1 cursor-pointer flex items-center justify-center hover:ring-2 hover:ring-primary/40 transition-all"
+          title="User Profile & Settings"
+        >
+          <span className="material-symbols-outlined text-on-surface-variant text-lg">
+            account_circle
+          </span>
+        </div>
       </div>
     </header>
-
   );
 }

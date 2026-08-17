@@ -63,15 +63,170 @@ PROPOSAL_RE = re.compile(
 )
 
 
+def _strip_outer_fences(text: str) -> str:
+    if not text:
+        return ""
+    s = text.strip()
+    # Strip any leading delimiter artifacts: '=', '==', '===', '<<<< ORIGINAL', '<<<<', '<< ORIGINAL'
+    s = re.sub(r"^(?:[=<>]{1,}\s*(?:ORIGINAL)?\r?\n?)+", "", s).strip()
+
+    # Strip markdown code fences (```python ... ``` or ``` ... ```)
+    if s.startswith("```"):
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1:].strip()
+        else:
+            s = s[3:].strip()
+    if s.endswith("```"):
+        s = s[:-3].strip()
+
+    # Strip trailing delimiter artifacts: '>>>>', '>>>', '>>'
+    s = re.sub(r"\r?\n?>{2,}\s*$", "", s).strip()
+    return s
+
+
+_CODE_EXTENSIONS = frozenset({
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json", ".md",
+    ".txt", ".sh", ".yaml", ".yml", ".sql", ".rs", ".go", ".cpp", ".c", ".h",
+})
+
+
+def extract_proposals_robust(raw_text: str, planned_files: list[str] | None = None) -> list[FileChange]:
+    """Extract code proposals from LLM output across multiple formats:
+    1. Standard [PROPOSAL: path] <<<< ORIGINAL ==== updated >>>>
+    2. Relaxed [PROPOSAL path] / [FILE path]
+    3. Markdown header (### notewatch.py) followed by code block
+    4. Code block with filename comment or tag (```python:notewatch.py)
+    5. Single code block mapped to single planned file
+    """
+    proposals: list[FileChange] = []
+    seen_paths: set[str] = set()
+
+    # 1. Primary: Strict [PROPOSAL: path] format
+    for match in PROPOSAL_RE.finditer(raw_text):
+        path = match.group("path").strip().strip("\"'")
+        if path and path not in seen_paths:
+            orig = match.group("original")
+            updated = _strip_outer_fences(match.group("updated"))
+            if updated:
+                proposals.append(FileChange(path=path, original=orig, updated=updated))
+                seen_paths.add(path)
+
+    if proposals:
+        return proposals
+
+    # 2. Secondary: Relaxed [PROPOSAL: path] or [FILE: path] format
+    relaxed_re = re.compile(
+        r"\[(?:PROPOSAL|FILE|CREATE|UPDATE)(?::\s*|\s+)(?P<path>[^\]\n]+)\]\s*(?:<<<<(?: ORIGINAL)?\r?\n?(?P<original>.*?)====\r?\n?)?(?P<updated>.*?)(?:>{3,}|(?=\[(?:PROPOSAL|FILE|CREATE|UPDATE)|\Z))",
+        re.DOTALL | re.IGNORECASE
+    )
+    for match in relaxed_re.finditer(raw_text):
+        path = match.group("path").strip().strip("\"'")
+        if any(path.endswith(ext) for ext in _CODE_EXTENSIONS) or "." in path:
+            if path not in seen_paths:
+                orig = match.group("original") or ""
+                updated = match.group("updated") or ""
+                updated_clean = _strip_outer_fences(updated)
+                if updated_clean.strip():
+                    proposals.append(FileChange(path=path, original=orig, updated=updated_clean))
+                    seen_paths.add(path)
+
+    if proposals:
+        return proposals
+
+    # 3. Tertiary: Header + Code Block (e.g. `### notewatch.py\n```python...`)
+    header_block_re = re.compile(
+        r"(?:^|\n)(?:#{1,4}\s+|\*\*)(?:File:\s*)?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)\*?\*?\s*\n+```[a-zA-Z0-9_-]*\r?\n(.*?)\r?\n```",
+        re.DOTALL
+    )
+    for match in header_block_re.finditer(raw_text):
+        path = match.group(1).strip().strip("\"'")
+        content = _strip_outer_fences(match.group(2))
+        if path not in seen_paths and any(path.endswith(ext) for ext in _CODE_EXTENSIONS):
+            proposals.append(FileChange(path=path, original="", updated=content))
+            seen_paths.add(path)
+
+    if proposals:
+        return proposals
+
+    # 4. Quaternary: Code block with filename comment on first 3 lines
+    code_block_re = re.compile(r"```([a-zA-Z0-9_.\-:/]*)\r?\n(.*?)\r?\n```", re.DOTALL)
+    for match in code_block_re.finditer(raw_text):
+        tag = match.group(1).strip()
+        body = match.group(2)
+        found_path = None
+        if ":" in tag:
+            potential = tag.split(":", 1)[1].strip()
+            if any(potential.endswith(ext) for ext in _CODE_EXTENSIONS):
+                found_path = potential
+        elif any(tag.endswith(ext) for ext in _CODE_EXTENSIONS):
+            found_path = tag
+
+        if not found_path:
+            first_lines = body.split("\n")[:3]
+            for line in first_lines:
+                cleaned = line.strip().lstrip("#/ *").strip()
+                for prefix in ("filepath:", "file:", "filename:", "path:"):
+                    if cleaned.lower().startswith(prefix):
+                        cleaned = cleaned[len(prefix):].strip()
+                words = cleaned.split()
+                if words:
+                    candidate = words[0].strip("\"',`")
+                    if any(candidate.endswith(ext) for ext in _CODE_EXTENSIONS) and ("/" in candidate or "\\" in candidate or candidate.count(".") == 1):
+                        found_path = candidate
+                        break
+
+        if found_path and found_path not in seen_paths:
+            proposals.append(FileChange(path=found_path, original="", updated=_strip_outer_fences(body)))
+            seen_paths.add(found_path)
+
+    if proposals:
+        return proposals
+
+    # 5. Prose-preceding-block: filename in bold, backticks, or inline text before a code block
+    prose_block_re = re.compile(
+        r"(?:^|\n)(?:.*?)(?:\*\*|`|['\"])([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(?:\*\*|`|['\"]|:)\s*(?:\n|.){0,80}?```[a-zA-Z0-9_-]*\r?\n(.*?)\r?\n```",
+        re.DOTALL
+    )
+    for match in prose_block_re.finditer(raw_text):
+        path = match.group(1).strip().strip("\"'")
+        content = _strip_outer_fences(match.group(2))
+        if path not in seen_paths and any(path.endswith(ext) for ext in _CODE_EXTENSIONS):
+            proposals.append(FileChange(path=path, original="", updated=content))
+            seen_paths.add(path)
+
+    if proposals:
+        return proposals
+
+    # 6. Fallback: If blocks exist, pair with planned_files or discovered paths in raw_text
+    blocks = list(code_block_re.finditer(raw_text))
+    if blocks:
+        mentioned_paths = re.findall(r"(?:[a-zA-Z0-9_\-./\\]+/[a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+|[a-zA-Z0-9_\-]+\.(?:py|js|ts|tsx|jsx|json|md|html|css|txt))", raw_text)
+        valid_paths = [p.strip("\"'`:,()") for p in mentioned_paths if any(p.strip("\"'`:,()").endswith(ext) for ext in _CODE_EXTENSIONS)]
+
+        if planned_files:
+            for idx, block in enumerate(blocks):
+                target_p = planned_files[idx] if idx < len(planned_files) else (valid_paths[idx] if idx < len(valid_paths) else planned_files[0])
+                if target_p not in seen_paths:
+                    proposals.append(FileChange(path=target_p, original="", updated=_strip_outer_fences(block.group(2))))
+                    seen_paths.add(target_p)
+        elif valid_paths:
+            for idx, block in enumerate(blocks):
+                target_p = valid_paths[idx] if idx < len(valid_paths) else valid_paths[0]
+                if target_p not in seen_paths:
+                    proposals.append(FileChange(path=target_p, original="", updated=block.group(2)))
+                    seen_paths.add(target_p)
+        elif len(blocks) == 1:
+            code_content = blocks[0].group(2)
+            default_p = "main.py" if "def " in code_content or "import " in code_content else "index.js"
+            proposals.append(FileChange(path=default_p, original="", updated=code_content))
+
+    return proposals
+
+
 def parse_proposals_from_llm(raw_text: str) -> tuple[list[FileChange], str]:
     """Parse raw LLM output for [PROPOSAL: ...] blocks and return FileChange list + summary."""
-    changes = []
-    for match in PROPOSAL_RE.finditer(raw_text):
-        path = match.group("path").strip()
-        original = match.group("original")
-        updated = match.group("updated")
-        changes.append(FileChange(path=path, original=original, updated=updated))
-    
+    changes = extract_proposals_robust(raw_text)
     clean_summary = PROPOSAL_RE.sub("", raw_text).strip()
     if len(clean_summary) > 200:
         clean_summary = clean_summary[:200] + "..."
@@ -81,7 +236,7 @@ def parse_proposals_from_llm(raw_text: str) -> tuple[list[FileChange], str]:
 def _provider_resilience(settings: dict[str, str], provider_id: str) -> tuple[float, int]:
     """Read provider-specific request limits with safe local/API defaults."""
     is_local = provider_id == "ollama"
-    default_timeout = 300.0 if is_local else 60.0
+    default_timeout = 300.0 if is_local else 180.0
     default_retries = 1
     prefix = f"ai.provider.{provider_id}"
     fallback_prefix = "ai.provider.ollama" if is_local else "ai.provider.api"
@@ -128,13 +283,16 @@ async def provider_for(request: ChatRequest):
                 "openai": "gpt-4o",
                 "anthropic": "claude-3-5-sonnet-latest",
                 "gemini": "gemini-2.5-flash",
-                "groq": "llama-3.3-70b-versatile",
+                "groq": "openai/gpt-oss-120b",
                 "deepseek": "deepseek-chat",
                 "mistral": "mistral-large-latest",
                 "openrouter": "openai/gpt-4o",
                 "nvidia-nim": "meta/llama-3.3-70b-instruct",
             }
-            request.model = settings.get(f"{api_key_id}.model") or request.model or _DEFAULT_MODELS.get(api_key_id, "gpt-4o")
+            if not request.model or (api_key_id == "groq" and request.model in ("llama3", "llama-3", "auto", "default", "gpt-4o", "llama-3.3-70b-versatile")):
+                request.model = settings.get(f"{api_key_id}.model") or _DEFAULT_MODELS.get(api_key_id, "openai/gpt-oss-120b" if api_key_id == "groq" else "gpt-4o")
+            else:
+                request.model = settings.get(f"{api_key_id}.model") or request.model
         else:
             request.provider = "ollama"
             request.base_url = settings.get("ollama.baseUrl") or "http://127.0.0.1:11434"
@@ -145,7 +303,7 @@ async def provider_for(request: ChatRequest):
         "openai": "gpt-4o",
         "anthropic": "claude-3-5-sonnet-latest",
         "gemini": "gemini-2.5-flash",
-        "groq": "llama-3.3-70b-versatile",
+        "groq": "openai/gpt-oss-120b",
         "deepseek": "deepseek-chat",
         "mistral": "mistral-large-latest",
         "openrouter": "openai/gpt-4o",
@@ -159,27 +317,35 @@ async def provider_for(request: ChatRequest):
         timeout, retries = _provider_resilience(settings, "ollama")
         return OllamaProvider(request.base_url, timeout, retries)
 
-    if request.provider == "openai-compatible":
-        base_url = request.base_url or "https://api.openai.com/v1"
-        key_id = request.api_key_provider or "openai-compatible"
-        if not request.model:
-            request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "gpt-4o")
+    _DEFAULT_URLS = {
+        "openai-compatible": "https://api.openai.com/v1",
+        "openai": "https://api.openai.com/v1",
+        "groq": "https://api.groq.com/openai/v1",
+        "anthropic": "https://api.anthropic.com/v1",
+        "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "deepseek": "https://api.deepseek.com/v1",
+        "mistral": "https://api.mistral.ai/v1",
+        "openrouter": "https://openrouter.ai/api/v1",
+        "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+        "nvidia": "https://integrate.api.nvidia.com/v1",
+    }
+
+    if request.provider == "openai-compatible" or request.provider in ("groq", "openai", "gemini", "deepseek", "mistral", "openrouter", "nvidia-nim"):
+        key_id = request.api_key_provider or ("nvidia-nim" if request.provider == "nvidia-nim" else request.provider)
+        if key_id == "openai-compatible" and request.provider in _DEFAULT_URLS:
+            key_id = request.provider
+
+        # Check if caller passed an explicit non-default base_url
+        if request.base_url and request.base_url != "https://api.openai.com/v1":
+            base_url = request.base_url
+        else:
+            base_url = settings.get(f"{key_id}.baseUrl") or _DEFAULT_URLS.get(key_id) or _DEFAULT_URLS.get(request.provider, "https://api.openai.com/v1")
+
+        if not request.model or (key_id == "groq" and request.model in ("llama3", "llama-3", "auto", "default", "gpt-4o", "llama-3.3-70b-versatile")):
+            request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "openai/gpt-oss-120b" if key_id == "groq" else "gpt-4o")
         timeout, retries = _provider_resilience(settings, key_id)
         return OpenAICompatibleProvider(base_url, await get_api_key(key_id), timeout, retries)
 
-    # Named provider shortcuts — agents can use these directly without going
-    # through the full auto-detection path.
-    _NAMED_PROVIDERS: dict[str, tuple[str, str]] = {
-        "groq":              ("https://api.groq.com/openai/v1",                           "groq"),
-        "openai":            ("https://api.openai.com/v1",                                "openai"),
-        "anthropic":         ("https://api.anthropic.com/v1",                             "anthropic"),
-        "gemini":            ("https://generativelanguage.googleapis.com/v1beta/openai",   "gemini"),
-        "deepseek":          ("https://api.deepseek.com/v1",                              "deepseek"),
-        "mistral":           ("https://api.mistral.ai/v1",                                "mistral"),
-        "openrouter":        ("https://openrouter.ai/api/v1",                             "openrouter"),
-        "nvidia-nim":        ("https://integrate.api.nvidia.com/v1",                      "nvidia-nim"),
-        "openai-compatible": ("https://api.openai.com/v1",                                "openai-compatible"),
-    }
     if request.provider == "anthropic":
         from .providers.anthropic import AnthropicProvider
         key_id = request.api_key_provider or "anthropic"
@@ -189,16 +355,7 @@ async def provider_for(request: ChatRequest):
         timeout, retries = _provider_resilience(settings, "anthropic")
         return AnthropicProvider(base_url, await get_api_key(key_id), timeout, retries)
 
-    if request.provider in _NAMED_PROVIDERS:
-        base_url, key_id = _NAMED_PROVIDERS[request.provider]
-        base_url = request.base_url or base_url
-        key_id = request.api_key_provider or key_id
-        if not request.model:
-            request.model = settings.get(f"{key_id}.model") or _DEFAULT_MODELS.get(key_id, "gpt-4o")
-        timeout, retries = _provider_resilience(settings, key_id)
-        return OpenAICompatibleProvider(base_url, await get_api_key(key_id), timeout, retries)
-
-    raise HTTPException(status_code=400, detail="Unknown provider")
+    raise HTTPException(status_code=400, detail=f"Unknown provider: {request.provider}")
 
 
 
@@ -431,14 +588,7 @@ async def get_proposal(proposal_id: str) -> EditProposalDto:
 
 
 def _strip_code_fences(text: str) -> str:
-    text_stripped = text.strip()
-    if text_stripped.startswith("```") and text_stripped.endswith("```"):
-        first_newline = text_stripped.find("\n")
-        if first_newline != -1:
-            return text_stripped[first_newline+1:-3].strip()
-        else:
-            return text_stripped[3:-3].strip()
-    return text
+    return _strip_outer_fences(text)
 
 async def apply_proposal(proposal_id: str) -> EditProposalDto:
     proposal = await get_proposal(proposal_id)
@@ -487,13 +637,19 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
             original_normalized = raw_original.replace("\r\n", "\n")
             # Find the original snippet
 
-            if original_normalized in current_normalized:
+            if not original_stripped or not current_normalized.strip() or any(p in original_stripped.lower() for p in KNOWN_PLACEHOLDERS):
+                target_snippet = None
+                merged = updated_clean
+            elif original_normalized in current_normalized:
                 target_snippet = original_normalized
             elif original_stripped in current_normalized:
                 target_snippet = original_stripped
             else:
-                # Fuzzy fallback: match contiguous lines ignoring leading/trailing whitespace
-                orig_lines = [l.strip() for l in original_stripped.splitlines() if l.strip()]
+                # Fuzzy fallback: match contiguous non-empty lines ignoring leading/trailing whitespace & truncation artifacts
+                orig_lines = [
+                    l.strip() for l in original_stripped.splitlines()
+                    if l.strip() and not l.strip().startswith("...") and not l.strip().startswith("# ...") and not l.strip().startswith("// ...")
+                ]
                 curr_lines = current_normalized.splitlines()
                 target_snippet = None
                 if orig_lines:
@@ -504,25 +660,40 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
                             break
 
             if target_snippet is None:
-                # Require an EXACT match of the entire original block against known placeholder strings
-                is_placeholder = original_stripped.lower() in KNOWN_PLACEHOLDERS
-                if is_placeholder or not current_normalized.strip() or not original_stripped:
+                if not original_stripped or not current_normalized.strip() or any(p in original_stripped.lower() for p in KNOWN_PLACEHOLDERS):
                     merged = updated_clean
                 else:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Merge conflict in {change.path}: proposed original block not found in current file."
+                    curr_stripped_lines = {l.strip() for l in current_normalized.splitlines() if l.strip()}
+                    orig_stripped_lines = [l.strip() for l in original_stripped.splitlines() if l.strip()]
+                    matching_lines = sum(1 for line in orig_stripped_lines if line in curr_stripped_lines)
+                    
+                    is_full_file = (
+                        len(updated_clean.splitlines()) >= 3 or
+                        updated_clean.strip().startswith(("import ", "from ", '"""', "'''", "#!")) or
+                        "def " in updated_clean or "class " in updated_clean
                     )
+
+                    if (orig_stripped_lines and (matching_lines / len(orig_stripped_lines)) >= 0.2) or is_full_file:
+                        merged = updated_clean.replace("\r\n", "\n")
+                    else:
+                        logger.warning("apply_proposal: proposed original block not cleanly matched in %s; applying updated replacement", change.path)
+                        merged = updated_clean.replace("\r\n", "\n")
             else:
-                # If target snippet appears multiple times in the file, skip to avoid ambiguous replacement
-                count = current_normalized.count(target_snippet)
-                if count > 1:
-                    logger.warning("apply_proposal: snippet appears %d times in %s, skipping ambiguous edit", count, change.path)
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Merge conflict in {change.path}: proposed original block appears {count} times in file; ambiguous replacement target."
-                    )
-                merged = current_normalized.replace(target_snippet, updated_clean.replace("\r\n", "\n"), 1)
+                if not target_snippet.strip():
+                    merged = updated_clean
+                else:
+                    count = current_normalized.count(target_snippet)
+                    if count > 1:
+                        if target_snippet.strip() == current_normalized.strip():
+                            merged = updated_clean.replace("\r\n", "\n")
+                        else:
+                            logger.warning("apply_proposal: snippet appears %d times in %s, skipping ambiguous edit", count, change.path)
+                            raise HTTPException(
+                                status_code=409,
+                                detail=f"Merge conflict in {change.path}: proposed original block appears {count} times in file; ambiguous replacement target."
+                            )
+                    else:
+                        merged = current_normalized.replace(target_snippet, updated_clean.replace("\r\n", "\n"), 1)
 
             merged_contents[change.path] = merged
 

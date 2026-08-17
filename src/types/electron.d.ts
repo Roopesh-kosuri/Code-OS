@@ -8,6 +8,7 @@ export type CodeOSDesktopApi = {
   selectWorkspaceFolder: () => Promise<string | null>;
   revealInSystemExplorer: (path: string) => Promise<void>;
   copyText: (text: string) => Promise<void>;
+  openExternal?: (url: string) => Promise<void>;
   onMenuAction: (callback: (action: string) => void) => () => void;
   platform: NodeJS.Platform;
 

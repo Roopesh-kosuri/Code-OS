@@ -18,7 +18,7 @@ class AgentFactory:
         
         if "coding" in role_lower or "coder" in role_lower:
             return CoderAgent(provider_config=provider_config)
-        elif "audit" in role_lower or "verifier" in role_lower or "security" in role_lower:
+        elif "audit" in role_lower or "verifier" in role_lower:
             return AuditorAgent(provider_config=provider_config)
         elif "review" in role_lower:
             return ReviewerAgent(provider_config=provider_config)

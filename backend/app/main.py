@@ -34,6 +34,7 @@ from app.features.mcp.mcp_manager import mcp_manager
 from app.features.diagnostics.routes import router as diagnostics_router
 from app.features.duo.routes import router as duo_router
 from app.features.ai.dual_coder_routes import router as dual_coder_router
+from app.features.ai.chat_harness_routes import router as chat_harness_router
 
 # Generate the session token BEFORE the app processes any requests.
 generate_and_store_token()
@@ -168,8 +169,10 @@ app.include_router(git_router, prefix="/api/git", tags=["git"])
 app.include_router(indexing_router, prefix="/api/index", tags=["indexing"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
 app.include_router(agent_router, prefix="/api/agents", tags=["agents"])
+app.include_router(agent_router, prefix="/api/ai", tags=["agents-alias"])
 app.include_router(plugins_router, prefix="/api/plugins", tags=["plugins"])
 app.include_router(mcp_router, prefix="/api/mcp", tags=["mcp"])
 app.include_router(diagnostics_router, prefix="/api/diagnostics", tags=["diagnostics"])
 app.include_router(duo_router, prefix="/api/duo", tags=["duo"])
 app.include_router(dual_coder_router, prefix="/api/dual-coder", tags=["dual-coder"])
+app.include_router(chat_harness_router, prefix="/api/ai", tags=["chat-agent"])

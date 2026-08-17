@@ -37,12 +37,34 @@ class BaseAgent(ABC):
         """Build a ChatRequest based on the agent's provider config."""
         from ..schemas import ChatRequest
         
+        # Canonical base URLs for each provider — used to resolve base_url
+        # when the caller specifies api_key_provider but not an explicit URL.
+        _PROVIDER_BASE_URLS = {
+            "openai": "https://api.openai.com/v1",
+            "groq": "https://api.groq.com/openai/v1",
+            "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+            "deepseek": "https://api.deepseek.com/v1",
+            "mistral": "https://api.mistral.ai/v1",
+            "openrouter": "https://openrouter.ai/api/v1",
+            "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+            "anthropic": "https://api.anthropic.com/v1",
+        }
+
         _PRESET_TO_PROVIDER = {
             "local_reasoning": "ollama",
             "local_fast": "ollama",
-            "api_fast": "groq",
+            "api_fast": "openai-compatible",
             "api_reasoning": "openai-compatible",
-            "auto": "auto",
+            "auto": "ollama",
+            # Named cloud providers → all use openai-compatible wire protocol
+            "groq": "openai-compatible",
+            "openai": "openai-compatible",
+            "gemini": "openai-compatible",
+            "deepseek": "openai-compatible",
+            "mistral": "openai-compatible",
+            "openrouter": "openai-compatible",
+            "nvidia-nim": "openai-compatible",
+            "nvidia": "openai-compatible",
         }
         
         cfg = self.provider_config or {}
@@ -51,6 +73,15 @@ class BaseAgent(ABC):
         model_name = cfg.get("model", "")
         base_url = cfg.get("base_url")
         api_key_provider = cfg.get("api_key_provider")
+
+        # If provider is a named cloud provider, set api_key_provider automatically
+        if not api_key_provider and raw_provider in _PROVIDER_BASE_URLS:
+            api_key_provider = raw_provider
+
+        # Always resolve base_url from the canonical map when api_key_provider
+        # is a known cloud provider and no explicit URL was given.
+        if not base_url and api_key_provider and api_key_provider in _PROVIDER_BASE_URLS:
+            base_url = _PROVIDER_BASE_URLS[api_key_provider]
         
         return ChatRequest(
             provider=provider_name,
@@ -126,12 +157,19 @@ class BaseAgent(ABC):
         
         perm_state.pending_permission_events.pop(task_id, None)
         decision = perm_state.pending_permission_decisions.pop(task_id, "cancel")
+        recovery_data = perm_state.pending_permission_data.pop(task_id, {})
         
         await update_task_pending_action(task_id, None)
         await update_task_status(task_id, "running")
         
         await add_job_log(job_id, f"LLM failure recovery decision: {decision}")
-        return {"action": decision}
+        return {
+            "action": decision,
+            "provider": recovery_data.get("provider"),
+            "model": recovery_data.get("model"),
+            "api_key_provider": recovery_data.get("api_key_provider"),
+            "base_url": recovery_data.get("base_url"),
+        }
 
     async def request_clarification(self, job_id: str, task_id: str, question: str) -> str:
         """

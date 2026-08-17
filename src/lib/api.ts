@@ -90,9 +90,10 @@ async function request<T>(path: string, options: RequestOptions = {}, isRetry = 
     const body = await response.text();
     let message = body || response.statusText;
     try {
-      const parsed = JSON.parse(body) as { detail?: unknown };
-      const detail = typeof parsed.detail === "string" ? parsed.detail : JSON.stringify(parsed.detail);
-      message = detail || response.statusText;
+      const parsed = JSON.parse(body) as { detail?: unknown; error?: unknown };
+      const rawDetail = parsed.detail ?? parsed.error;
+      const detail = typeof rawDetail === "string" ? rawDetail : (rawDetail ? JSON.stringify(rawDetail) : "");
+      message = detail || body || response.statusText;
     } catch {
       message = body || response.statusText;
     }
@@ -145,5 +146,86 @@ export const api = {
       }
       onToken(decoder.decode(value, { stream: true }));
     }
-  }
+  },
+  /**
+   * Stream Server-Sent Events (SSE) from the backend.
+   * Unlike `stream()` which passes raw bytes, this parses SSE `event:` and `data:` lines
+   * and calls the typed callback with parsed event objects.
+   */
+  streamSSE: async (
+    path: string,
+    body: unknown,
+    onEvent: (eventType: string, data: unknown) => void,
+    signal?: AbortSignal
+  ) => {
+    const sessionToken = await _ensureToken();
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (sessionToken) {
+      headers["Authorization"] = `Bearer ${sessionToken}`;
+    }
+    const response = await fetch(url(path), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(await response.text());
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE: split on double-newline (event boundary)
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? ""; // Keep incomplete last chunk
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        let eventType = "message";
+        let dataStr = "";
+        for (const rawLine of part.split("\n")) {
+          const line = rawLine.replace(/\r$/, "");
+          if (line.startsWith("event: ")) {
+            eventType = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            dataStr += line.slice(6);
+          }
+        }
+        if (dataStr) {
+          try {
+            onEvent(eventType, JSON.parse(dataStr));
+          } catch {
+            onEvent(eventType, dataStr);
+          }
+        }
+      }
+    }
+
+    // Process any remaining buffer
+    if (buffer.trim()) {
+      let eventType = "message";
+      let dataStr = "";
+      for (const rawLine of buffer.split("\n")) {
+        const line = rawLine.replace(/\r$/, "");
+        if (line.startsWith("event: ")) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith("data: ")) {
+          dataStr += line.slice(6);
+        }
+      }
+      if (dataStr) {
+        try {
+          onEvent(eventType, JSON.parse(dataStr));
+        } catch {
+          onEvent(eventType, dataStr);
+        }
+      }
+    }
+  },
 };

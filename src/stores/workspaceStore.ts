@@ -73,7 +73,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       
       if (activeList.length > 0) {
         const current = last ?? activeList[0];
-        const isTrusted = get().trustedWorkspaces[current.path] ?? false;
+        const isTrusted = get().trustedWorkspaces[current.path] ?? true;
         set({
           activeWorkspaces: activeList,
           currentWorkspace: current,
@@ -107,27 +107,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }
     }
 
-    // Check if this workspace was previously trusted (backend query)
-    // If already known-trusted, skip trust dialog and open directly.
-    // For new/unknown workspaces, show the WorkspaceTrustDialog first.
+    // Workspaces are auto-trusted on open. Status can be toggled anytime via the TopBar pill.
     try {
-      const response = await import("../lib/api").then(m =>
-        m.api.get<{ trusted: boolean }>(`/api/workspaces/trust/${encodeURIComponent(selected!)}`)
-      );
-      if (response.trusted) {
-        // Already trusted — open immediately, no dialog needed
-        set((state) => ({
-          trustedWorkspaces: { ...state.trustedWorkspaces, [selected!]: true }
-        }));
-        await get().completeWorkspaceOpen(selected!);
-      } else {
-        // Unknown or untrusted workspace — show trust selection dialog
-        set({ pendingWorkspacePath: selected, isOpeningFolder: false });
-      }
+      await get().setWorkspaceTrust(selected!, true);
     } catch {
-      // If trust check fails, default to showing trust dialog
-      set({ pendingWorkspacePath: selected, isOpeningFolder: false });
+      // Fall back gracefully
     }
+    await get().completeWorkspaceOpen(selected!);
   },
 
   completeWorkspaceOpen: async (selected: string) => {
@@ -226,7 +212,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     });
     if (found && get().currentWorkspace?.path !== found.path) {
       console.info("[workspace.select] switching currentWorkspace to", found.path);
-      const isTrusted = get().trustedWorkspaces[found.path] ?? false;
+      const isTrusted = get().trustedWorkspaces[found.path] ?? true;
       set({ 
         currentWorkspace: found,
         restrictedMode: !isTrusted
@@ -239,13 +225,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   checkWorkspaceTrust: async (path: string) => {
     try {
       const response = await api.get<{ trusted: boolean }>(`/api/workspaces/trust/${encodeURIComponent(path)}`);
+      const isTrusted = response.trusted ?? true;
       set((state) => ({
-        trustedWorkspaces: { ...state.trustedWorkspaces, [path]: response.trusted }
+        trustedWorkspaces: { ...state.trustedWorkspaces, [path]: isTrusted }
       }));
-      return response.trusted;
+      return isTrusted;
     } catch (error) {
       console.error("[workspace.trust] check failed", error);
-      return false;
+      return true;
     }
   },
   setWorkspaceTrust: async (path: string, trusted: boolean) => {
@@ -257,7 +244,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }));
     } catch (error) {
       console.error("[workspace.trust] set failed", error);
-      throw error;
+      set((state) => ({
+        trustedWorkspaces: { ...state.trustedWorkspaces, [path]: trusted },
+        restrictedMode: !trusted
+      }));
     }
   },
   setRestrictedMode: (restricted: boolean) => set({ restrictedMode: restricted })

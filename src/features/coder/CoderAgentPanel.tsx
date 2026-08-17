@@ -90,6 +90,7 @@ export function CoderAgentPanel() {
     try {
       await api.post(`/api/ai/edit-proposals/${proposalId}/apply`);
       setAppliedProposalId(proposalId);
+      window.dispatchEvent(new CustomEvent("code-os:proposal-applied", { detail: proposalId }));
     } catch (err) {
       alert("Failed to apply proposal: " + (err instanceof Error ? err.message : String(err)));
     } finally {

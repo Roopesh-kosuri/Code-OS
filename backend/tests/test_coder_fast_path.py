@@ -18,7 +18,7 @@ def plan(*, files=None, risks=None, goal="Add a print statement"):
     )
 
 
-class CoderFastPathTests(unittest.TestCase):
+class CoderFastPathTests(unittest.IsolatedAsyncioTestCase):
     def test_simple_single_file_task_does_not_escalate_to_duo(self):
         escalates, reasons = CoderAgent.is_high_stakes(plan(), "Add a print statement", "")
         self.assertFalse(escalates)
@@ -46,7 +46,7 @@ class CoderFastPathTests(unittest.TestCase):
         }
         self.assertEqual(_provider_resilience(settings, "ollama"), (420.0, 1))
         self.assertEqual(_provider_resilience(settings, "groq"), (25.0, 2))
-        self.assertEqual(_provider_resilience({}, "openai"), (60.0, 1))
+        self.assertEqual(_provider_resilience({}, "openai"), (180.0, 1))
 
     # --- New Boundary and Edge Case Tests ---
 
@@ -84,6 +84,35 @@ class CoderFastPathTests(unittest.TestCase):
         updated = "b" * 601
         proposals = [FileChange(path="main.py", original=original, updated=updated)]
         self.assertFalse(CoderAgent.is_trivial_change(plan(), proposals))
+
+    async def test_coder_agent_execute_scoping_and_structured_data(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        agent = CoderAgent()
+        with patch.object(agent, "create_chat_request"), \
+             patch.object(agent, "_ground_files", new_callable=AsyncMock) as mock_ground, \
+             patch("app.features.ai.agents.coder.add_job_log", new_callable=AsyncMock), \
+             patch("app.features.ai.agents.coder.event_bus.publish", new_callable=AsyncMock), \
+             patch.object(CoderAgent, "is_high_stakes", return_value=(False, [])):
+            mock_ground.return_value = ""
+            mock_instance = MagicMock()
+            async def mock_stream(*args, **kwargs):
+                yield '{"approved": true, "goal": "Refactor function", "hypothesis": "quick", "files_to_touch": ["main.py"], "approach": "edit", "risks": [], "verification": "check"}'
+            mock_instance.stream_chat = mock_stream
+
+            with patch("app.features.ai.agents.coder.provider_for", new_callable=AsyncMock) as mock_p:
+                mock_p.return_value = mock_instance
+
+                # Calling execute() should NOT raise UnboundLocalError
+                output = await agent.execute(
+                    job_id="test_job",
+                    task_id="test_task",
+                    title="Refactor function --quick",
+                    context="",
+                    workspace="."
+                )
+                self.assertIsNotNone(output)
+                self.assertIsNotNone(output.structured_data)
 
 
 if __name__ == "__main__":

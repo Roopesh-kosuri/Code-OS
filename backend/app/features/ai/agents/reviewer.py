@@ -1,6 +1,7 @@
 import logging
 import json
 import re
+import asyncio
 from typing import Optional
 from .agent_interface import BaseAgent, AgentOutput
 from ..service import provider_for
@@ -18,7 +19,9 @@ class ReviewerAgent(BaseAgent):
         super().__init__("Review Agent", provider_config=provider_config)
     
     def get_system_prompt(self) -> str:
+        from .agent_tools import get_tool_instructions
         return """You are a Code Review Agent. Audit code for quality, security, and maintainability.
+- Use read_file, list_directory, and search_code to inspect the actual implementation before evaluating
 - Analyze code structure, logic flaws, and architecture violations
 - Check for style consistency and best practices
 - Identify security vulnerabilities (OWASP Top 10, injection vectors, credential leaks)
@@ -39,7 +42,7 @@ Output format:
   ],
   "approved": false,
   "summary": "Overall assessment"
-}"""
+}""" + get_tool_instructions(allow_edit=False)
     
     async def execute(self, job_id: str, task_id: str, title: str, context: str, workspace: str) -> AgentOutput:
         logger.info("ReviewerAgent.execute task_id=%s title=%s", task_id, title)
@@ -50,43 +53,104 @@ Output format:
         
         # Generate specialized instruction
         system_instruction = self.get_system_prompt()
-        prompt = f"Task Title: {title}\n\nCodebase Context:\n{context}\n\nWorkspace: {workspace}\n\nPerform a thorough code review and return structured JSON feedback."
-        
-        # Call LLM
-        chat_req = self.create_chat_request(
-            messages=[
-                ChatMessage(role="system", content=system_instruction),
-                ChatMessage(role="user", content=prompt)
-            ]
+        prompt = (
+            f"Task Title: {title}\n\n"
+            f"Codebase Context:\n{context}\n\n"
+            f"Workspace: {workspace}\n\n"
+            f"Use read_file / list_directory / search_code if needed to inspect full files, then perform a thorough code review and return structured JSON feedback."
         )
+        
+        from .agent_tools import parse_tool_calls, has_tool_calls, execute_tool_calls, MAX_TOOL_ITERATIONS, TOOL_PHASE_TIMEOUT_SECONDS
+        import time
+
+        messages = [
+            ChatMessage(role="system", content=system_instruction),
+            ChatMessage(role="user", content=prompt)
+        ]
         
         reasoning = ""
         structured_data = {}
+        final_response = ""
         
         try:
-            response = ""
-            while True:
-                try:
-                    provider = await provider_for(chat_req)
-                    tokens = []
-                    async for token in provider.stream_chat(chat_req.model, chat_req.messages, temperature=0.1):
-                        tokens.append(token)
-                    response = "".join(tokens).strip()
-                    break
-                except Exception as exc:
-                    logs.append(f"[ERROR] LLM call failed: {exc}")
-                    decision_res = await self.handle_llm_failure(job_id, task_id, exc)
-                    action = decision_res.get("action", "cancel")
-                    if action == "retry":
+            tool_iteration = 0
+            tool_start_time = time.time()
+            MAX_AUTO_RETRIES = 2
+
+            while tool_iteration <= MAX_TOOL_ITERATIONS:
+                chat_req = self.create_chat_request(messages=messages)
+                response = ""
+                auto_retries = 0
+                while auto_retries <= MAX_AUTO_RETRIES:
+                    try:
+                        provider = await provider_for(chat_req)
+                        tokens = []
+                        async for token in provider.stream_chat(chat_req.model, chat_req.messages, temperature=0.1):
+                            tokens.append(token)
+                        response = "".join(tokens).strip()
+                        break
+                    except Exception as exc:
+                        logs.append(f"[ERROR] LLM call failed (auto-retry {auto_retries}/{MAX_AUTO_RETRIES}): {exc}")
+                        if auto_retries >= MAX_AUTO_RETRIES:
+                            decision_res = await self.handle_llm_failure(job_id, task_id, exc)
+                            action = decision_res.get("action", "cancel")
+                            if action == "retry":
+                                auto_retries = 0
+                                continue
+                            elif action in ("switch_to_api", "change_model"):
+                                auto_retries = 0
+                                new_provider = decision_res.get("provider") or "groq"
+                                new_model = decision_res.get("model") or ("llama-3.3-70b-versatile" if new_provider == "groq" else "gpt-4o")
+                                new_key_provider = decision_res.get("api_key_provider") or new_provider
+                                if not self.provider_config:
+                                    self.provider_config = {}
+                                self.provider_config["preset"] = new_provider
+                                self.provider_config["provider"] = new_provider
+                                self.provider_config["model"] = new_model
+                                self.provider_config["api_key_provider"] = new_key_provider
+                                chat_req.provider = new_provider
+                                chat_req.model = new_model
+                                chat_req.api_key_provider = new_key_provider
+                                continue
+                            else:
+                                raise exc
+                        else:
+                            auto_retries += 1
+                            await asyncio.sleep(1.5 * auto_retries)
+                
+                if response.startswith("[Error:") or "Error:" in response and len(response) < 150:
+                    raise Exception(response)
+                
+                final_response = response
+
+                if has_tool_calls(response) and tool_iteration < MAX_TOOL_ITERATIONS:
+                    tool_calls = parse_tool_calls(response)
+                    if tool_calls:
+                        tool_names = [tc.name for tc in tool_calls]
+                        logs.append(f"🔧 [TOOL] Reviewer Iteration {tool_iteration}: {len(tool_calls)} tool call(s) — {', '.join(tool_names)}")
+                        await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
+                        tool_results_text = execute_tool_calls(tool_calls, workspace, [])
+
+                        # Compact older tool messages to prevent quadratic token growth
+                        if len(messages) > 4:
+                            for idx in range(2, len(messages) - 2, 2):
+                                if idx + 1 < len(messages):
+                                    old_user_msg = messages[idx + 1]
+                                    if old_user_msg.role == "user" and "Tool results:" in (old_user_msg.content or ""):
+                                        if len(old_user_msg.content) > 250:
+                                            old_user_msg.content = "Tool results (compacted history):\n✓ Executed previous tool calls successfully.\n"
+
+                        messages.append(ChatMessage(role="assistant", content=response))
+                        messages.append(ChatMessage(role="user", content=f"Tool results:\n\n{tool_results_text}\n\nContinue with your review. Output more tool calls if needed, or output your final JSON review."))
+
+                        tool_iteration += 1
+                        if time.time() - tool_start_time > TOOL_PHASE_TIMEOUT_SECONDS:
+                            break
                         continue
-                    elif action == "switch_to_api":
-                        chat_req.provider = "groq"
-                        chat_req.model = "llama-3.3-70b-versatile"
-                        continue
-                    else:
-                        raise exc
-            
-            logs.append(f"ReviewerAgent completed analysis.")
+                break
+
+            logs.append("ReviewerAgent completed analysis.")
             
             # Try to parse structured JSON from response
             try:

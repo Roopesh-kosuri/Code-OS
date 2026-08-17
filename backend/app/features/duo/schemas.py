@@ -21,6 +21,7 @@ class DuoSessionRequest(BaseModel):
     generator: ModelConfig
     critic: ModelConfig
     max_rounds: int = Field(default=5, ge=1, le=20)
+    internal: bool = False  # When True (agent-invoked), LLM failures fail immediately without interactive UI pause
 
 
 # ── Critic structured output ──────────────────────────────────────────────────

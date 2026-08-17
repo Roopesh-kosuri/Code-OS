@@ -115,6 +115,7 @@ _ALLOWED_ENV_VARS: frozenset[str] = frozenset({
     "XDG_RUNTIME_DIR",
 
     # Windows specifics
+    "PATHEXT",
     "COMSPEC",
     "SYSTEMROOT",
     "SYSTEMDRIVE",
@@ -124,7 +125,10 @@ _ALLOWED_ENV_VARS: frozenset[str] = frozenset({
     "APPDATA",
     "LOCALAPPDATA",
     "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
     "PROGRAMDATA",
+    "COMMONPROGRAMFILES",
+    "COMMONPROGRAMFILES(X86)",
     "COMPUTERNAME",
 
     # Display / Wayland / X11
@@ -144,8 +148,19 @@ def _build_safe_environment() -> dict[str, str]:
     """
     safe: dict[str, str] = {}
     for key, value in os.environ.items():
-        if key in _ALLOWED_ENV_VARS:
-            safe[key] = value
+        if key.upper() in _ALLOWED_ENV_VARS:
+            safe[key.upper()] = value
+    
+    # Ensure current Python interpreter and Scripts directory are in PATH
+    try:
+        py_dir = str(Path(sys.executable).parent)
+        scripts_dir = str(Path(sys.executable).parent / "Scripts")
+        current_path = safe.get("PATH", "")
+        if py_dir not in current_path:
+            safe["PATH"] = f"{py_dir};{scripts_dir};{current_path}" if os.name == "nt" else f"{py_dir}:{scripts_dir}:{current_path}"
+    except Exception:
+        pass
+
     # Always inject a sane TERM value so TUI programs behave correctly.
     safe.setdefault("TERM", "xterm-256color")
     return safe
@@ -157,14 +172,7 @@ def _is_cd_command(command: str) -> bool:
 
 
 def _sanitize_env(env_dict: dict[str, str] | None = None) -> dict[str, str]:
-    if env_dict is None:
-        env_dict = dict(os.environ)
-    safe: dict[str, str] = {}
-    for key, value in env_dict.items():
-        if key in _ALLOWED_ENV_VARS:
-            safe[key] = value
-    safe.setdefault("TERM", "xterm-256color")
-    return safe
+    return _build_safe_environment()
 
 
 # Keep the old name as an alias so call-sites don't need updating yet.

@@ -77,13 +77,21 @@ class OllamaProvider(AIProvider):
         logger.error("Ollama models retrieval failed for all URLs: %s", self._urls_to_try())
         return []
 
-    async def stream_chat(self, model: str, messages: list[ChatMessage], temperature: float) -> AsyncIterator[str]:
-        payload = {
+    async def stream_chat(
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        temperature: float,
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
+        payload: dict[str, Any] = {
             "model": model,
             "messages": [message.model_dump() for message in messages],
             "stream": True,
             "options": {"temperature": temperature},
         }
+        if tools:
+            payload["tools"] = tools
         emitted = False
         last_exc = None
         for target_url in self._urls_to_try():

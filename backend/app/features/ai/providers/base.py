@@ -16,5 +16,11 @@ class AIProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def stream_chat(self, model: str, messages: list[ChatMessage], temperature: float) -> AsyncIterator[str]:
+    async def stream_chat(
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        temperature: float,
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
         raise NotImplementedError

@@ -55,12 +55,20 @@ from pydantic import BaseModel
 
 class DuoRecoverRequest(BaseModel):
     action: str
+    provider: str | None = None
+    model: str | None = None
+    api_key_provider: str | None = None
 
 @router.post("/sessions/{session_id}/recover")
 async def recover_session(session_id: str, payload: DuoRecoverRequest) -> dict:
     """Recover a paused Duo session."""
     if session_id in service._pending_recovery_events:
         service._pending_recovery_decisions[session_id] = payload.action
+        service._pending_recovery_data[session_id] = {
+            "provider": payload.provider,
+            "model": payload.model,
+            "api_key_provider": payload.api_key_provider or payload.provider,
+        }
         service._pending_recovery_events[session_id].set()
         return {"status": "recovered"}
     from fastapi import HTTPException

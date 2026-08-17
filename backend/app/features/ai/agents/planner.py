@@ -99,61 +99,152 @@ class PlannerAgent:
                 tokens.append(token)
             
             response = "".join(tokens).strip()
-            # Clean up markdown code blocks if the model ignored instructions
-            if response.startswith("```"):
-                lines = response.splitlines()
-                if lines[0].startswith("```json"):
-                    response = "\n".join(lines[1:-1])
-                elif lines[0].startswith("```"):
-                    response = "\n".join(lines[1:-1])
+            # Extract JSON from response (handles surrounding prose or markdown fences)
+            import re
+            json_match = re.search(r'\{[\s\S]*\}', response)
+            if json_match:
+                data = json.loads(json_match.group())
+            else:
+                data = json.loads(response)
             
-            data = json.loads(response)
-            return data.get("tasks", [])
+            tasks = data.get("tasks", [])
+            if tasks:
+                return tasks
+            raise ValueError("No tasks found in planner output")
             
         except Exception as exc:
             logger.error("PlannerAgent failed to generate plan: %s. Using default fallback template.", exc)
+            logger.warning("PLANNER FALLBACK ACTIVE: The planner could not decompose the user request into specific tasks. "
+                          "A generic 4-task template is being used instead. The agent may not address the specific requirements.")
             return self._fallback_plan(user_request)
 
     def _fallback_plan(self, user_request: str) -> list[dict]:
-        # Simple generic fallback task graph if the LLM fails.
-        # Each call generates fresh UUIDs so concurrent jobs never collide on
-        # the UNIQUE constraint in the agent_tasks table.
-        # NOTE: Only use the 4 valid agent roles: Coding Agent, Review Agent,
-        # Testing Agent, Documentation Agent. "Research Agent" is NOT valid
-        # and will cause the DAG engine to fail with an unhandled role error.
+        """Intelligent heuristic fallback task graph when LLM planning fails.
+        Decomposes complex requests into modular subtasks (CLI subcommands, bulleted features).
+        """
+        import re
         import uuid
-        sfx = uuid.uuid4().hex[:8]
-        id_coding   = f"task_coding_{sfx}"
-        id_review   = f"task_review_{sfx}"
-        id_testing  = f"task_testing_{sfx}"
-        id_docs     = f"task_docs_{sfx}"
-        return [
-            {
-                "id": id_coding,
-                "title": f"Implement changes for '{user_request}'",
+
+        clean_req = user_request.strip()
+        lines = [line.strip() for line in clean_req.splitlines() if line.strip()]
+        
+        # 1. Identify distinct requirements or subcommands from bullets and keywords
+        bullets = []
+        for line in lines:
+            if re.match(r"^[-*•\d.]+\s+", line):
+                item = re.sub(r"^[-*•\d.]+\s+", "", line).strip()
+                if len(item) > 8:
+                    bullets.append(item)
+
+        # 2. Extract subcommands from patterns like `subcommand` or "subcommands: watch, query, stats"
+        subcommands = []
+        subcmd_match = re.search(r"(?:subcommands?|commands?):\s*([^\n\r]+)", clean_req, re.IGNORECASE)
+        if subcmd_match:
+            raw_cmds = re.findall(r"[`'\"]?([a-zA-Z0-9_\-]+)[`'\"]?", subcmd_match.group(1))
+            for cmd in raw_cmds:
+                if cmd.lower() not in ("and", "or", "the", "a", "an", "three", "two", "four", "start", "print"):
+                    if cmd not in subcommands:
+                        subcommands.append(cmd)
+
+        coding_tasks = []
+        prior_id = None
+
+        # Build modular coding tasks based on extracted features
+        if subcommands and len(subcommands) >= 2:
+            sfx = uuid.uuid4().hex[:8]
+            setup_id = f"task_cli_setup_{sfx}"
+            first_line = lines[0] if lines else "CLI Tool"
+            coding_tasks.append({
+                "id": setup_id,
+                "title": f"Design and setup CLI structure for {first_line[:60]}",
                 "agent_role": "Coding Agent",
                 "dependencies": [],
-                "estimated_effort": "1 hour"
-            },
-            {
-                "id": id_review,
-                "title": "Perform static code review and quality checks",
-                "agent_role": "Review Agent",
-                "dependencies": [id_coding],
-                "estimated_effort": "20 mins"
-            },
-            {
-                "id": id_testing,
-                "title": "Generate validation unit tests",
-                "agent_role": "Testing Agent",
-                "dependencies": [id_coding],
-                "estimated_effort": "30 mins"
-            },
-            {
-                "id": id_docs,
-                "title": "Synchronize project README.md documentation",
-                "agent_role": "Documentation Agent",
-                "dependencies": [id_testing, id_review],
-                "estimated_effort": "15 mins"
-            }
-        ]
+                "estimated_effort": "30 mins",
+                "fallback": True
+            })
+            prior_id = setup_id
+
+            for cmd in subcommands:
+                cmd_sfx = uuid.uuid4().hex[:8]
+                cmd_id = f"task_cmd_{cmd}_{cmd_sfx}"
+                coding_tasks.append({
+                    "id": cmd_id,
+                    "title": f"Implement '{cmd}' subcommand and required business logic",
+                    "agent_role": "Coding Agent",
+                    "dependencies": [prior_id] if prior_id else [],
+                    "estimated_effort": "45 mins",
+                    "fallback": True
+                })
+                prior_id = cmd_id
+        elif len(bullets) >= 2:
+            sfx = uuid.uuid4().hex[:8]
+            base_id = f"task_base_setup_{sfx}"
+            coding_tasks.append({
+                "id": base_id,
+                "title": f"Setup core architecture and data structures ({lines[0][:60] if lines else 'Module'})",
+                "agent_role": "Coding Agent",
+                "dependencies": [],
+                "estimated_effort": "30 mins",
+                "fallback": True
+            })
+            prior_id = base_id
+
+            for i, b in enumerate(bullets[:4]):
+                b_sfx = uuid.uuid4().hex[:8]
+                b_id = f"task_feature_{i+1}_{b_sfx}"
+                coding_tasks.append({
+                    "id": b_id,
+                    "title": f"Implement {b[:80]}",
+                    "agent_role": "Coding Agent",
+                    "dependencies": [prior_id] if prior_id else [],
+                    "estimated_effort": "40 mins",
+                    "fallback": True
+                })
+                prior_id = b_id
+        else:
+            sfx = uuid.uuid4().hex[:8]
+            generic_id = f"task_coding_{sfx}"
+            first_line = lines[0] if lines else "requested features"
+            coding_tasks.append({
+                "id": generic_id,
+                "title": f"Implement {first_line[:90]}",
+                "agent_role": "Coding Agent",
+                "dependencies": [],
+                "estimated_effort": "1 hour",
+                "fallback": True
+            })
+            prior_id = generic_id
+
+        last_coding_ids = [coding_tasks[-1]["id"]] if coding_tasks else []
+
+        sfx = uuid.uuid4().hex[:8]
+        id_review = f"task_review_{sfx}"
+        id_testing = f"task_testing_{sfx}"
+        id_docs = f"task_docs_{sfx}"
+
+        review_task = {
+            "id": id_review,
+            "title": "Perform static code review and quality checks",
+            "agent_role": "Review Agent",
+            "dependencies": last_coding_ids,
+            "estimated_effort": "20 mins",
+            "fallback": True
+        }
+        test_task = {
+            "id": id_testing,
+            "title": "Generate and execute validation unit tests",
+            "agent_role": "Testing Agent",
+            "dependencies": last_coding_ids,
+            "estimated_effort": "30 mins",
+            "fallback": True
+        }
+        docs_task = {
+            "id": id_docs,
+            "title": "Synchronize project README.md documentation",
+            "agent_role": "Documentation Agent",
+            "dependencies": [id_review, id_testing],
+            "estimated_effort": "15 mins",
+            "fallback": True
+        }
+
+        return [*coding_tasks, review_task, test_task, docs_task]

@@ -9,10 +9,7 @@ pydantic-settings==2.7.0
 python-multipart==0.0.19
 pywinpty==2.0.14; sys_platform == 'win32'
 ptyprocess>=0.7.0; sys_platform != 'win32'
-<<<<<<< HEAD
-=======
 keyring>=24.3.0
->>>>>>> 4132f1f (Security patches and ui upgrade)
 uvicorn[standard]==0.34.0
 watchdog==6.0.0
 

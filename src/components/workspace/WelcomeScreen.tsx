@@ -1,9 +1,30 @@
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 
-export function WelcomeScreen() {
+interface WelcomeScreenProps {
+  backendDown?: boolean;
+}
+
+export function WelcomeScreen({ backendDown = false }: WelcomeScreenProps) {
   const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
   const activeWorkspaces = useWorkspaceStore((state) => state.activeWorkspaces);
   const selectWorkspaceForPath = useWorkspaceStore((state) => state.selectWorkspaceForPath);
+
+  // Shared classes for action buttons based on backend state
+  const actionBtnBase =
+    "flex items-center gap-3 p-4 rounded-lg border transition-all w-full text-left group";
+  const actionBtnEnabled =
+    `${actionBtnBase} border-white/5 hover:border-primary/30 hover:bg-white/5 cursor-pointer`;
+  const actionBtnDisabled =
+    `${actionBtnBase} border-white/5 opacity-40 cursor-not-allowed pointer-events-none`;
+
+  const handleAction = (e: React.MouseEvent) => {
+    if (backendDown) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    void openWorkspace();
+  };
 
   return (
     <div className="bg-[#131314] text-on-surface h-full w-full overflow-hidden relative flex items-center justify-center font-body-sm text-body-sm select-none">
@@ -24,8 +45,37 @@ export function WelcomeScreen() {
           </div>
         </header>
 
+        {/* Backend-down warning panel */}
+        {backendDown && (
+          <div className="mx-6 mt-4 p-4 rounded-lg bg-red-950/60 border border-red-500/40 flex items-start gap-3">
+            <span className="material-symbols-outlined text-red-400 text-[22px] shrink-0 mt-0.5">error</span>
+            <div>
+              <p className="font-semibold text-red-300 text-sm mb-1">Backend Offline — Actions Unavailable</p>
+              <p className="text-red-200/80 text-xs leading-relaxed">
+                The CODE OS Python backend failed to start. This usually means Python 3.11+
+                is not installed on this system.
+              </p>
+              <p className="text-red-200/80 text-xs leading-relaxed mt-1">
+                <strong className="text-red-300">Fix:</strong> Install Python 3.11 or newer from{" "}
+                <button
+                  className="text-cyan-400 hover:text-cyan-300 underline bg-transparent border-none cursor-pointer p-0 font-semibold"
+                  onClick={() => {
+                    if (window.codeOS?.openExternal) {
+                      void window.codeOS.openExternal("https://python.org/downloads");
+                    }
+                  }}
+                >
+                  python.org/downloads
+                </button>
+                {" "}(on Windows, tick <em>"Add Python to PATH"</em>), then{" "}
+                <strong className="text-red-300">relaunch CODE OS</strong>.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Content Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-5 bg-white/5 flex-grow min-h-[380px]">
+        <div className="grid grid-cols-1 md:grid-cols-5 bg-white/5 flex-grow min-h-[380px] mt-4">
           {/* Left: Recent Projects */}
           <section className="md:col-span-3 glass-panel h-full border-none rounded-none p-6 flex flex-col">
             <div className="flex items-center justify-between mb-4">
@@ -37,8 +87,13 @@ export function WelcomeScreen() {
                 activeWorkspaces.map((ws) => (
                   <li key={ws.path}>
                     <button
-                      onClick={() => selectWorkspaceForPath(ws.path)}
-                      className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-white/5 cursor-pointer transition-colors text-left group"
+                      onClick={() => !backendDown && selectWorkspaceForPath(ws.path)}
+                      disabled={backendDown}
+                      className={`w-full flex items-center gap-3 p-3 rounded-lg transition-colors text-left group ${
+                        backendDown
+                          ? "opacity-40 cursor-not-allowed"
+                          : "hover:bg-white/5 cursor-pointer"
+                      }`}
                     >
                       <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[20px]">folder_open</span>
                       <div className="flex flex-col min-w-0 flex-1">
@@ -55,7 +110,9 @@ export function WelcomeScreen() {
                 ))
               ) : (
                 <div className="p-4 text-xs text-on-surface-variant/50 italic border border-dashed border-white/10 rounded-lg text-center my-auto">
-                  No recent workspaces. Click Open Folder to start.
+                  {backendDown
+                    ? "Start the backend to load recent workspaces."
+                    : "No recent workspaces. Click Open Folder to start."}
                 </div>
               )}
             </ul>
@@ -64,50 +121,85 @@ export function WelcomeScreen() {
           {/* Right: Actions */}
           <section className="md:col-span-2 glass-panel h-full border-none rounded-none p-6 flex flex-col gap-4 bg-surface-container-low/50">
             <h2 className="font-micro-label text-micro-label text-on-surface-variant mb-1">QUICK ACTIONS</h2>
-            
-            <button 
-              onClick={() => void openWorkspace()}
-              className="flex items-center gap-3 p-4 rounded-lg border border-white/5 hover:border-primary/30 hover:bg-white/5 transition-all w-full text-left group"
-            >
-              <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[24px]">add_box</span>
-              <div>
-                <span className="block font-body-sm text-body-sm text-on-surface font-semibold">New Project</span>
-                <span className="block font-micro-label text-micro-label text-on-surface-variant mt-0.5">Initialize empty environment</span>
-              </div>
-            </button>
 
-            <button 
-              onClick={() => void openWorkspace()}
-              className="flex items-center gap-3 p-4 rounded-lg border border-white/5 hover:border-primary/30 hover:bg-white/5 transition-all w-full text-left group"
-            >
-              <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[24px]">file_open</span>
-              <div>
-                <span className="block font-body-sm text-body-sm text-on-surface font-semibold">Open Folder</span>
-                <span className="block font-micro-label text-micro-label text-on-surface-variant mt-0.5">Browse local directories</span>
-              </div>
-            </button>
+            {/* New Project */}
+            <div className="relative group/tip">
+              <button
+                onClick={handleAction}
+                disabled={backendDown}
+                className={backendDown ? actionBtnDisabled : actionBtnEnabled}
+              >
+                <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[24px]">add_box</span>
+                <div>
+                  <span className="block font-body-sm text-body-sm text-on-surface font-semibold">New Project</span>
+                  <span className="block font-micro-label text-micro-label text-on-surface-variant mt-0.5">Initialize empty environment</span>
+                </div>
+              </button>
+              {backendDown && (
+                <div className="absolute left-1/2 -translate-x-1/2 -top-8 bg-surface-container-highest border border-red-500/30 text-red-300 text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-50">
+                  Backend offline — install Python 3.11+ first
+                </div>
+              )}
+            </div>
 
-            <button 
-              onClick={() => void openWorkspace()}
-              className="flex items-center gap-3 p-4 rounded-lg border border-white/5 hover:border-primary/30 hover:bg-white/5 transition-all w-full text-left group"
-            >
-              <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[24px]">cloud_download</span>
-              <div>
-                <span className="block font-body-sm text-body-sm text-on-surface font-semibold">Clone Repo</span>
-                <span className="block font-micro-label text-micro-label text-on-surface-variant mt-0.5">Import from remote source</span>
-              </div>
-            </button>
+            {/* Open Folder */}
+            <div className="relative group/tip">
+              <button
+                onClick={handleAction}
+                disabled={backendDown}
+                className={backendDown ? actionBtnDisabled : actionBtnEnabled}
+              >
+                <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[24px]">file_open</span>
+                <div>
+                  <span className="block font-body-sm text-body-sm text-on-surface font-semibold">Open Folder</span>
+                  <span className="block font-micro-label text-micro-label text-on-surface-variant mt-0.5">Browse local directories</span>
+                </div>
+              </button>
+              {backendDown && (
+                <div className="absolute left-1/2 -translate-x-1/2 -top-8 bg-surface-container-highest border border-red-500/30 text-red-300 text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-50">
+                  Backend offline — install Python 3.11+ first
+                </div>
+              )}
+            </div>
+
+            {/* Clone Repo */}
+            <div className="relative group/tip">
+              <button
+                onClick={handleAction}
+                disabled={backendDown}
+                className={backendDown ? actionBtnDisabled : actionBtnEnabled}
+              >
+                <span className="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors text-[24px]">cloud_download</span>
+                <div>
+                  <span className="block font-body-sm text-body-sm text-on-surface font-semibold">Clone Repo</span>
+                  <span className="block font-micro-label text-micro-label text-on-surface-variant mt-0.5">Import from remote source</span>
+                </div>
+              </button>
+              {backendDown && (
+                <div className="absolute left-1/2 -translate-x-1/2 -top-8 bg-surface-container-highest border border-red-500/30 text-red-300 text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-50">
+                  Backend offline — install Python 3.11+ first
+                </div>
+              )}
+            </div>
           </section>
         </div>
 
         {/* Footer */}
         <footer className="p-6 border-t border-white/5 flex justify-end items-center bg-surface-container/30">
-          <button 
-            onClick={() => void openWorkspace()}
-            className="bg-primary-container text-on-primary-container font-micro-label text-micro-label px-6 py-3 rounded-full flex items-center gap-2 uppercase tracking-wider font-bold shadow-[0_0_15px_rgba(0,229,255,0.3)] hover:shadow-[0_0_25px_rgba(0,229,255,0.5)] transition-all transform hover:-translate-y-0.5"
+          <button
+            onClick={handleAction}
+            disabled={backendDown}
+            title={backendDown ? "Backend offline — install Python 3.11+ and relaunch" : undefined}
+            className={`font-micro-label text-micro-label px-6 py-3 rounded-full flex items-center gap-2 uppercase tracking-wider font-bold transition-all transform ${
+              backendDown
+                ? "bg-surface-container text-on-surface-variant/40 opacity-50 cursor-not-allowed"
+                : "bg-primary-container text-on-primary-container shadow-[0_0_15px_rgba(0,229,255,0.3)] hover:shadow-[0_0_25px_rgba(0,229,255,0.5)] hover:-translate-y-0.5"
+            }`}
           >
-            Get Started
-            <span className="material-symbols-outlined text-[16px]">arrow_forward</span>
+            {backendDown ? "Backend Offline" : "Get Started"}
+            <span className="material-symbols-outlined text-[16px]">
+              {backendDown ? "block" : "arrow_forward"}
+            </span>
           </button>
         </footer>
       </main>

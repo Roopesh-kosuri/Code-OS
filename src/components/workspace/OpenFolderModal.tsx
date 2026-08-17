@@ -46,37 +46,37 @@ export function OpenFolderModal({ onClose }: OpenFolderModalProps) {
 
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-950/70 p-4 backdrop-blur-sm select-text">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-md animate-in fade-in duration-200 select-text">
       <div
-        className="w-full max-w-md rounded-xl border border-surface-700 bg-surface-900 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+        className="w-full max-w-md rounded-2xl border border-white/10 bg-[#12141a]/95 backdrop-blur-2xl shadow-[0_25px_60px_rgba(0,0,0,0.85)] ring-1 ring-white/10 overflow-hidden flex flex-col max-h-[90vh] animate-popover-in"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-surface-750 px-4 py-3 select-none">
-          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-350">
-            <FolderOpen size={16} className="text-accent-500" />
-            Open Folder to Workspace
+        <div className="flex items-center justify-between border-b border-white/10 px-5 py-3.5 select-none bg-[#0e1017]/60">
+          <div className="flex items-center gap-2.5 text-xs font-bold uppercase tracking-wider text-on-surface">
+            <FolderOpen size={16} className="text-primary shrink-0" />
+            <span>Open Folder to Workspace</span>
           </div>
           <button
             onClick={onClose}
-            className="text-slate-500 hover:text-white transition-colors"
+            className="p-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-colors cursor-pointer"
             title="Close modal"
           >
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
         {/* Modal content */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {error && (
-            <div className="rounded-lg border border-danger/45 bg-danger/5 p-2.5 text-xs text-danger">
+            <div className="rounded-xl border border-error/30 bg-error/10 p-3 text-xs text-error shadow-sm">
               {error}
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-3">
+          <form onSubmit={handleSubmit} className="space-y-3.5">
             <div>
-              <label className="text-[10px] text-slate-500 mb-1 block font-semibold uppercase tracking-wider select-none">
+              <label className="text-[10px] text-on-surface-variant/70 mb-1.5 block font-bold uppercase tracking-wider select-none">
                 Enter Absolute Directory Path
               </label>
               <input
@@ -84,48 +84,66 @@ export function OpenFolderModal({ onClose }: OpenFolderModalProps) {
                 placeholder="e.g. C:/Users/Name/Projects/my-app"
                 value={pathInput}
                 onChange={(e) => setPathInput(e.target.value)}
-                className="w-full rounded bg-surface-950 border border-surface-700 px-3 py-2 text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-accent-500 transition-colors"
+                className="w-full rounded-xl bg-[#0a0c12] border border-white/10 px-3.5 py-2.5 text-xs font-mono text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-all shadow-inner"
                 autoFocus
                 disabled={loading}
               />
             </div>
-            <div className="flex justify-end gap-2 pt-1 select-none">
-              <Button type="button" variant="ghost" onClick={onClose} disabled={loading}>
+            <div className="flex justify-end items-center gap-2 pt-1 select-none">
+              <button
+                type="button"
+                onClick={onClose}
+                disabled={loading}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-on-surface-variant hover:text-on-surface hover:bg-white/5 transition-all cursor-pointer disabled:opacity-50"
+              >
                 Cancel
-              </Button>
-              <Button type="submit" variant="primary" disabled={loading || !pathInput.trim()}>
-                {loading ? <><RefreshCw size={13} className="animate-spin" /> Opening...</> : "Open Folder"}
-              </Button>
+              </button>
+              <button
+                type="submit"
+                disabled={loading || !pathInput.trim()}
+                className="px-5 py-2 rounded-xl bg-primary text-[#001f24] font-ui-label-bold text-xs font-bold hover:bg-primary/90 hover:shadow-[0_0_15px_rgba(0,218,243,0.35)] active:scale-[0.98] transition-all flex items-center gap-2 shadow-sm cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <RefreshCw size={13} className="animate-spin" /> Opening...
+                  </>
+                ) : (
+                  "Open Folder"
+                )}
+              </button>
             </div>
           </form>
 
           {/* Recent Workspaces section */}
           {recentWorkspaces.length > 0 && (
-            <div className="space-y-2 border-t border-surface-750/70 pt-3.5">
-              <div className="text-[10px] text-slate-500 font-semibold uppercase tracking-wider select-none">
+            <div className="space-y-2 border-t border-white/10 pt-4">
+              <div className="text-[10px] text-on-surface-variant/70 font-bold uppercase tracking-wider select-none mb-1.5">
                 Recent Folders
               </div>
-              <div className="space-y-1.5 max-h-48 overflow-y-auto">
+              <div className="space-y-2 max-h-52 overflow-y-auto pr-0.5">
                 {recentWorkspaces.map((ws) => (
                   <button
                     key={ws.path}
                     type="button"
                     onClick={() => void handleRecentClick(ws.path)}
                     disabled={loading}
-                    className="w-full flex items-center justify-between p-2 rounded-lg bg-surface-950/40 border border-surface-850 hover:bg-surface-800/50 hover:border-surface-700 text-left transition-all group"
+                    title={ws.path}
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#161822]/60 border border-white/5 hover:bg-[#1f2230] hover:border-white/15 text-left transition-all duration-150 group cursor-pointer shadow-sm hover:translate-y-[-1px] active:scale-[0.99]"
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <Folder size={15} className="text-slate-500 group-hover:text-accent-500 transition-colors shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-slate-250 truncate group-hover:text-white">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="p-1.5 rounded-lg bg-white/5 border border-white/5 text-on-surface-variant group-hover:text-primary group-hover:bg-primary/10 group-hover:border-primary/20 transition-colors shrink-0">
+                        <Folder size={14} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-on-surface group-hover:text-primary transition-colors truncate">
                           {ws.name}
                         </div>
-                        <div className="text-[10px] text-slate-600 font-mono truncate max-w-[340px]">
+                        <div className="text-[10px] text-on-surface-variant/60 font-mono truncate max-w-[280px]">
                           {ws.path}
                         </div>
                       </div>
                     </div>
-                    <ChevronRight size={13} className="text-slate-700 group-hover:text-slate-350 transition-colors shrink-0" />
+                    <ChevronRight size={14} className="text-on-surface-variant/40 group-hover:text-on-surface transition-colors shrink-0 ml-2" />
                   </button>
                 ))}
               </div>

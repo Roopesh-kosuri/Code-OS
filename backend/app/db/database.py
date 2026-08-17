@@ -29,14 +29,14 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         db_path = settings.database_path
 
-    _db = await aiosqlite.connect(db_path)
+    _db = await aiosqlite.connect(db_path, timeout=30.0)
     _db.row_factory = aiosqlite.Row
 
 
     # Performance, integrity, and concurrency settings
     await _db.execute("PRAGMA journal_mode=WAL;")
     await _db.execute("PRAGMA foreign_keys=ON;")
-    await _db.execute("PRAGMA busy_timeout=5000;")
+    await _db.execute("PRAGMA busy_timeout=30000;")
     await _db.execute("PRAGMA cache_size=-2000;")
     await _db.execute("PRAGMA synchronous=NORMAL;")
 
@@ -169,6 +169,8 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
             files_modified TEXT DEFAULT '[]',
             errors TEXT DEFAULT '',
             logs TEXT DEFAULT '[]',
+            workspace_manifest TEXT DEFAULT '{}',
+            user_request TEXT DEFAULT '',
             FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_agent_jobs_workspace ON agent_jobs(workspace);
@@ -252,6 +254,18 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
         );
         """
     )
+    # Dynamic schema migration for existing databases
+    try:
+        cur = await _db.execute("PRAGMA table_info(agent_jobs)")
+        rows = await cur.fetchall()
+        cols = [r["name"] for r in rows]
+        if "workspace_manifest" not in cols:
+            await _db.execute("ALTER TABLE agent_jobs ADD COLUMN workspace_manifest TEXT DEFAULT '{}'")
+        if "user_request" not in cols:
+            await _db.execute("ALTER TABLE agent_jobs ADD COLUMN user_request TEXT DEFAULT ''")
+    except Exception as exc:
+        logger.debug("Schema migration for agent_jobs: %s", exc)
+
     await _db.commit()
     return _db
 

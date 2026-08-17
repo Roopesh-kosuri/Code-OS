@@ -8,8 +8,10 @@ import { useIndexStore } from "./stores/indexStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 
-function BackendStatusBanner() {
-  const [status, setStatus] = useState<{ running: boolean; error: string | null } | null>(null);
+type BackendStatus = { running: boolean; error: string | null } | null;
+
+function useBackendStatus(): BackendStatus {
+  const [status, setStatus] = useState<BackendStatus>(null);
 
   useEffect(() => {
     if (!window.codeOS?.getBackendStatus) return;
@@ -24,16 +26,38 @@ function BackendStatusBanner() {
     return () => clearInterval(interval);
   }, []);
 
+  return status;
+}
+
+function BackendStatusBanner({ status }: { status: BackendStatus }) {
   if (!status || (status.running && !status.error)) return null;
+
+  const isPythonMissing = !!(
+    status.error?.toLowerCase().includes("python") ||
+    status.error?.toLowerCase().includes("not found")
+  );
 
   return (
     <div className="bg-amber-950/80 border-b border-amber-500/30 text-amber-200 px-4 py-2 text-xs flex items-center justify-between z-[9999] relative">
       <div className="flex items-center gap-2">
         <span className="font-semibold text-amber-400">⚠️ Backend Alert:</span>
-        <span>{status.error || "Attempting to connect to Python backend process on 127.0.0.1:8000..."}</span>
+        <span>{status.error || "Connecting to Python backend..."}</span>
       </div>
       <div className="flex items-center gap-3">
-        <span className="text-[11px] opacity-75">Python 3.11+ required</span>
+        {isPythonMissing ? (
+          <button
+            className="text-cyan-400 hover:text-cyan-300 underline text-[11px] font-semibold bg-transparent border-none cursor-pointer"
+            onClick={() => {
+              if (window.codeOS?.openExternal) {
+                void window.codeOS.openExternal("https://python.org/downloads");
+              }
+            }}
+          >
+            Install Python 3.11+ →
+          </button>
+        ) : (
+          <span className="text-[11px] opacity-75">Python 3.11+ required</span>
+        )}
       </div>
     </div>
   );
@@ -44,6 +68,10 @@ export function App() {
   const restoreLastWorkspace = useWorkspaceStore((state) => state.restoreLastWorkspace);
   const refreshTree = useWorkspaceStore((state) => state.refreshTree);
   const theme = useSettingsStore((state) => state.settings.theme);
+
+  const backendStatus = useBackendStatus();
+  // backendDown = we have received a definitive "not running" status
+  const backendDown = backendStatus !== null && !backendStatus.running;
 
   const [onboardingComplete, setOnboardingComplete] = useState(() => {
     return localStorage.getItem("code-os:onboarding-complete") === "true";
@@ -156,8 +184,8 @@ export function App() {
 
   return (
     <>
-      <BackendStatusBanner />
-      <AppShell />
+      <BackendStatusBanner status={backendStatus} />
+      <AppShell backendDown={backendDown} />
       {!onboardingComplete && (
         <OnboardingWizard onClose={() => setOnboardingComplete(true)} />
       )}

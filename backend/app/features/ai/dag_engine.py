@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from .job_service import get_job, update_job_status, update_task_status, add_job_log
 from .event_bus import event_bus
 
@@ -38,6 +39,24 @@ class DAGEngine:
                 
                 # Check if all tasks are completed
                 if all(t["status"] == "completed" for t in tasks):
+                    # Spec coverage final check before completing job
+                    try:
+                        from .spec_coverage import extract_requirements, check_coverage, format_coverage_report
+                        from .workspace_manifest import WorkspaceManifest
+                        from .job_service import get_job_manifest
+                        manifest_raw = await get_job_manifest(job_id)
+                        manifest = WorkspaceManifest.from_json(manifest_raw)
+                        user_req = job_data.get("user_request") or job_data.get("workflow") or ""
+                        if user_req:
+                            reqs = extract_requirements(user_req)
+                            cov = check_coverage(reqs, manifest.get_entries(), tasks)
+                            cov_report = format_coverage_report(cov)
+                            await add_job_log(job_id, cov_report)
+                            if cov.get("coverage_ratio", 1.0) < 0.6 and cov.get("uncovered"):
+                                await add_job_log(job_id, f"WARNING: Spec coverage is low ({cov.get('coverage_ratio', 0):.0%}). Some requested features may not be addressed.")
+                    except Exception as cov_exc:
+                        logger.debug("Spec coverage check skipped: %s", cov_exc)
+                    
                     await update_job_status(job_id, "completed")
                     await add_job_log(job_id, "Workflow execution completed successfully.")
                     break
@@ -81,6 +100,8 @@ class DAGEngine:
                 
                 if futures:
                     await asyncio.gather(*futures)
+                    # Brief smoothing delay to avoid bursting API token limits
+                    await asyncio.sleep(1.0)
                 else:
                     # Wait a bit before checking task status again
                     await asyncio.sleep(1)
@@ -102,11 +123,14 @@ class DAGEngine:
         await event_bus.publish("task_started", {"job_id": job_id, "task_id": task_id, "role": role})
         
         try:
+            from pathlib import Path
             from .agents.agent_factory import AgentFactory
             from .context_service import gather_context
             from .service import create_proposal
             from .schemas import EditProposalRequest, FileChange
-            from .job_service import add_job_modified_file
+            from .job_service import add_job_modified_file, get_job_manifest, update_job_manifest
+            from .workspace_manifest import WorkspaceManifest, build_prior_steps_context, extract_exports
+            from .output_validator import validate_proposals, format_stub_findings
             
             job_data = await get_job(job_id)
             workspace = job_data["workspace"] if job_data else ""
@@ -125,17 +149,33 @@ class DAGEngine:
                 )
                 context_text += f"Semantically relevant files:\n{match_lines}\n"
             
-            # 2. Create specialized agent using factory
+            # 2. Add Cross-DAG Prior Steps Context via WorkspaceManifest
+            manifest_raw = await get_job_manifest(job_id)
+            manifest = WorkspaceManifest.from_json(manifest_raw)
+            completed_tasks = [t for t in (job_data.get("tasks") or []) if t.get("status") == "completed"]
+            dep_ids = task.get("dependencies") or []
+            prior_context = build_prior_steps_context(manifest, completed_tasks, dep_ids, workspace)
+            context_text += f"\n\n{prior_context}\n"
+            
+            # 3. Create specialized agent using factory
             agent = AgentFactory.create_agent(role, provider_config=provider_config)
             
-            # 3. Execute task with new agent interface
+            # 4. Execute task with agent interface
             output = await agent.execute(job_id, task_id, task["title"], context_text, workspace)
             
             if output.status == "failure":
                 raise Exception(output.reasoning_summary)
+            
+            # 5. Quality Guardrail: Scan proposals for stub implementations
+            if output.proposals:
+                stub_findings = validate_proposals(output.proposals)
+                if stub_findings:
+                    stub_msg = format_stub_findings(stub_findings)
+                    logger.warning("Task '%s' generated potential stub warnings: %s", task['title'], stub_msg)
+                    await add_job_log(job_id, f"Agent [{role}] note: {stub_msg}")
                 
-            # 4. Save proposals (convert dicts back to FileChange objects)
-            if output.proposals and not output.structured_data.get("proposal_created_internally"):
+            # 6. Apply proposals to workspace disk directly and verify on-disk existence
+            if output.proposals:
                 file_changes = [FileChange(**{k: v for k, v in p.items() if k not in ["plan", "self_review", "test_results"]}) for p in output.proposals]
                 first_prop = output.proposals[0]
                 payload = EditProposalRequest(
@@ -146,17 +186,58 @@ class DAGEngine:
                     self_review=first_prop.get("self_review"),
                     test_results=first_prop.get("test_results")
                 )
+                from .service import create_proposal, apply_proposal
                 proposal = await create_proposal(payload)
                 await add_job_log(job_id, f"Agent [{role}] created edit proposal ID: {proposal.id}")
+                
+                # Apply changes directly to workspace disk
+                await apply_proposal(proposal.id)
+                await add_job_log(job_id, f"Agent [{role}] applied {len(file_changes)} file(s) to workspace disk.")
+
+                # HARD GUARDRAIL: Verify every file physically exists on disk and is non-empty
                 for change in file_changes:
+                    full_disk_path = Path(workspace) / change.path
+                    if not full_disk_path.exists():
+                        raise Exception(f"File write verification failed: Expected file '{change.path}' was not created on disk at {full_disk_path}")
+                    if full_disk_path.stat().st_size == 0 and len(change.updated.strip()) > 0:
+                        raise Exception(f"File write verification failed: File '{change.path}' on disk is 0 bytes but expected non-empty content.")
                     await add_job_modified_file(job_id, change.path)
+
+                # Notify file tree and watcher to refresh explorer
+                await event_bus.publish("files_changed", {"workspace": workspace, "paths": [c.path for c in file_changes]})
+            
+            # 7. Update WorkspaceManifest and check for duplicates
+            if output.proposals:
+                for p in output.proposals:
+                    p_path = p.get("path") if isinstance(p, dict) else getattr(p, "path", "")
+                    p_code = p.get("updated") if isinstance(p, dict) else getattr(p, "updated", "")
+                    p_orig = p.get("original") if isinstance(p, dict) else getattr(p, "original", "")
+                    is_new = not bool(p_orig and p_orig.strip())
+                    if p_path:
+                        new_exports = extract_exports(p_code) if p_code else []
+                        dups = manifest.check_duplicates(p_path, task["title"], new_exports)
+                        if dups:
+                            for d in dups:
+                                await add_job_log(job_id, f"WARNING: Potential duplicate file detected! '{p_path}' may overlap with existing '{d['existing_path']}' created by '{d['existing_task']}'.")
+                        manifest.add_file(
+                            path=p_path,
+                            purpose=task["title"],
+                            task_id=task_id,
+                            task_title=task["title"],
+                            agent_role=role,
+                            code_content=p_code,
+                            is_new_file=is_new,
+                        )
+                await update_job_manifest(job_id, manifest.to_json())
             
             await update_task_status(task_id, "completed", reasoning_summary=output.reasoning_summary, structured_data=output.structured_data)
             await add_job_log(job_id, f"Agent [{role}] successfully completed task '{task['title']}'.")
             await event_bus.publish("task_completed", {"job_id": job_id, "task_id": task_id})
             
         except Exception as exc:
-            logger.warning("Agent [%s] task '%s' failed: %s. Prompting user for fallback recovery...", role, task['title'], exc)
+            import traceback
+            tb_str = traceback.format_exc()
+            logger.error("Agent [%s] task '%s' failed with traceback:\n%s", role, task['title'], tb_str)
             await add_job_log(job_id, f"Agent [{role}] encountered error on '{task['title']}': {exc}")
             
             # Prompt user with Graceful Degradation fallback options

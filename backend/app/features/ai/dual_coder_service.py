@@ -58,7 +58,7 @@ async def _run_single_attempt(
         if target_file:
             tf_path = ws_path / target_file
             if tf_path.exists() and tf_path.is_file():
-                content = tf_path.read_text(encoding="utf-8", errors="ignore")[:4000]
+                content = tf_path.read_text(encoding="utf-8", errors="ignore")[:30000]
                 grounded_snippets.append(f"File: {target_file}\n```\n{content}\n```")
         else:
             # Auto-pick top 3 recent/relevant files

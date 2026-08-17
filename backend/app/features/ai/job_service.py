@@ -3,16 +3,16 @@ from datetime import datetime, timezone
 from ...db.database import get_db
 from ...core.paths import normalize_path
 
-async def create_job(job_id: str, workspace: str, workflow: str) -> None:
+async def create_job(job_id: str, workspace: str, workflow: str, user_request: str = "") -> None:
     workspace_path = str(normalize_path(workspace))
     now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     await db.execute(
         """
-        INSERT INTO agent_jobs (id, workspace, workflow, status, started_at, completed_at, token_usage, duration, files_modified, errors, logs)
-        VALUES (?, ?, ?, ?, ?, NULL, 0, 0.0, '[]', '', '[]')
+        INSERT INTO agent_jobs (id, workspace, workflow, status, started_at, completed_at, token_usage, duration, files_modified, errors, logs, workspace_manifest, user_request)
+        VALUES (?, ?, ?, ?, ?, NULL, 0, 0.0, '[]', '', '[]', '{}', ?)
         """,
-        (job_id, workspace_path, workflow, "queued", now)
+        (job_id, workspace_path, workflow, "queued", now, user_request)
     )
     await db.commit()
 
@@ -59,6 +59,19 @@ async def add_job_modified_file(job_id: str, file_path: str) -> None:
         files.append(file_path)
         await db.execute("UPDATE agent_jobs SET files_modified = ? WHERE id = ?", (json.dumps(files), job_id))
         await db.commit()
+
+async def get_job_manifest(job_id: str) -> str:
+    """Retrieve the raw workspace manifest JSON for a job."""
+    db = await get_db()
+    cursor = await db.execute("SELECT workspace_manifest FROM agent_jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    return row["workspace_manifest"] if row and row["workspace_manifest"] else "{}"
+
+async def update_job_manifest(job_id: str, manifest_json: str) -> None:
+    """Persist the workspace manifest JSON for a job."""
+    db = await get_db()
+    await db.execute("UPDATE agent_jobs SET workspace_manifest = ? WHERE id = ?", (manifest_json, job_id))
+    await db.commit()
 
 async def create_task(task_id: str, job_id: str, title: str, agent_role: str, dependencies: list[str], estimated_effort: str = "") -> None:
     db = await get_db()
@@ -145,6 +158,8 @@ async def get_job(job_id: str) -> dict | None:
         "files_modified": json.loads(job_row["files_modified"]),
         "errors": job_row["errors"],
         "logs": json.loads(job_row["logs"]),
+        "workspace_manifest": job_row["workspace_manifest"] if "workspace_manifest" in job_row.keys() else "{}",
+        "user_request": job_row["user_request"] if "user_request" in job_row.keys() else "",
         "tasks": tasks
     }
 

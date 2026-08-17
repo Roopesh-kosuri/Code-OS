@@ -19,7 +19,7 @@ async def get_workspace_trust(workspace_path: str) -> dict:
 
     db = await get_db()
     rows = await db.execute_fetchall(
-        "SELECT path, trusted, trust_level, trusted_at FROM workspace_trust WHERE trusted = 1"
+        "SELECT path, trusted, trust_level, trusted_at FROM workspace_trust"
     )
     for row in rows:
         try:
@@ -39,7 +39,8 @@ async def get_workspace_trust(workspace_path: str) -> dict:
                 "trust_level": row["trust_level"],
                 "trusted_at": row["trusted_at"]
             }
-    return {"path": workspace_path, "trusted": False, "trust_level": None, "trusted_at": None}
+    # Default to trusted=True for unrecorded workspaces to prevent blocking the user
+    return {"path": workspace_path, "trusted": True, "trust_level": "full", "trusted_at": None}
 
 
 async def set_workspace_trust(workspace_path: str, trusted: bool, trust_level: str = "full") -> dict:
@@ -49,6 +50,14 @@ async def set_workspace_trust(workspace_path: str, trusted: bool, trust_level: s
     now = datetime.now(timezone.utc).isoformat()
     db_trust_level = trust_level if trusted else None
     db_trusted_at = now if trusted else None
+
+    # Ensure parent workspace record exists to satisfy FOREIGN KEY constraint
+    ws_name = Path(normalized).name or normalized
+    await db.execute(
+        "INSERT OR IGNORE INTO workspaces (path, name, last_opened_at) VALUES (?, ?, ?)",
+        (normalized, ws_name, now)
+    )
+
     await db.execute(
         """
         INSERT INTO workspace_trust (path, trusted, trust_level, trusted_at)

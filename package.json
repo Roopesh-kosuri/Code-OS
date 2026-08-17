@@ -24,7 +24,8 @@
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:backend": "node scripts/dev-backend.js",
     "dev:electron": "wait-on http://127.0.0.1:5176 && npm run build:electron && electron .",
-    "build": "npm run typecheck && vite build && npm run build:electron",
+    "build:backend-exe": "node scripts/build-backend.js",
+    "build": "npm run typecheck && vite build && npm run build:electron && npm run build:backend-exe",
     "package": "npm run build && electron-builder",
     "build:electron": "tsc -p electron/tsconfig.json && node -e \"require('fs').writeFileSync('dist-electron/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\"",
     "typecheck": "tsc --noEmit",
@@ -82,6 +83,14 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "backend-dist/backend-server.exe",
+        "to": "backend-server.exe"
+      },
+      {
+        "from": "backend-dist/backend-server",
+        "to": "backend-server"
       }
     ],
     "win": {

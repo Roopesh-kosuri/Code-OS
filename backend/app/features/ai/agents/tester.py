@@ -21,16 +21,19 @@ class TesterAgent(BaseAgent):
         super().__init__("Testing Agent", provider_config=provider_config)
     
     def get_system_prompt(self) -> str:
-        return """You are a QA and Testing Agent. Your role is to execute test suites and analyze results.
+        from .agent_tools import get_tool_instructions
+        return """You are a QA and Testing Agent. Your role is to write comprehensive unit tests, execute test suites, and analyze results.
+- CRITICAL: Always use read_file to inspect the actual implementation, class names, methods, and exports before writing tests.
+- Do NOT guess or hallucinate class names, function signatures, or module paths. Read the source code first!
 - Detect the appropriate test runner for the project (pytest, jest, etc.)
-- Execute tests via the standard command for that runner
-- Parse test output to extract pass/fail counts, failing test names, and error details
-- Provide structured test results for further analysis
-- If tests fail, suggest specific fixes based on the error messages"""
+- When generating unit tests, return proposals using the [PROPOSAL] block format or edit_file tool
+- Write tests that match the real imports and real signatures of the workspace files
+- If tests fail, suggest specific fixes based on the error messages""" + get_tool_instructions(allow_edit=True)
     
     def detect_test_runner(self, workspace: str) -> Optional[Dict[str, Any]]:
         """Detect the test runner type and command for the workspace."""
         workspace_path = normalize_path(workspace)
+        python_cmd = "python -m pytest"
         
         # Check for Python/pytest
         python_indicators = [
@@ -46,26 +49,26 @@ class TesterAgent(BaseAgent):
                 # Verify it's actually pytest configuration
                 if indicator == "pyproject.toml":
                     try:
-                        content = (workspace_path / indicator).read_text()
+                        content = (workspace_path / indicator).read_text(encoding="utf-8", errors="ignore")
                         if "pytest" in content.lower():
-                            return {"type": "pytest", "command": "python -m pytest", "indicator": indicator}
+                            return {"type": "pytest", "command": python_cmd, "indicator": indicator}
                     except Exception:
                         pass
                 elif indicator == "setup.cfg":
                     try:
-                        content = (workspace_path / indicator).read_text()
+                        content = (workspace_path / indicator).read_text(encoding="utf-8", errors="ignore")
                         if "[tool:pytest]" in content or "[pytest]" in content:
-                            return {"type": "pytest", "command": "python -m pytest", "indicator": indicator}
+                            return {"type": "pytest", "command": python_cmd, "indicator": indicator}
                     except Exception:
                         pass
                 else:
-                    return {"type": "pytest", "command": "python -m pytest", "indicator": indicator}
+                    return {"type": "pytest", "command": python_cmd, "indicator": indicator}
         
         # Check for Node.js/npm/jest
         package_json = workspace_path / "package.json"
         if package_json.exists():
             try:
-                content = package_json.read_text()
+                content = package_json.read_text(encoding="utf-8", errors="ignore")
                 pkg_data = json.loads(content)
                 scripts = pkg_data.get("scripts", {})
                 
@@ -93,7 +96,7 @@ class TesterAgent(BaseAgent):
             if list(workspace_path.rglob(pattern)):
                 # Can determine runner from file extension
                 if pattern.endswith(".py"):
-                    return {"type": "pytest", "command": "python -m pytest", "indicator": f"test files ({pattern})"}
+                    return {"type": "pytest", "command": python_cmd, "indicator": f"test files ({pattern})"}
                 elif pattern.endswith(".js"):
                     return {"type": "jest", "command": "npm test", "indicator": f"test files ({pattern})"}
         
@@ -111,50 +114,58 @@ class TesterAgent(BaseAgent):
             "duration": None
         }
         
-        if runner_type == "pytest":
-            # Parse pytest output
-            # Example: "5 passed, 2 failed in 1.23s"
-            summary_match = re.search(r'(\d+)\s+passed(?:,\s+(\d+)\s+failed)?(?:,\s+(\d+)\s+skipped)?(?:\s+in\s+([\d.]+s))?', output)
-            if summary_match:
-                result["passed"] = int(summary_match.group(1) or 0)
-                result["failed"] = int(summary_match.group(2) or 0)
-                result["skipped"] = int(summary_match.group(3) or 0)
-                result["duration"] = summary_match.group(4)
+        try:
+            if runner_type == "pytest":
+                # Parse pytest summary counts flexibly (any order)
+                passed_m = re.search(r'(\d+)\s+passed', output)
+                failed_m = re.search(r'(\d+)\s+failed', output)
+                error_m = re.search(r'(\d+)\s+error', output)
+                skipped_m = re.search(r'(\d+)\s+skipped', output)
+                dur_m = re.search(r'in\s+([\d.]+s)', output)
+
+                if passed_m:
+                    result["passed"] = int(passed_m.group(1))
+                if failed_m:
+                    result["failed"] = int(failed_m.group(1))
+                elif error_m:
+                    result["failed"] = int(error_m.group(1))
+                if skipped_m:
+                    result["skipped"] = int(skipped_m.group(1))
+                if dur_m:
+                    result["duration"] = dur_m.group(1)
                 result["total"] = result["passed"] + result["failed"] + result["skipped"]
+                
+                # Extract failing test names and errors
+                failed_section = re.search(r'=+\s*(?:FAILURES|ERRORS|FAILED)\s*=+(.*?)(?:=+\s*|$)', output, re.DOTALL)
+                if failed_section:
+                    failed_tests = re.findall(r'([^\s]+)\s+(FAILED|ERROR)', failed_section.group(1))
+                    for test_name, status in failed_tests:
+                        error_pattern = rf'{re.escape(test_name)}.*?(?:FAILED|ERROR).*?\n(.*?)(?=\n|\Z)'
+                        error_match = re.search(error_pattern, output, re.DOTALL)
+                        error_msg = error_match.group(1).strip() if error_match else "No error details available"
+                        
+                        result["errors"].append({
+                            "test": test_name,
+                            "status": status,
+                            "error": error_msg[:500]
+                        })
             
-            # Extract failing test names and errors
-            failed_section = re.search(r'=+\s*FAILED\s*=+(.*?)(?:=+\s*|$', output, re.DOTALL)
-            if failed_section:
-                failed_tests = re.findall(r'([^\s]+)\s+(FAILED|ERROR)', failed_section.group(1))
-                for test_name, status in failed_tests:
-                    # Try to extract error context for this test
-                    error_pattern = rf'{re.escape(test_name)}.*?(?:FAILED|ERROR).*?\n(.*?)(?=\n|\Z)'
-                    error_match = re.search(error_pattern, output, re.DOTALL)
-                    error_msg = error_match.group(1).strip() if error_match else "No error details available"
-                    
+            elif runner_type in ["jest", "npm"]:
+                tests_match = re.search(r'Tests:\s*(\d+)\s+passed(?:,\s*(\d+)\s+failed)?', output)
+                if tests_match:
+                    result["passed"] = int(tests_match.group(1) or 0)
+                    result["failed"] = int(tests_match.group(2) or 0)
+                    result["total"] = result["passed"] + result["failed"]
+                
+                failed_patterns = re.findall(r'✕\s+([^\n]+)', output)
+                for test_name in failed_patterns:
                     result["errors"].append({
-                        "test": test_name,
-                        "status": status,
-                        "error": error_msg[:500]  # Truncate long errors
+                        "test": test_name.strip(),
+                        "status": "FAILED",
+                        "error": "Check full output for details"
                     })
-        
-        elif runner_type in ["jest", "npm"]:
-            # Parse jest/npm output
-            # Example: "Tests:  5 passed, 2 failed"
-            tests_match = re.search(r'Tests:\s*(\d+)\s+passed(?:,\s*(\d+)\s+failed)?', output)
-            if tests_match:
-                result["passed"] = int(tests_match.group(1) or 0)
-                result["failed"] = int(tests_match.group(2) or 0)
-                result["total"] = result["passed"] + result["failed"]
-            
-            # Extract failing test details
-            failed_patterns = re.findall(r'✕\s+([^\n]+)', output)
-            for test_name in failed_patterns:
-                result["errors"].append({
-                    "test": test_name.strip(),
-                    "status": "FAILED",
-                    "error": "Check full output for details"
-                })
+        except Exception as parse_exc:
+            logger.warning("TesterAgent parse_test_output error: %s", parse_exc)
         
         return result
     
@@ -200,63 +211,115 @@ class TesterAgent(BaseAgent):
                     }
                 )
 
-            logs.append("No test runner detected - checking if LLM can generate test strategy")
+            logs.append("No test runner detected - running TesterAgent with workspace tools to generate unit tests")
             
-            # Fall back to LLM for test strategy
+            # Fall back to LLM for test generation with tools
             system_instruction = self.get_system_prompt()
-            prompt = f"Task Title: {title}\n\nCodebase Context:\n{context}\n\nWorkspace: {workspace}\n\nNo standard test runner detected. Analyze the project and suggest a testing approach."
-            
-            chat_req = self.create_chat_request(
-                messages=[
-                    ChatMessage(role="system", content=system_instruction),
-                    ChatMessage(role="user", content=prompt)
-                ]
+            prompt = (
+                f"Task Title: {title}\n\n"
+                f"Codebase Context:\n{context}\n\n"
+                f"Workspace: {workspace}\n\n"
+                f"Use read_file / list_directory to inspect the real implementation files first, then write unit tests that accurately import and test the real functions/classes."
             )
             
+            from .agent_tools import parse_tool_calls, has_tool_calls, execute_tool_calls, MAX_TOOL_ITERATIONS, TOOL_PHASE_TIMEOUT_SECONDS
+            import time
+
+            messages = [
+                ChatMessage(role="system", content=system_instruction),
+                ChatMessage(role="user", content=prompt)
+            ]
+            
+            test_proposals = []
+            staged_changes = []
+            final_response = ""
+            
             try:
-                response = ""
-                while True:
-                    try:
-                        provider = await provider_for(chat_req)
-                        tokens = []
-                        async for token in provider.stream_chat(chat_req.model, chat_req.messages, temperature=0.2):
-                            tokens.append(token)
-                        response = "".join(tokens).strip()
-                        break
-                    except Exception as exc:
-                        logs.append(f"[ERROR] LLM call failed: {exc}")
-                        decision_res = await self.handle_llm_failure(job_id, task_id, exc)
-                        action = decision_res.get("action", "cancel")
-                        if action == "retry":
+                tool_iteration = 0
+                tool_start_time = time.time()
+
+                while tool_iteration <= MAX_TOOL_ITERATIONS:
+                    chat_req = self.create_chat_request(messages=messages)
+                    response = ""
+                    while True:
+                        try:
+                            provider = await provider_for(chat_req)
+                            tokens = []
+                            async for token in provider.stream_chat(chat_req.model, chat_req.messages, temperature=0.2):
+                                tokens.append(token)
+                            response = "".join(tokens).strip()
+                            break
+                        except Exception as exc:
+                            logs.append(f"[ERROR] LLM call failed: {exc}")
+                            decision_res = await self.handle_llm_failure(job_id, task_id, exc)
+                            action = decision_res.get("action", "cancel")
+                            if action == "retry":
+                                continue
+                            elif action == "switch_to_api":
+                                chat_req.provider = "groq"
+                                chat_req.model = "llama-3.3-70b-versatile"
+                                continue
+                            else:
+                                raise exc
+                    
+                    if response.startswith("[Error:") or "Error:" in response and len(response) < 150:
+                        raise Exception(response)
+                    
+                    final_response = response
+
+                    if has_tool_calls(response) and tool_iteration < MAX_TOOL_ITERATIONS:
+                        tool_calls = parse_tool_calls(response)
+                        if tool_calls:
+                            tool_names = [tc.name for tc in tool_calls]
+                            logs.append(f"🔧 [TOOL] Tester Iteration {tool_iteration}: {len(tool_calls)} tool call(s) — {', '.join(tool_names)}")
+                            await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
+                            tool_results_text = execute_tool_calls(tool_calls, workspace, staged_changes)
+
+                            messages.append(ChatMessage(role="assistant", content=response))
+                            messages.append(ChatMessage(role="user", content=f"Tool results:\n\n{tool_results_text}\n\nContinue with writing unit tests. Use more tools if needed, or output your final [PROPOSAL] blocks and [DONE] when finished."))
+
+                            tool_iteration += 1
+                            if time.time() - tool_start_time > TOOL_PHASE_TIMEOUT_SECONDS:
+                                break
                             continue
-                        elif action == "switch_to_api":
-                            chat_req.provider = "groq"
-                            chat_req.model = "llama-3.3-70b-versatile"
-                            continue
-                        else:
-                            raise exc
+                    break
+                
+                from ..service import extract_proposals_robust
+                test_proposals = extract_proposals_robust(final_response)
+                
+                if staged_changes:
+                    for staged in staged_changes:
+                        if staged.path not in {p.path for p in test_proposals}:
+                            test_proposals.append(staged)
+
+                proposal_dicts = [p.dict() if hasattr(p, 'dict') else p.model_dump() for p in test_proposals]
+                for p in test_proposals:
+                    logs.append(f"TesterAgent generated test file: {p.path}")
                 
                 return AgentOutput(
                     agent_role=self.role,
                     task_id=task_id,
                     status="success",
-                    confidence=0.6,
-                    reasoning_summary=f"No test runner detected. Suggestion: {response[:500]}",
+                    confidence=0.7,
+                    reasoning_summary=f"Generated {len(test_proposals)} test file(s). Suggestion: {final_response[:300]}",
+                    proposals=proposal_dicts,
                     logs=logs,
                     structured_data={
                         "agent_type": "tester",
                         "test_runner_detected": False,
-                        "suggestion": response
+                        "suggestion": final_response,
+                        "files_modified": len(test_proposals)
                     }
                 )
             except Exception as exc:
-                logs.append(f"LLM failure: {exc}")
+                logs.append(f"TesterAgent failure: {exc}")
                 return AgentOutput(
                     agent_role=self.role,
                     task_id=task_id,
                     status="failure",
                     confidence=0.1,
-                    reasoning_summary=f"LLM failure: {exc}",
+                    reasoning_summary=f"Test execution/generation failed: {exc}",
                     logs=logs
                 )
         

@@ -39,46 +39,51 @@ async def generate_plan(payload: PlanRequest) -> dict:
 
 @router.post("/jobs")
 async def start_job(payload: StartJobRequest) -> dict:
-    from ..workspaces.trust_service import get_workspace_trust
-    trust = await get_workspace_trust(payload.workspace)
-    if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. Agent execution is disabled.")
+    import traceback
+    try:
+        from ..workspaces.trust_service import get_workspace_trust
+        trust = await get_workspace_trust(payload.workspace)
+        if not trust.get("trusted", False):
+            raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. Agent execution is disabled.")
 
-    job_id = str(uuid.uuid4())
-    # 1. Create Job in SQLite
-    await create_job(job_id, payload.workspace, payload.workflow)
+        job_id = str(uuid.uuid4())
+        # 1. Create Job in SQLite
+        await create_job(job_id, payload.workspace, payload.workflow, user_request=payload.workflow)
 
-    # 2. Remap task IDs to fresh UUIDs to avoid UNIQUE constraint collisions
-    id_remap: dict[str, str] = {}
-    remapped_tasks = []
-    for idx, t in enumerate(payload.tasks):
-        raw_id = t.get("id") or f"task_{idx}"
-        new_id = f"{raw_id}_{uuid.uuid4().hex[:8]}"
-        id_remap[raw_id] = new_id
-        remapped_tasks.append({**t, "id": new_id})
+        # 2. Remap task IDs to fresh UUIDs to avoid UNIQUE constraint collisions
+        id_remap: dict[str, str] = {}
+        remapped_tasks = []
+        for idx, t in enumerate(payload.tasks):
+            raw_id = t.get("id") or f"task_{idx}"
+            new_id = f"{raw_id}_{uuid.uuid4().hex[:8]}"
+            id_remap[raw_id] = new_id
+            remapped_tasks.append({**t, "id": new_id})
 
-    # Validate dependencies: remap valid ones and silently drop hallucinated/non-existent task IDs
-    for t in remapped_tasks:
-        valid_deps = [id_remap[dep] for dep in t.get("dependencies", []) if dep in id_remap]
-        t["dependencies"] = valid_deps
+        # Validate dependencies: remap valid ones and silently drop hallucinated/non-existent task IDs
+        for t in remapped_tasks:
+            valid_deps = [id_remap[dep] for dep in t.get("dependencies", []) if dep in id_remap]
+            t["dependencies"] = valid_deps
 
-    # 3. Create tasks in SQLite
-    for t in remapped_tasks:
-        await create_task(
-            task_id=t["id"],
-            job_id=job_id,
-            title=t["title"],
-            agent_role=t["agent_role"],
-            dependencies=t.get("dependencies", []),
-            estimated_effort=t.get("estimated_effort", "")
-        )
+        # 3. Create tasks in SQLite
+        for t in remapped_tasks:
+            await create_task(
+                task_id=t["id"],
+                job_id=job_id,
+                title=t["title"],
+                agent_role=t["agent_role"],
+                dependencies=t.get("dependencies", []),
+                estimated_effort=t.get("estimated_effort", "")
+            )
 
-
-    # 4. Trigger DAG Execution in background
-
-    await dag_engine.start_job(job_id, provider_config=payload.provider_config)
-    
-    return {"job_id": job_id, "status": "queued"}
+        # 4. Trigger DAG Execution in background
+        await dag_engine.start_job(job_id, provider_config=payload.provider_config)
+        
+        return {"job_id": job_id, "status": "queued"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("start_job failed: %s\n%s", exc, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Failed to start job: {exc}")
 
 @router.get("/jobs/{job_id}")
 async def get_job_status(job_id: str) -> dict:
@@ -111,34 +116,52 @@ async def approve_task_action(job_id: str, task_id: str) -> dict:
     from .agents import permission_state as perm_state
     from ...db.database import get_db
     import json
-    
-    if task_id in perm_state.pending_permission_events:
-        # Check if there is an associated proposal ID in pending action
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # 1. Attempt to find and apply any associated proposal ID from pending_action
+    proposal_id = None
+    try:
         db = await get_db()
-        proposal_id = None
         cur = await db.execute("SELECT pending_action FROM agent_tasks WHERE id = ?", (task_id,))
         row = await cur.fetchone()
         if row and row["pending_action"]:
-            act = json.loads(row["pending_action"])
-            if act.get("type") == "file-write":
+            raw_act = row["pending_action"]
+            act = json.loads(raw_act) if isinstance(raw_act, str) else raw_act
+            if isinstance(act, dict) and act.get("type") == "file-write":
                 proposal_id = act.get("command")
+    except Exception as exc:
+        logger.warning("approve_task_action: error checking pending_action for task %s: %s", task_id, exc)
 
-        if proposal_id:
-            from .service import apply_proposal
-            try:
-                await apply_proposal(proposal_id)
-            except Exception as exc:
-                # Merge conflict or other write error!
-                # Treat as a rejection with error details so the agent can regenerate
+    if proposal_id:
+        from .service import apply_proposal
+        try:
+            await apply_proposal(proposal_id)
+        except HTTPException as exc:
+            # Expected HTTPException (e.g. 409 merge conflict or 409 proposal already applied)
+            if exc.status_code == 409 and "not pending" in str(exc.detail).lower():
+                logger.info("approve_task_action: proposal %s was already applied", proposal_id)
+            else:
+                if task_id in perm_state.pending_permission_events:
+                    perm_state.pending_permission_decisions[task_id] = "reject"
+                    perm_state.pending_permission_feedback[task_id] = f"Apply failed: {exc.detail}. Please reground files and regenerate."
+                    perm_state.pending_permission_events[task_id].set()
+                return {"status": "apply_failed", "error": str(exc.detail)}
+        except Exception as exc:
+            logger.error("approve_task_action: unexpected error applying proposal %s: %s", proposal_id, exc)
+            if task_id in perm_state.pending_permission_events:
                 perm_state.pending_permission_decisions[task_id] = "reject"
-                perm_state.pending_permission_feedback[task_id] = f"Apply failed: {exc}. Please ground files again and regenerate."
+                perm_state.pending_permission_feedback[task_id] = f"Apply failed: {exc}. Please reground files and regenerate."
                 perm_state.pending_permission_events[task_id].set()
-                return {"status": "apply_failed", "error": str(exc)}
+            return {"status": "apply_failed", "error": str(exc)}
 
+    # 2. If event is waiting in memory, resolve it with 'approve'
+    if task_id in perm_state.pending_permission_events:
         perm_state.pending_permission_decisions[task_id] = "approve"
         perm_state.pending_permission_events[task_id].set()
-        return {"status": "approved"}
-    raise HTTPException(status_code=400, detail="No pending action for this task")
+
+    return {"status": "approved"}
 
 
 class TaskRejectRequest(BaseModel):
@@ -158,12 +181,22 @@ async def reject_task_action(job_id: str, task_id: str, payload: TaskRejectReque
 
 class TaskRecoverRequest(BaseModel):
     action: str
+    provider: str | None = None
+    model: str | None = None
+    api_key_provider: str | None = None
+    base_url: str | None = None
 
 @router.post("/jobs/{job_id}/tasks/{task_id}/recover")
 async def recover_task_action(job_id: str, task_id: str, payload: TaskRecoverRequest) -> dict:
     from .agents import permission_state as perm_state
     if task_id in perm_state.pending_permission_events:
         perm_state.pending_permission_decisions[task_id] = payload.action
+        perm_state.pending_permission_data[task_id] = {
+            "provider": payload.provider,
+            "model": payload.model,
+            "api_key_provider": payload.api_key_provider or payload.provider,
+            "base_url": payload.base_url,
+        }
         perm_state.pending_permission_events[task_id].set()
         return {"status": "recovered"}
     raise HTTPException(status_code=400, detail="No pending action for this task")

@@ -1,295 +1,392 @@
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
 import {
-  ShieldCheck, ShieldAlert, Shield, AlertTriangle, CheckCircle2,
-  Lock, Key, Database, Terminal, FileCode, Cpu, Download, FileText,
-  Sparkles, RefreshCw, ChevronRight, Zap, Eye, Check, X
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  Play,
+  RotateCcw,
+  CheckCircle2,
+  AlertTriangle,
+  FileCode,
+  Lock,
+  ExternalLink,
+  ChevronDown,
+  Info,
+  Download,
+  FileText,
+  Check,
+  X,
+  Loader2,
+  Sparkles,
 } from "lucide-react";
-import { api } from "../../lib/api";
+import { ProviderSelector, type ProviderConfig } from "../../components/ui/ProviderSelector";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useAIStore } from "../../stores/aiStore";
-import { ProviderSelector, type ProviderConfig } from "../../components/ui/ProviderSelector";
-import { getPreset } from "../../lib/providerPresets";
+import { api } from "../../lib/api";
 
-type Finding = {
+interface AuditFinding {
   id: string;
+  rule_id?: string;
+  cwe_id?: string;
+  severity: "critical" | "high" | "medium" | "low" | "info" | string;
   file: string;
   line: number;
-  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
-  category: "secrets" | "injection" | "validation" | "resource_limits" | "auth_web";
-  cwe_id?: string;
-  title: string;
-  description: string;
-  fix_suggestion: string;
-  code_snippet: string;
-};
+  message?: string;
+  title?: string;
+  snippet?: string;
+  code_snippet?: string;
+  remediation?: string;
+  fix_suggestion?: string;
+  description?: string;
+}
 
-type AuditReport = {
-  summary: string;
-  score: number;
-  risk_level: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "CLEAN";
-  duration: number;
-  files_analyzed: number;
-  category_scores: {
-    secrets: number;
-    injection: number;
-    validation: number;
-    resource_limits: number;
-    auth_web: number;
+interface AuditReport {
+  id?: string;
+  workspace?: string;
+  timestamp: string;
+  total_files_scanned?: number;
+  duration_seconds?: number;
+  findings: AuditFinding[];
+  score: number; // 0 - 100
+  summary?: string;
+  severity_counts?: {
+    critical: number;
+    high: number;
+    medium: number;
+    low: number;
   };
-  findings: Finding[];
-  model_used: string;
-  provider_used: string;
-};
+}
 
 export function CodeVerifierPanel() {
-  const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
+  const workspace = useWorkspaceStore((state) => state.currentWorkspace);
+  const globalModel = useAIStore((state) => state.model);
+  const globalPreset = useAIStore((state) => state.preset);
+  const models = useAIStore((state) => state.models);
+
+  const [running, setRunning] = useState(false);
   const [report, setReport] = useState<AuditReport | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [selectedSeverity, setSelectedSeverity] = useState<string>("ALL");
+  const [error, setError] = useState<string | null>(null);
+  const [selectedSeverity, setSelectedSeverity] = useState<string>("all");
+  const [selectedFinding, setSelectedFinding] = useState<AuditFinding | null>(null);
+  const [showConfig, setShowConfig] = useState(false);
+
+  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
+    preset: globalPreset || "ollama",
+    model: globalModel || "llama3",
+  });
+
+  // Save Modal
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [savingFile, setSavingFile] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
-  // Provider selector state
-  const [providerConfig, setProviderConfig] = useState<ProviderConfig>({
-    preset: "auto",
-    model: "",
-  });
-  const [configuredKeys, setConfiguredKeys] = useState<string[]>([]);
-  const models = useAIStore((s) => s.models);
+  const runAudit = async () => {
+    if (!workspace) return;
+    setRunning(true);
+    setError(null);
 
-  useEffect(() => {
-    void api.get<{ provider_id: string; configured: boolean }[]>("/api/settings/api-keys")
-      .then((keys) => setConfiguredKeys(keys.filter((k) => k.configured).map((k) => k.provider_id)))
-      .catch(() => undefined);
-  }, []);
-
-  const buildProviderConfig = () => {
-    const presetObj = getPreset(providerConfig.preset);
-    return {
-      provider: presetObj?.provider || (providerConfig.preset === "ollama" ? "ollama" : "openai-compatible"),
-      preset: providerConfig.preset,
-      model: providerConfig.model || presetObj?.model_example || "llama3",
-      base_url: providerConfig.base_url || presetObj?.base_url,
-      api_key_provider: providerConfig.api_key_provider || presetObj?.api_key_provider,
-    };
-  };
-
-  const handleRunAudit = async () => {
-    if (!currentWorkspace) return;
-    setLoading(true);
     try {
-      const data = await api.post<AuditReport>("/api/agents/audit", {
-        workspace: currentWorkspace.path,
-        provider_config: buildProviderConfig(),
+      const res = await api.post<AuditReport>("/api/agents/audit", {
+        workspace: workspace.path,
+        provider_config: {
+          preset: providerConfig.preset,
+          model: providerConfig.model,
+          base_url: providerConfig.base_url,
+        },
       });
-      setReport(data);
-    } catch (err) {
-      alert("Failed to run security audit: " + (err instanceof Error ? err.message : String(err)));
+
+      if (res) {
+        setReport(res);
+        if (res.findings && res.findings.length > 0) {
+          setSelectedFinding(res.findings[0]);
+        }
+      }
+    } catch (err: any) {
+      setError(err?.message || "Failed to execute security audit scan.");
     } finally {
-      setLoading(false);
+      setRunning(false);
     }
   };
 
-  const generateMarkdownReport = (rep: AuditReport): string => {
-    let md = `# Security Audit & Code Verification Report\n\n`;
-    md += `**Workspace:** \`${currentWorkspace?.path || "Current Project"}\`\n`;
-    md += `**Date:** ${new Date().toLocaleString()}\n`;
-    md += `**Production Readiness Score:** ${rep.score}/100 (${rep.risk_level})\n`;
-    md += `**Model:** ${rep.model_used} (${rep.provider_used})\n\n`;
-    md += `## Executive Summary\n${rep.summary}\n\n`;
-    md += `## Category Sub-Scores\n`;
-    md += `- Secrets & Credentials: ${rep.category_scores.secrets}/100\n`;
-    md += `- Injection Vulnerabilities: ${rep.category_scores.injection}/100\n`;
-    md += `- Input Validation: ${rep.category_scores.validation}/100\n`;
-    md += `- Resource Exhaustion (DoS): ${rep.category_scores.resource_limits}/100\n`;
-    md += `- Auth & Web Vulnerabilities: ${rep.category_scores.auth_web}/100\n\n`;
-    const findingsList = rep.findings || [];
-    md += `## Findings (${findingsList.length})\n\n`;
+  const generateMarkdownReport = (): string => {
+    if (!report) return "";
+    const lines = [
+      `# Security Audit Report — ${workspace?.name ?? "Workspace"}`,
+      `Date: ${new Date(report.timestamp).toLocaleString()}`,
+      `Security Score: ${report.score}/100`,
+      `Total Findings: ${report.findings?.length ?? 0}`,
+      "",
+      "## Severity Breakdown",
+      `- Critical: ${counts.critical}`,
+      `- High: ${counts.high}`,
+      `- Medium: ${counts.medium}`,
+      `- Low: ${counts.low}`,
+      "",
+      "## Findings & Remediation",
+      "",
+    ];
 
-    findingsList.forEach((f, idx) => {
-      md += `### ${idx + 1}. [${f.severity}] ${f.title} (${f.cwe_id || "CWE"})\n`;
-      md += `- **File:** \`${f.file}\` (Line ${f.line})\n`;
-      md += `- **Category:** ${f.category}\n`;
-      md += `- **Description:** ${f.description}\n`;
-      md += `- **Fix Suggestion:** ${f.fix_suggestion}\n`;
-      if (f.code_snippet) {
-        md += `\n\`\`\`\n${f.code_snippet}\n\`\`\`\n`;
+    (report.findings || []).forEach((f, idx) => {
+      lines.push(`### ${idx + 1}. [${f.severity.toUpperCase()}] ${f.title || f.message || "Security Issue"}`);
+      lines.push(`**Location**: \`${f.file}:${f.line}\``);
+      if (f.cwe_id || f.rule_id) lines.push(`**Rule/CWE**: ${f.cwe_id || f.rule_id}`);
+      if (f.description) lines.push(`\n${f.description}`);
+      if (f.code_snippet || f.snippet) {
+        lines.push(`\n\`\`\`\n${f.code_snippet || f.snippet}\n\`\`\``);
       }
-      md += `\n---\n\n`;
+      if (f.fix_suggestion || f.remediation) {
+        lines.push(`\n**Recommended Fix**: ${f.fix_suggestion || f.remediation}`);
+      }
+      lines.push("\n---");
     });
 
-    return md;
+    return lines.join("\n");
   };
 
   const handleDownloadMarkdown = () => {
-    if (!report) return;
-    const md = generateMarkdownReport(report);
-    const blob = new Blob([md], { type: "text/markdown" });
+    const md = generateMarkdownReport();
+    if (!md) return;
+    const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `SECURITY_AUDIT_${Date.now()}.md`;
+    a.download = `SECURITY_AUDIT_${workspace?.name || "workspace"}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const handleSaveToWorkspace = async () => {
-    if (!report || !currentWorkspace) return;
+    if (!workspace || !report) return;
     setSavingFile(true);
     try {
-      const md = generateMarkdownReport(report);
+      const md = generateMarkdownReport();
       await api.post("/api/agents/audit/save-report", {
-        workspace: currentWorkspace.path,
+        workspace: workspace.path,
         markdown_content: md,
       });
       setSavedSuccess(true);
+      void useWorkspaceStore.getState().refreshTree();
       setTimeout(() => {
-        setSavedSuccess(false);
         setShowSaveModal(false);
+        setSavedSuccess(false);
       }, 1500);
-    } catch (err) {
-      alert("Failed to save SECURITY_AUDIT.md: " + (err instanceof Error ? err.message : String(err)));
+    } catch (err: any) {
+      setError(err?.message || "Failed to save audit report to workspace");
     } finally {
       setSavingFile(false);
     }
   };
 
-  if (!currentWorkspace) {
-    return (
-      <section className="flex h-full flex-col items-center justify-center p-4 text-center space-y-3 select-none bg-[var(--surface)] text-on-surface">
-        <Shield size={32} className="text-slate-600 animate-pulse" />
-        <span className="text-xs text-slate-400 font-mono">Open a workspace to access the Security Auditor Agent.</span>
-      </section>
-    );
-  }
+  const findings = report?.findings || [];
+  const filteredFindings = findings.filter(
+    (f) => selectedSeverity === "all" || f.severity.toLowerCase() === selectedSeverity.toLowerCase()
+  );
 
-  const filteredFindings = (report?.findings || []).filter((f) => {
-    if (selectedSeverity === "ALL") return true;
-    return f.severity === selectedSeverity;
-  });
-
-  const getScoreColor = (score: number) => {
-    if (score >= 90) return "text-emerald-400 border-emerald-500/40 bg-emerald-950/20";
-    if (score >= 75) return "text-cyan-400 border-cyan-500/40 bg-cyan-950/20";
-    if (score >= 50) return "text-amber-400 border-amber-500/40 bg-amber-950/20";
-    return "text-rose-400 border-rose-500/40 bg-rose-950/20";
-  };
-
-  const getSeverityBadge = (sev: string) => {
-    switch (sev) {
-      case "CRITICAL": return <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded text-[10px] font-bold">CRITICAL</span>;
-      case "HIGH": return <span className="bg-orange-500/10 text-orange-400 border border-orange-500/30 px-2 py-0.5 rounded text-[10px] font-bold">HIGH</span>;
-      case "MEDIUM": return <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded text-[10px] font-bold">MEDIUM</span>;
-      default: return <span className="bg-slate-500/10 text-slate-400 border border-slate-500/30 px-2 py-0.5 rounded text-[10px] font-bold">LOW</span>;
-    }
+  const counts = {
+    critical: report?.severity_counts?.critical ?? findings.filter((f) => f.severity.toLowerCase() === "critical").length,
+    high: report?.severity_counts?.high ?? findings.filter((f) => f.severity.toLowerCase() === "high").length,
+    medium: report?.severity_counts?.medium ?? findings.filter((f) => f.severity.toLowerCase() === "medium").length,
+    low: report?.severity_counts?.low ?? findings.filter((f) => f.severity.toLowerCase() === "low").length,
   };
 
   return (
-    <main data-testid="code-verifier-panel" className="flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-6 bg-[var(--surface)] text-on-surface h-full select-none font-mono">
-      {/* Top Header */}
-      <div className="flex justify-between items-center pb-4 border-b border-white/5 flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-primary/10 border border-primary/30 text-primary">
-            <ShieldCheck size={24} />
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-background text-on-surface font-ui-label-reg text-ui-label-reg antialiased select-none">
+      {/* ── Contextual Verifier Header ──────────────────────────────────────── */}
+      <div className="level-1-panel px-6 py-4 flex justify-between items-center border-b border-surface-variant/50 shrink-0">
+        <div className="flex items-center gap-4">
+          <div className="bg-primary-container/10 p-2 rounded-lg text-primary">
+            <span className="material-symbols-outlined text-2xl" style={{ fontVariationSettings: "'FILL' 1" }}>
+              shield
+            </span>
           </div>
           <div>
-            <h1 className="font-bold text-on-surface text-base sm:text-lg tracking-tight">Code Verification Agent</h1>
-            <p className="text-xs text-on-surface-variant">Multi-model SAST & production-readiness security auditor</p>
+            <h1 className="font-headline-md text-headline-md text-on-surface font-bold">
+              Code Verification Agent
+            </h1>
+            <p className="font-caption text-caption text-on-surface-variant mt-0.5">
+              Multi-pass SAST security audit for SQL injection, exposed credentials, and logic flaws.
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-3 flex-wrap">
-          <ProviderSelector
-            value={providerConfig}
-            onChange={setProviderConfig}
-            configuredKeys={configuredKeys}
-            models={models}
-            compact
-          />
+        <div className="flex items-center gap-4">
+          {/* Model Selector Dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowConfig(!showConfig)}
+              className="level-2-panel rounded-full px-4 py-2 flex items-center gap-2 cursor-pointer hover:bg-surface-variant transition-colors border border-outline-variant/30 glow-accent text-xs"
+            >
+              <span className="material-symbols-outlined text-[16px] text-primary">smart_toy</span>
+              <span className="font-ui-label-bold text-ui-label-bold text-on-surface">{providerConfig.model}</span>
+              <ChevronDown size={14} className="text-on-surface-variant ml-1" />
+            </button>
 
-          <button
-            onClick={() => void handleRunAudit()}
-            disabled={loading}
-            className="bg-primary/10 text-primary border border-primary/40 hover:bg-primary/20 px-4 py-2 rounded-full text-xs font-bold transition-all flex items-center gap-2 shadow-[0_0_15px_rgba(0,229,255,0.15)] disabled:opacity-50"
-          >
-            {loading ? (
-              <>
-                <RefreshCw size={14} className="animate-spin" />
-                <span>Auditing Workspace...</span>
-              </>
-            ) : (
-              <>
-                <Sparkles size={14} />
-                <span>Run Security Audit</span>
-              </>
+            {showConfig && (
+              <div className="absolute right-0 top-12 z-50 w-72 bg-[#1e1f24] border border-surface-container-high rounded-xl p-3 shadow-2xl">
+                <ProviderSelector
+                  value={providerConfig}
+                  onChange={(cfg) => {
+                    setProviderConfig(cfg);
+                    setShowConfig(false);
+                  }}
+                  models={models}
+                  compact
+                />
+              </div>
             )}
-          </button>
+          </div>
+
+          {/* Status Badge */}
+          <div className="bg-primary/10 text-primary px-3 py-1 rounded-full font-caption text-caption flex items-center gap-2 border border-primary/20">
+            <div className={`w-1.5 h-1.5 rounded-full bg-primary ${running ? "animate-spin" : "animate-pulse"}`} />
+            <span>{running ? "AUDITING WORKSPACE..." : report ? "AUDIT COMPLETED" : "READY"}</span>
+          </div>
         </div>
       </div>
 
-      {/* Main Content Area */}
-      {report ? (
-        <div className="flex flex-col gap-6">
-          {/* Dashboard Summary Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-            {/* Score Ring / Dial Card */}
-            <div className={`md:col-span-4 glass-panel rounded-lg p-5 border flex flex-col justify-between items-center text-center ${getScoreColor(report.score)}`}>
-              <span className="text-[10px] uppercase font-bold tracking-wider opacity-80">Production Readiness Score</span>
-              <div className="my-3 relative flex items-center justify-center">
-                <div className="text-4xl font-black font-mono tracking-tighter">{report.score}</div>
-                <span className="text-xs font-bold text-slate-400 ml-1">/ 100</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider">{report.risk_level} RISK</span>
-                <span className="text-[10px] text-slate-400">({report.findings?.length ?? 0} findings)</span>
+      {error && (
+        <div className="m-6 mb-0 rounded-xl border border-error/40 bg-error/10 p-4 text-xs text-error flex items-center justify-between shadow-lg">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} />
+            <span>{error}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void runAudit()}
+              className="px-3 py-1 bg-error text-on-error font-bold rounded-full hover:bg-error-container transition-colors cursor-pointer"
+            >
+              Retry
+            </button>
+            <button onClick={() => setError(null)} className="text-error hover:opacity-80">
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Main Canvas View (Empty State, Loading, or Report) ──────────────── */}
+      {running ? (
+        <main className="flex-1 flex flex-col items-center justify-center p-8 space-y-4">
+          <div className="w-16 h-16 rounded-full bg-primary-container/10 border border-primary-container/30 flex items-center justify-center text-primary-container animate-pulse shadow-[0_0_30px_rgba(0,218,243,0.3)]">
+            <Loader2 size={32} className="animate-spin" />
+          </div>
+          <div className="text-center space-y-1">
+            <h3 className="font-headline-md text-headline-md text-on-surface font-bold">Scanning Codebase Files...</h3>
+            <p className="text-xs text-on-surface-variant font-mono">Running AST and SAST heuristic security rules via {providerConfig.model}</p>
+          </div>
+        </main>
+      ) : !report ? (
+        <main className="flex-1 bg-background overflow-y-auto flex flex-col items-center justify-center p-6 relative empty-state-shield-container">
+          {/* Decorative Radial Grid */}
+          <div className="absolute inset-0 pointer-events-none overflow-hidden">
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-primary/5 rounded-full blur-[100px] opacity-30" />
+            <div
+              className="absolute inset-0"
+              style={{
+                backgroundImage: "radial-gradient(#353437 1px, transparent 1px)",
+                backgroundSize: "24px 24px",
+                opacity: 0.15,
+              }}
+            />
+          </div>
+
+          {/* Center Card */}
+          <div className="level-2-panel p-10 rounded-[32px] border border-outline-variant/20 flex flex-col items-center text-center max-w-2xl relative z-10 glow-accent shadow-2xl">
+            {/* Hero Icon */}
+            <div className="relative mb-8 group cursor-pointer" onClick={() => void runAudit()}>
+              <div className="absolute inset-0 bg-primary rounded-full blur-xl opacity-20 group-hover:opacity-40 transition-opacity duration-500" />
+              <div className="w-32 h-32 level-2-panel rounded-full flex items-center justify-center border border-outline-variant/30 relative z-10 shadow-[0_0_40px_rgba(0,0,0,0.5)]">
+                <span
+                  className="material-symbols-outlined text-[64px] text-primary transition-transform duration-300 group-hover:scale-110"
+                  style={{ fontVariationSettings: "'FILL' 1" }}
+                >
+                  admin_panel_settings
+                </span>
               </div>
             </div>
 
-            {/* Category Breakdown */}
-            <div className="md:col-span-8 glass-panel rounded-lg p-5 border border-white/5 bg-surface-container-lowest flex flex-col justify-between">
-              <div className="flex justify-between items-center mb-3">
-                <span className="text-xs font-bold uppercase tracking-wider text-on-surface">Category Security Sub-Scores</span>
-                <span className="text-[10px] text-slate-400">Model: {report.model_used}</span>
+            <h2 className="font-display-lg text-display-lg text-on-surface mb-4">
+              Ready to Audit Workspace Security
+            </h2>
+
+            <p className="font-ui-label-reg text-ui-label-reg text-on-surface-variant mb-8 max-w-lg leading-relaxed">
+              The Verification Agent will analyze your active workspace repository to detect vulnerabilities including <span className="font-code-sm text-code-sm text-secondary bg-secondary/10 px-1 rounded">SQLi</span>, exposed API secrets, missing input boundary sanitization, and insecure dependencies.
+            </p>
+
+            {/* Action CTA Button */}
+            <button
+              onClick={() => void runAudit()}
+              className="bg-primary-container text-[#0a0a0c] font-ui-label-bold text-ui-label-bold px-8 py-4 rounded-full flex items-center gap-3 hover:bg-primary transition-all shadow-[0_0_20px_rgba(0,218,243,0.25)] hover:shadow-[0_0_30px_rgba(0,218,243,0.45)] hover:scale-[1.02] cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-2xl">play_circle</span>
+              <span>Run Security Audit Now</span>
+            </button>
+          </div>
+
+          <div className="absolute bottom-6 left-6 right-6 flex justify-between items-end pointer-events-none opacity-50 hidden md:flex">
+            <div className="font-code-sm text-code-sm text-on-surface-variant font-mono">
+              Target: <span className="text-on-surface font-semibold">{workspace?.path ?? "No active directory"}</span>
+            </div>
+            <div className="font-code-sm text-code-sm text-on-surface-variant flex items-center gap-2 font-mono">
+              <span className="w-2 h-2 rounded-full bg-outline" /> Auditor: Ready
+            </div>
+          </div>
+        </main>
+      ) : (
+        /* ── Report Results View ───────────────────────────────────────────── */
+        <main className="flex-1 flex flex-col min-h-0 overflow-y-auto p-6 space-y-6">
+          {/* Top Score & Metrics Bar */}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            <div className="bg-surface-container-low rounded-xl border border-surface-container-high p-5 flex items-center justify-between col-span-1 shadow-md">
+              <div>
+                <span className="font-caption text-caption text-on-surface-variant uppercase tracking-wider block">Security Score</span>
+                <span className="text-3xl font-black text-primary-container mt-1 block">{report.score}/100</span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
-                <div className="p-2 rounded bg-surface-container border border-white/5">
-                  <div className="text-[9px] text-slate-400 mb-1">🔑 Secrets</div>
-                  <div className="font-bold text-emerald-400">{report.category_scores?.secrets ?? 100}</div>
-                </div>
-                <div className="p-2 rounded bg-surface-container border border-white/5">
-                  <div className="text-[9px] text-slate-400 mb-1">💉 Injection</div>
-                  <div className="font-bold text-cyan-400">{report.category_scores?.injection ?? 100}</div>
-                </div>
-                <div className="p-2 rounded bg-surface-container border border-white/5">
-                  <div className="text-[9px] text-slate-400 mb-1">🛡️ Validation</div>
-                  <div className="font-bold text-amber-400">{report.category_scores?.validation ?? 100}</div>
-                </div>
-                <div className="p-2 rounded bg-surface-container border border-white/5">
-                  <div className="text-[9px] text-slate-400 mb-1">⚡ DoS Limits</div>
-                  <div className="font-bold text-violet-400">{report.category_scores?.resource_limits ?? 100}</div>
-                </div>
-                <div className="p-2 rounded bg-surface-container border border-white/5">
-                  <div className="text-[9px] text-slate-400 mb-1">🌐 Web/Auth</div>
-                  <div className="font-bold text-blue-400">{report.category_scores?.auth_web ?? 100}</div>
-                </div>
+              <span className="material-symbols-outlined text-primary-container text-4xl" style={{ fontVariationSettings: "'FILL' 1" }}>
+                verified
+              </span>
+            </div>
+
+            <div className="bg-surface-container-low rounded-xl border border-surface-container-high p-5 flex items-center justify-between shadow-md">
+              <div>
+                <span className="font-caption text-caption text-error uppercase tracking-wider block">Critical</span>
+                <span className="text-2xl font-bold text-error mt-1 block">{counts.critical}</span>
+              </div>
+            </div>
+
+            <div className="bg-surface-container-low rounded-xl border border-surface-container-high p-5 flex items-center justify-between shadow-md">
+              <div>
+                <span className="font-caption text-caption text-amber-400 uppercase tracking-wider block">High</span>
+                <span className="text-2xl font-bold text-amber-400 mt-1 block">{counts.high}</span>
+              </div>
+            </div>
+
+            <div className="bg-surface-container-low rounded-xl border border-surface-container-high p-5 flex items-center justify-between shadow-md">
+              <div>
+                <span className="font-caption text-caption text-secondary uppercase tracking-wider block">Medium</span>
+                <span className="text-2xl font-bold text-secondary mt-1 block">{counts.medium}</span>
+              </div>
+            </div>
+
+            <div className="bg-surface-container-low rounded-xl border border-surface-container-high p-5 flex items-center justify-between shadow-md">
+              <div>
+                <span className="font-caption text-caption text-on-surface-variant uppercase tracking-wider block">Low</span>
+                <span className="text-2xl font-bold text-on-surface-variant mt-1 block">{counts.low}</span>
               </div>
             </div>
           </div>
 
-          {/* Action Toolbar */}
-          <div className="flex justify-between items-center flex-wrap gap-3 glass-panel p-3 rounded-lg border border-white/5">
-            {/* Filter Pills */}
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] text-slate-400 uppercase font-bold mr-1">Filter:</span>
-              {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map((sev) => (
+          {/* Action & Filter Row */}
+          <div className="flex justify-between items-center flex-wrap gap-4">
+            <div className="flex gap-2">
+              {["all", "critical", "high", "medium", "low"].map((sev) => (
                 <button
                   key={sev}
                   onClick={() => setSelectedSeverity(sev)}
-                  className={`text-[10px] font-bold px-2.5 py-1 rounded border transition-colors ${
+                  className={`px-3.5 py-1.5 rounded-full font-caption text-caption uppercase font-bold transition-all cursor-pointer ${
                     selectedSeverity === sev
-                      ? "bg-primary/20 text-primary border-primary/40"
-                      : "bg-surface-container text-slate-400 border-white/5 hover:text-on-surface"
+                      ? "bg-primary-container text-[#001f24] shadow-md"
+                      : "bg-surface-container-high text-on-surface-variant hover:text-on-surface"
                   }`}
                 >
                   {sev}
@@ -297,156 +394,183 @@ export function CodeVerifierPanel() {
               ))}
             </div>
 
-            {/* Export Buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-3">
               <button
                 onClick={handleDownloadMarkdown}
-                className="text-xs bg-surface-container border border-white/10 hover:bg-white/5 text-on-surface px-3 py-1.5 rounded flex items-center gap-1.5 font-bold transition-all"
+                className="bg-surface-container-high hover:bg-surface-variant border border-outline-variant/30 text-on-surface px-4 py-2 rounded-full font-ui-label-bold text-xs flex items-center gap-2 transition-colors cursor-pointer shadow-sm"
               >
                 <Download size={13} />
                 <span>Download Report (.md)</span>
               </button>
+
               <button
                 onClick={() => setShowSaveModal(true)}
-                className="text-xs bg-primary-container text-on-primary-container hover:opacity-90 px-3 py-1.5 rounded flex items-center gap-1.5 font-bold transition-all shadow-[0_0_10px_rgba(0,229,255,0.2)]"
+                className="bg-primary-container text-[#001f24] hover:bg-primary-fixed px-4 py-2 rounded-full font-ui-label-bold text-xs flex items-center gap-2 transition-all shadow-md cursor-pointer"
               >
                 <FileText size={13} />
                 <span>Save to Workspace</span>
               </button>
+
+              <button
+                onClick={() => void runAudit()}
+                className="bg-surface-container-high hover:bg-surface-variant border border-outline-variant/30 text-on-surface px-4 py-2 rounded-full text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <RotateCcw size={12} />
+                <span>Re-run Audit</span>
+              </button>
             </div>
           </div>
 
-          {/* Findings List */}
-          <div className="flex flex-col gap-3">
-            <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Audit Findings ({filteredFindings.length})
-            </div>
-
-            {filteredFindings.length === 0 ? (
-              <div className="p-8 text-center glass-panel rounded-lg border border-white/5 text-slate-400 text-xs">
-                <CheckCircle2 size={24} className="mx-auto text-emerald-400 mb-2" />
-                No security findings matching the selected filter.
-              </div>
-            ) : (
-              filteredFindings.map((finding) => (
-                <div
-                  key={finding.id}
-                  className="glass-panel rounded-lg p-4 border border-white/5 bg-surface-container-lowest flex flex-col gap-2 relative overflow-hidden"
-                >
-                  {/* Left accent bar */}
-                  <div className={`absolute top-0 left-0 w-1 h-full ${
-                    finding.severity === "CRITICAL" ? "bg-rose-500" :
-                    finding.severity === "HIGH" ? "bg-amber-500" :
-                    finding.severity === "MEDIUM" ? "bg-yellow-500" : "bg-slate-500"
-                  }`} />
-
-                  {/* Finding Title & Badges */}
-                  <div className="flex justify-between items-start flex-wrap gap-2">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[9px] px-2 py-0.5 rounded border uppercase ${getSeverityBadge(finding.severity)}`}>
+          {/* Findings List & Details Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-6 flex-1 min-h-0">
+            {/* Left List */}
+            <div className="md:col-span-5 space-y-3 overflow-y-auto max-h-[500px] pr-2">
+              {filteredFindings.length === 0 ? (
+                <div className="p-8 text-center bg-surface-container-low rounded-xl border border-surface-container-high text-on-surface-variant text-xs space-y-2">
+                  <CheckCircle2 size={24} className="mx-auto text-emerald-400" />
+                  <p>No security findings match the selected severity filter.</p>
+                </div>
+              ) : (
+                filteredFindings.map((finding) => (
+                  <div
+                    key={finding.id}
+                    onClick={() => setSelectedFinding(finding)}
+                    className={`p-4 rounded-xl border transition-all cursor-pointer shadow-md ${
+                      selectedFinding?.id === finding.id
+                        ? "bg-surface-container-high border-primary-container/50 shadow-lg shadow-primary-container/5"
+                        : "bg-surface-container-low border-surface-container-high hover:border-outline-variant/40"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase font-mono ${
+                        finding.severity.toLowerCase() === "critical" || finding.severity.toLowerCase() === "high"
+                          ? "bg-error/20 text-error border border-error/30"
+                          : finding.severity.toLowerCase() === "medium"
+                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                            : "bg-secondary/20 text-secondary border border-secondary/30"
+                      }`}>
                         {finding.severity}
                       </span>
-                      {finding.cwe_id && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded border border-white/10 text-slate-400 font-mono">
-                          {finding.cwe_id}
-                        </span>
-                      )}
-                      <span className="text-xs font-bold text-on-surface">{finding.title}</span>
+                      <span className="font-mono text-[11px] text-on-surface-variant">
+                        {finding.cwe_id || finding.rule_id || "SAST"}
+                      </span>
                     </div>
-
-                    <span className="text-[10px] text-slate-400 font-mono bg-surface-container px-2 py-0.5 rounded border border-white/5">
+                    <h4 className="font-ui-label-bold text-ui-label-bold text-on-surface mb-1 truncate">
+                      {finding.title || finding.message || "Vulnerability Detected"}
+                    </h4>
+                    <span className="font-code-sm text-code-sm text-outline-variant truncate block">
                       {finding.file}:{finding.line}
                     </span>
                   </div>
+                ))
+              )}
+            </div>
 
-                  {/* Description */}
-                  <p className="text-xs text-slate-300 leading-relaxed">{finding.description}</p>
+            {/* Right Details Panel */}
+            <div className="md:col-span-7 bg-surface-container-low rounded-xl border border-surface-container-high p-6 flex flex-col gap-4 shadow-md">
+              {selectedFinding ? (
+                <>
+                  <div className="border-b border-surface-variant pb-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="px-2.5 py-0.5 rounded text-xs font-bold uppercase font-mono bg-error/20 text-error border border-error/30">
+                        {selectedFinding.severity}
+                      </span>
+                      <span className="font-mono text-xs text-on-surface-variant">
+                        {selectedFinding.cwe_id || selectedFinding.rule_id}
+                      </span>
+                    </div>
+                    <h3 className="font-headline-md text-headline-md text-on-surface font-bold">
+                      {selectedFinding.title || selectedFinding.message}
+                    </h3>
+                    <p className="font-code-sm text-code-sm text-primary mt-1 font-mono">
+                      {selectedFinding.file}:{selectedFinding.line}
+                    </p>
+                  </div>
 
-                  {/* Code Snippet */}
-                  {finding.code_snippet && (
-                    <div className="bg-surface-container-lowest p-2.5 rounded border border-white/5 text-[11px] font-mono overflow-x-auto text-rose-300">
-                      {finding.code_snippet}
+                  {selectedFinding.description && (
+                    <p className="text-xs text-on-surface-variant leading-relaxed">
+                      {selectedFinding.description}
+                    </p>
+                  )}
+
+                  {(selectedFinding.code_snippet || selectedFinding.snippet) && (
+                    <div>
+                      <span className="font-caption text-caption text-on-surface-variant uppercase tracking-wider block mb-1.5">
+                        Affected Code Snippet
+                      </span>
+                      <div className="bg-[#0a0a0c] border border-surface-variant rounded-lg p-3 font-code-sm text-code-sm text-error whitespace-pre-wrap font-mono">
+                        {selectedFinding.code_snippet || selectedFinding.snippet}
+                      </div>
                     </div>
                   )}
 
-                  {/* Fix Suggestion */}
-                  <div className="mt-1 p-2.5 rounded bg-emerald-950/20 border border-emerald-800/30 text-emerald-300 text-xs">
-                    <span className="font-bold block mb-0.5 text-emerald-400">💡 Suggested Fix:</span>
-                    {finding.fix_suggestion}
-                  </div>
+                  {(selectedFinding.fix_suggestion || selectedFinding.remediation) && (
+                    <div className="mt-2 bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-4">
+                      <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs mb-1.5">
+                        <CheckCircle2 size={14} />
+                        <span>Recommended Remediation</span>
+                      </div>
+                      <p className="text-xs text-on-surface leading-relaxed">
+                        {selectedFinding.fix_suggestion || selectedFinding.remediation}
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="h-full flex items-center justify-center text-xs text-on-surface-variant/50 p-8 text-center">
+                  Select a security finding on the left to inspect details.
                 </div>
-              ))
-            )}
+              )}
+            </div>
           </div>
-        </div>
-      ) : (
-        /* Empty State */
-        <div className="flex-1 glass-panel rounded-lg border border-white/5 flex flex-col items-center justify-center p-8 text-center space-y-4">
-          <div className="p-4 rounded-full bg-primary/10 border border-primary/30 text-primary">
-            <ShieldCheck size={36} />
-          </div>
-          <div>
-            <h2 className="text-base font-bold text-on-surface">Ready to Audit Workspace Security</h2>
-            <p className="text-xs text-slate-400 max-w-md mt-1 leading-relaxed">
-              Run a multi-pass security verification check to audit SQL injection, exposed API keys/secrets, missing input validation, DDoS/resource limits, and web vulnerabilities.
-            </p>
-          </div>
-          <button
-            onClick={() => void handleRunAudit()}
-            disabled={loading}
-            className="bg-primary/10 text-primary border border-primary/40 hover:bg-primary/20 px-6 py-2.5 rounded-full text-xs font-bold transition-all flex items-center gap-2 shadow-[0_0_15px_rgba(0,229,255,0.15)] disabled:opacity-50"
-          >
-            <Sparkles size={14} />
-            <span>Run Security Audit Now</span>
-          </button>
-        </div>
+        </main>
       )}
 
-      {/* Explicit Save Confirmation Modal */}
+      {/* ── Save to Workspace Modal ────────────────────────────────────────── */}
       {showSaveModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="glass-panel rounded-xl p-6 border border-white/10 max-w-md w-full flex flex-col gap-4 bg-surface-container-high text-on-surface">
+          <div className="rounded-2xl p-6 border border-surface-container-high max-w-md w-full flex flex-col gap-4 bg-[#1e1f24] text-on-surface shadow-2xl">
             <div className="flex justify-between items-center">
               <div className="flex items-center gap-2 text-primary font-bold text-sm">
                 <FileText size={18} />
                 <span>Save Security Audit to Workspace?</span>
               </div>
-              <button onClick={() => setShowSaveModal(false)} className="text-slate-400 hover:text-on-surface">
+              <button onClick={() => setShowSaveModal(false)} className="text-on-surface-variant hover:text-on-surface">
                 <X size={16} />
               </button>
             </div>
 
-            <p className="text-xs text-slate-300 leading-relaxed">
-              This will write the generated audit report to <code className="text-primary font-mono font-bold bg-surface-container px-1 py-0.5 rounded">SECURITY_AUDIT.md</code> inside your workspace root (<span className="font-mono text-slate-400">{currentWorkspace.name}</span>).
+            <p className="text-xs text-on-surface-variant leading-relaxed">
+              This will write the generated audit report to <code className="text-primary font-mono font-bold bg-[#131315] px-1.5 py-0.5 rounded">SECURITY_AUDIT.md</code> inside your workspace root (<span className="font-mono text-on-surface font-semibold">{workspace?.name}</span>).
             </p>
 
             {savedSuccess ? (
-              <div className="p-3 rounded bg-emerald-950/40 border border-emerald-600/40 text-emerald-300 text-xs font-bold flex items-center gap-2">
+              <div className="p-3 rounded-lg bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-xs font-bold flex items-center gap-2">
                 <Check size={16} />
                 <span>Saved SECURITY_AUDIT.md successfully!</span>
               </div>
             ) : (
-              <div className="flex justify-end gap-2 mt-2">
+              <div className="flex justify-end gap-3 mt-2">
                 <button
                   onClick={() => setShowSaveModal(false)}
                   disabled={savingFile}
-                  className="px-4 py-1.5 rounded border border-white/10 text-xs font-bold text-slate-300 hover:bg-white/5"
+                  className="px-4 py-1.5 rounded-full border border-outline text-xs font-bold text-on-surface hover:bg-surface-variant transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   onClick={() => void handleSaveToWorkspace()}
                   disabled={savingFile}
-                  className="px-4 py-1.5 rounded bg-primary text-slate-950 text-xs font-bold hover:bg-primary/90 flex items-center gap-1.5"
+                  className="px-5 py-1.5 rounded-full bg-primary-container text-[#001f24] text-xs font-bold hover:bg-primary-fixed flex items-center gap-1.5 transition-all shadow-md cursor-pointer disabled:opacity-40"
                 >
-                  {savingFile ? <RefreshCw size={12} className="animate-spin" /> : <Check size={12} />}
-                  <span>Authorize & Save</span>
+                  {savingFile ? <Loader2 size={12} className="animate-spin" /> : <Check size={14} />}
+                  <span>Authorize &amp; Save</span>
                 </button>
               </div>
             )}
           </div>
         </div>
       )}
-    </main>
+    </div>
   );
 }

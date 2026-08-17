@@ -105,8 +105,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://api.groq.com/openai/v1",
     api_key_provider: "groq",
-    model_placeholder: "llama-3.3-70b-versatile, mixtral-8x7b-32768…",
-    model_example: "llama-3.3-70b-versatile",
+    model_placeholder: "openai/gpt-oss-120b, llama-3.3-70b-versatile…",
+    model_example: "openai/gpt-oss-120b",
     group: "api",
   },
   {
@@ -137,6 +137,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     api_key_provider: "openrouter",
     model_placeholder: "openai/gpt-4o, anthropic/claude-3.5-sonnet…",
     model_example: "openai/gpt-4o",
+    api_key_prefix: "sk-or-v1-",
     note:
       "OpenRouter is a meta-provider that routes to 100+ models from OpenAI, Anthropic, Google, " +
       "Meta, Mistral, and others — all through one API key. Model name format: 'provider/model-name'.",

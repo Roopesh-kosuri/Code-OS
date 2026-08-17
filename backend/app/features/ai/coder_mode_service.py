@@ -35,7 +35,7 @@ async def execute_coder_mode(req: CoderModeRequest) -> Dict[str, Any]:
         if req.target_file:
             tf_path = ws_path / req.target_file
             if tf_path.exists() and tf_path.is_file():
-                content = tf_path.read_text(encoding="utf-8", errors="ignore")[:4000]
+                content = tf_path.read_text(encoding="utf-8", errors="ignore")[:30000]
                 grounded_snippets.append(f"Target File: {req.target_file}\n```\n{content}\n```")
 
         if not grounded_snippets:

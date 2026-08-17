@@ -133,12 +133,7 @@ try:
     
     # Terminals (allowed, but might return 500 if terminal shell creation fails or 200/201 if successful)
     # MCP Calls
-<<<<<<< HEAD
-    test_endpoint("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 200, "TRUSTED MCP write_file (filesystem, allowed -> 200)")
-=======
     _run_endpoint_test("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 200, "TRUSTED MCP write_file (filesystem, allowed -> 200)")
-
->>>>>>> 4132f1f (Security patches and ui upgrade)
 
 finally:
     print("\nShutting down server...")

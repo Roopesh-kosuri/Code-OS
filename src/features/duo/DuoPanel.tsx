@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Play,
   Square,
@@ -11,22 +11,22 @@ import {
   Loader2,
   FileDiff,
   Zap,
-  History,
+  RotateCcw,
+  RefreshCw,
+  Check,
+  X,
+  Eye,
+  Sparkles,
 } from "lucide-react";
 import { ProviderSelector, type ProviderConfig } from "../../components/ui/ProviderSelector";
-import { getPreset } from "../../lib/providerPresets";
+import { PROVIDER_PRESETS } from "../../lib/providerPresets";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useAIStore } from "../../stores/aiStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { api } from "../../lib/api";
 
-const API = "http://127.0.0.1:8000";
-
-
-// ── Types (mirroring backend schemas) ────────────────────────────────────────
-
 interface ModelConfig {
-  provider: "ollama" | "openai-compatible";
+  provider: "ollama" | "openai" | "anthropic" | "groq" | "deepseek" | "mistral" | "openrouter" | "nvidia" | "gemini" | string;
   model: string;
   base_url?: string;
   temperature?: number;
@@ -34,7 +34,7 @@ interface ModelConfig {
 
 interface CriticIssue {
   description: string;
-  severity: "high" | "medium" | "low";
+  severity: "high" | "medium" | "low" | string;
   suggested_fix?: string;
 }
 
@@ -50,12 +50,14 @@ interface DuoRound {
   proposal_id: string | null;
   critic_verdict: CriticVerdict | null;
   created_at: string;
+  duration_sec?: number;
 }
 
 interface DuoSession {
   id: string;
   workspace: string;
   task_description: string;
+  critic_instructions?: string;
   status: "running" | "approved" | "unresolved" | "cancelled" | "error" | "waiting_for_recovery";
   current_round: number;
   max_rounds: number;
@@ -64,870 +66,671 @@ interface DuoSession {
   generator: ModelConfig;
   critic: ModelConfig;
   created_at: string;
-  pending_action?: {
-    type: string;
-    details: string;
-  };
 }
 
-function severityColor(s: string) {
-  if (s === "high") return "text-red-400 bg-red-400/10 border-red-500/30";
-  if (s === "medium") return "text-amber-400 bg-amber-400/10 border-amber-500/30";
-  return "text-sky-400 bg-sky-400/10 border-sky-500/30";
-}
+export function DuoPanel({ compact = false }: { compact?: boolean }) {
+  const workspace = useWorkspaceStore((state) => state.currentWorkspace);
+  const models = useAIStore((state) => state.models);
+  const globalModel = useAIStore((state) => state.model);
 
-function StatusBadge({ status }: { status: DuoSession["status"] }) {
-  const map: Record<string, { label: string; cls: string; icon: React.ReactNode }> = {
-    running: { label: "Running", cls: "text-blue-400 bg-blue-400/10 border-blue-500/30", icon: <Loader2 size={11} className="animate-spin" /> },
-    waiting_for_recovery: { label: "Recovery Needed", cls: "text-amber-400 bg-amber-400/10 border-amber-500/30", icon: <AlertTriangle size={11} className="animate-pulse" /> },
-    approved: { label: "Approved", cls: "text-emerald-400 bg-emerald-400/10 border-emerald-500/30", icon: <CheckCircle2 size={11} /> },
-    unresolved: { label: "Unresolved", cls: "text-amber-400 bg-amber-400/10 border-amber-500/30", icon: <AlertTriangle size={11} /> },
-    cancelled: { label: "Cancelled", cls: "text-slate-400 bg-surface-700 border-surface-600", icon: <Square size={11} /> },
-    error: { label: "Error", cls: "text-red-400 bg-red-400/10 border-red-500/30", icon: <XCircle size={11} /> },
-  };
-  const { label, cls, icon } = map[status] ?? map.error;
-  return (
-    <span className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${cls}`}>
-      {icon} {label}
-    </span>
-  );
-}
+  const [generatorTask, setGeneratorTask] = useState("");
+  const [criticInstructions, setCriticInstructions] = useState("");
+  const [maxRounds, setMaxRounds] = useState(5);
 
-// (ModelConfigForm replaced by shared ProviderSelector component)
+  const [genConfig, setGenConfig] = useState<ProviderConfig>({
+    preset: "ollama",
+    model: globalModel || "llama3",
+  });
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+  const [criticConfig, setCriticConfig] = useState<ProviderConfig>({
+    preset: "anthropic",
+    model: "claude-3-5-sonnet-20241022",
+  });
 
-function RoundCard({ round, isLatest }: { round: DuoRound; isLatest: boolean }) {
-  const [expanded, setExpanded] = useState(isLatest);
-  const verdict = round.critic_verdict;
-  const isGenerating = verdict === null;
+  const [activeSession, setActiveSession] = useState<DuoSession | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [applyingProposal, setApplyingProposal] = useState(false);
+  const [appliedSuccess, setAppliedSuccess] = useState(false);
+  const [recoveryProvider, setRecoveryProvider] = useState<string>("groq");
+  const [recoveryModel, setRecoveryModel] = useState<string>("llama-3.3-70b-versatile");
 
-  const switchToDiff = () => {
-    window.dispatchEvent(new CustomEvent("code-os:switch-utility", { detail: "diff" }));
-  };
+  // Poll active session
+  const fetchSession = async () => {
+    if (!workspace) return;
+    try {
+      if (activeSession?.id) {
+        const session = await api.get<DuoSession>(`/api/duo/sessions/${activeSession.id}`);
+        if (session) {
+          setActiveSession(session);
+          return;
+        }
+      }
 
-  return (
-    <div className={`rounded-xl border transition-all glass-panel overflow-hidden ${isLatest ? "border-primary-container/40 shadow-lg shadow-primary-container/5" : "border-outline-variant/20"}`}>
-      {/* Round header */}
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className="flex w-full items-center justify-between px-3.5 py-2.5 text-left bg-surface-container-high/40 hover:bg-surface-container-high/80 transition-colors"
-      >
-        <div className="flex items-center gap-2.5">
-          <span className="font-label-caps text-label-caps text-primary tracking-wider uppercase bg-primary-container/10 border border-primary-container/30 px-2 py-0.5 rounded-full">
-            Round {round.round_number}
-          </span>
-          {isGenerating && (
-            <span className="flex items-center gap-1 text-[11px] font-medium text-primary animate-pulse">
-              <Loader2 size={12} className="animate-spin" /> Generating &amp; Reviewing…
-            </span>
-          )}
-          {verdict?.approved && (
-            <span className="flex items-center gap-1 font-label-caps text-label-caps text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-              <CheckCircle2 size={11} /> VERDICT: APPROVED
-            </span>
-          )}
-          {verdict && !verdict.approved && (
-            <span className="flex items-center gap-1 font-label-caps text-label-caps text-error bg-error/10 border border-error/30 px-2 py-0.5 rounded-full">
-              <XCircle size={11} /> VERDICT: REJECTED ({(verdict.issues?.length ?? 0)} issue{(verdict.issues?.length ?? 0) !== 1 ? "s" : ""})
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {round.proposal_id && (
-            <button
-              onClick={(e) => { e.stopPropagation(); switchToDiff(); }}
-              className="flex items-center gap-1 rounded-lg bg-primary-container/15 border border-primary-container/30 px-2 py-1 text-xs font-medium text-primary hover:bg-primary-container/25 transition-all active:scale-95 duration-200"
-              title="View this proposal in DiffViewer"
-            >
-              <FileDiff size={12} /> View Diff
-            </button>
-          )}
-          {expanded ? <ChevronDown size={14} className="text-on-surface-variant" /> : <ChevronRight size={14} className="text-on-surface-variant" />}
-        </div>
-      </button>
-
-      {expanded && (
-        <div className="p-3 space-y-3 border-t border-outline-variant/20">
-          {/* Generator output card */}
-          <div className={`rounded-lg border-l-4 border-l-primary-container border border-outline-variant/20 bg-surface-container-lowest/80 p-3 space-y-2 relative overflow-hidden ${isGenerating ? "pulse-border" : ""}`}>
-            {isGenerating && (
-              <div className="absolute inset-0 bg-gradient-to-r from-transparent via-primary-container/5 to-transparent animate-pulse pointer-events-none" />
-            )}
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="font-label-caps text-label-caps text-primary tracking-widest uppercase">GENERATOR</span>
-                <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-surface-container-high text-on-surface-variant font-mono">
-                  GPT-4 / Local LLM
-                </span>
-              </div>
-            </div>
-            <pre className="max-h-52 overflow-y-auto rounded-md bg-surface-dim/90 border border-outline-variant/10 p-2.5 text-code-base font-code-base text-on-surface-variant whitespace-pre-wrap leading-relaxed select-text">
-              {round.generator_output || <span className="text-on-surface-variant/40 italic">Generating response stream…</span>}
-            </pre>
-          </div>
-
-          {/* Critic verdict card */}
-          {verdict && (
-            <div className={`rounded-lg border-l-4 ${verdict.approved ? "border-l-emerald-500" : "border-l-secondary-container"} border border-outline-variant/20 bg-surface-container-lowest/80 p-3 space-y-2`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="font-label-caps text-label-caps text-secondary tracking-widest uppercase">CRITIC</span>
-                  <span className="font-label-caps text-[10px] px-2 py-0.5 rounded bg-surface-container-high text-on-surface-variant font-mono">
-                    Claude / Critic LLM
-                  </span>
-                </div>
-                <span className={`font-label-caps text-label-caps px-2.5 py-0.5 rounded-full border ${verdict.approved ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400" : "border-error/50 bg-error/10 text-error"}`}>
-                  {verdict.approved ? "✓ APPROVED" : "✕ REJECTED"}
-                </span>
-              </div>
-              {verdict.reasoning && (
-                <p className="font-body-base text-body-base text-on-surface-variant italic bg-surface-dim/40 p-2 rounded border border-outline-variant/10">{verdict.reasoning}</p>
-              )}
-              {verdict.issues && verdict.issues.length > 0 ? (
-                <div className="space-y-1.5 pt-1">
-                  {verdict.issues.map((issue, idx) => (
-                    <div
-                      key={idx}
-                      className={`rounded-md border p-2 text-body-base font-body-base ${severityColor(issue.severity)}`}
-                    >
-                      <div className="flex items-start gap-1.5">
-                        <span className={`shrink-0 mt-0.5 rounded px-1.5 py-px text-[9px] font-bold uppercase border ${severityColor(issue.severity)}`}>
-                          {issue.severity}
-                        </span>
-                        <span className="text-on-surface">{issue.description}</span>
-                      </div>
-                      {issue.suggested_fix && (
-                        <p className="mt-1 pl-5 text-on-surface-variant/70 text-xs">→ {issue.suggested_fix}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="font-body-base text-body-base text-emerald-400 flex items-center gap-1 pt-1">
-                  <CheckCircle2 size={13} /> All criteria satisfied — zero issues detected.
-                </p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-import { PermissionGate } from "../../components/ui/PermissionGate";
-
-function SessionView({ session, onCancel, onRetry, onRecover }: { session: DuoSession; onCancel: () => void; onRetry: () => void; onRecover: (action: "retry" | "switch_to_api" | "cancel") => void }) {
-  const [applying, setApplying] = useState(false);
-  const [applied, setApplied] = useState(false);
-  const [applyError, setApplyError] = useState<string | null>(null);
-
-  const switchToDiff = (proposalId?: string | null) => {
-    window.dispatchEvent(new CustomEvent("code-os:switch-top-view", { detail: "proposals" }));
-    if (proposalId) {
-      window.dispatchEvent(new CustomEvent("code-os:select-proposal", { detail: proposalId }));
+      // Check most recent session for workspace
+      const sessions = await api.get<DuoSession[]>("/api/duo/sessions", { workspace: workspace.path });
+      if (Array.isArray(sessions) && sessions.length > 0) {
+        const running = sessions.find((s) => s.status === "running" || s.status === "waiting_for_recovery");
+        if (running) {
+          const detailed = await api.get<DuoSession>(`/api/duo/sessions/${running.id}`);
+          setActiveSession(detailed);
+        }
+      }
+    } catch {
+      // ignore
     }
   };
 
-  const handleApproveProposal = async () => {
-    if (!session.final_proposal_id) return;
-    setApplying(true);
-    setApplyError(null);
-    try {
-      const res = await api.post<{ id: string; status: string; changes: { path: string }[] }>(`/api/ai/edit-proposals/${session.final_proposal_id}/apply`);
-      setApplied(true);
-      window.dispatchEvent(new CustomEvent("code-os:proposal-applied", { detail: session.final_proposal_id }));
-      void useWorkspaceStore.getState().refreshTree();
+  useEffect(() => {
+    void fetchSession();
+    const interval = setInterval(() => {
+      if (activeSession?.status === "running" || activeSession?.status === "waiting_for_recovery") {
+        void fetchSession();
+      }
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [workspace?.path, activeSession?.id, activeSession?.status]);
 
-      // Automatically open all applied files in editor workspace tabs
-      if (res && res.changes && res.changes.length > 0) {
+  const handleLaunch = async () => {
+    if (!generatorTask.trim() || !workspace) return;
+    setLoading(true);
+    setError(null);
+    setAppliedSuccess(false);
+
+    try {
+      const payload = {
+        workspace: workspace.path,
+        task_description: generatorTask.trim(),
+        critic_instructions: criticInstructions.trim() || undefined,
+        max_rounds: maxRounds,
+        generator: {
+          provider: genConfig.preset,
+          model: genConfig.model,
+          base_url: genConfig.base_url,
+        },
+        critic: {
+          provider: criticConfig.preset,
+          model: criticConfig.model,
+          base_url: criticConfig.base_url,
+        },
+      };
+
+      const session = await api.post<DuoSession>("/api/duo/sessions", payload);
+      setActiveSession(session);
+    } catch (err: any) {
+      setError(err?.message || "Failed to launch Duo Loop");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStop = async () => {
+    if (!activeSession) return;
+    setActionLoading(true);
+    try {
+      const updated = await api.post<DuoSession>(`/api/duo/sessions/${activeSession.id}/cancel`);
+      setActiveSession(updated);
+    } catch (err: any) {
+      setError(err?.message || "Failed to stop Duo session");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRecover = async (
+    action: "retry" | "switch_to_api" | "change_model" | "cancel",
+    modelPayload?: { provider?: string; model?: string; api_key_provider?: string }
+  ) => {
+    if (!activeSession) return;
+    setActionLoading(true);
+    try {
+      await api.post(`/api/duo/sessions/${activeSession.id}/recover`, {
+        action,
+        provider: modelPayload?.provider,
+        model: modelPayload?.model,
+        api_key_provider: modelPayload?.api_key_provider,
+      });
+      await fetchSession();
+    } catch (err: any) {
+      setError(err?.message || "Failed to submit recovery action");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleApplyFinalProposal = async () => {
+    if (!activeSession?.final_proposal_id) return;
+    setApplyingProposal(true);
+    try {
+      const res = await api.post<{ changes?: { path: string }[] }>(`/api/ai/edit-proposals/${activeSession.final_proposal_id}/apply`);
+      setAppliedSuccess(true);
+      window.dispatchEvent(new CustomEvent("code-os:proposal-applied", { detail: activeSession.final_proposal_id }));
+      await useWorkspaceStore.getState().refreshTree();
+
+      // Open applied files in editor workspace
+      if (res?.changes && res.changes.length > 0) {
         for (const change of res.changes) {
           void useEditorStore.getState().openFile(change.path);
         }
       }
-      // Switch top view tab to main editor workspace so user sees files immediately
-      window.dispatchEvent(new CustomEvent("code-os:switch-top-view", { detail: "main" }));
-    } catch (err) {
-      // Show inline error — do NOT navigate away to proposals
-      const msg = err instanceof Error ? err.message : String(err);
-      setApplyError(`Apply failed: ${msg}. You can view the diff manually.`);
-      console.error("Direct proposal application failed from Duo Loop:", err);
+    } catch (err: any) {
+      setError(err?.message || "Failed to apply final proposal");
     } finally {
-      setApplying(false);
+      setApplyingProposal(false);
     }
   };
 
-  const isCompleted = session.status === "approved" || session.status === "unresolved" || session.status === "cancelled" || session.status === "error";
+  const isRunning = Boolean(activeSession && activeSession.status === "running");
+  const isPausedRecovery = Boolean(activeSession && activeSession.status === "waiting_for_recovery");
+  const isApproved = Boolean(activeSession && activeSession.status === "approved");
+  const currentRoundNum = activeSession?.current_round ?? 0;
+  const maxRoundNum = activeSession?.max_rounds ?? maxRounds;
 
   return (
-    <div className="space-y-3">
-      {/* Session header */}
-      <div className="rounded-lg border border-surface-700 bg-surface-900 p-3">
-        <div className="flex items-start justify-between gap-2 mb-1">
-          <StatusBadge status={session.status} />
-          <span className="text-[10px] text-slate-600">
-            Round {session.current_round}/{session.max_rounds}
-          </span>
+    <div className="flex-1 flex flex-col h-full overflow-y-auto bg-background text-on-surface p-6 font-ui-label-reg text-ui-label-reg select-none antialiased">
+      {/* ── Top Header ──────────────────────────────────────────────────────── */}
+      <div className="flex justify-between items-center mb-6 shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+            <span className="material-symbols-outlined text-lg">sync_alt</span>
+          </div>
+          <h1 className="font-headline-md text-headline-md text-on-surface font-bold tracking-tight">
+            Duo Loop
+          </h1>
+          <button 
+            onClick={() => void fetchSession()}
+            className="p-1.5 rounded-full bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer border border-white/5"
+            title="Refresh Status"
+          >
+            <RefreshCw size={13} />
+          </button>
         </div>
-        <p className="text-[11px] text-slate-400 mt-1.5 line-clamp-2">{session.task_description}</p>
 
-        {/* Model config summary */}
-        <div className="mt-2 grid grid-cols-2 gap-1.5 text-[10px]">
-          <div className="rounded bg-surface-800 px-2 py-1">
-            <span className="text-slate-500">Gen: </span>
-            <span className="text-slate-300">{session.generator.model}</span>
-            <span className="text-slate-600 ml-1">({session.generator.provider === "ollama" ? "local" : "api"})</span>
+        <div className="flex items-center gap-4">
+          <div className="px-3.5 py-1.5 rounded-full bg-surface-container-low border border-white/5 font-caption text-caption text-on-surface-variant flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${
+              isRunning
+                ? "bg-primary-container animate-pulse"
+                : isPausedRecovery
+                  ? "bg-amber-400 animate-pulse"
+                  : isApproved
+                    ? "bg-emerald-400"
+                    : "bg-outline"
+            }`} />
+            <span>
+              {activeSession
+                ? `Round ${currentRoundNum}/${maxRoundNum} (${activeSession.status})`
+                : `Round 0/${maxRounds} (Ready)`}
+            </span>
           </div>
-          <div className="rounded bg-surface-800 px-2 py-1">
-            <span className="text-slate-500">Critic: </span>
-            <span className="text-slate-300">{session.critic.model}</span>
-            <span className="text-slate-600 ml-1">({session.critic.provider === "ollama" ? "local" : "api"})</span>
-          </div>
+
+          {isRunning ? (
+            <button
+              onClick={handleStop}
+              disabled={actionLoading}
+              className="px-6 py-2.5 rounded-full font-ui-label-bold text-ui-label-bold bg-error text-on-error hover:bg-error-container hover:text-on-error-container transition-all flex items-center gap-2 shadow-lg cursor-pointer disabled:opacity-50"
+            >
+              <Square size={14} /> Stop Loop
+            </button>
+          ) : (
+            <button
+              onClick={handleLaunch}
+              disabled={loading || !generatorTask.trim()}
+              className="bg-primary-container hover:bg-primary-fixed text-[#001f24] font-ui-label-bold text-ui-label-bold px-8 py-3 rounded-full flex items-center gap-2 transition-all shadow-[0_0_20px_rgba(0,218,243,0.25)] hover:shadow-[0_0_30px_rgba(0,218,243,0.45)] hover:scale-[1.02] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+              <span>{loading ? "Starting Loop..." : "Launch Duo Loop"}</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Progress bar */}
-      <div className="h-1.5 rounded-full bg-surface-800 overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all duration-500 ${
-            session.status === "approved" ? "bg-emerald-500" :
-            session.status === "unresolved" ? "bg-amber-500" :
-            session.status === "cancelled" ? "bg-slate-500" :
-            session.status === "error" ? "bg-red-500" :
-            session.status === "waiting_for_recovery" ? "bg-amber-500" :
-            "bg-accent-500 animate-pulse"
-          }`}
-          style={{
-            width: `${
-              isCompleted
-                ? 100
-                : Math.max(4, (session.current_round / session.max_rounds) * 100)
-            }%`
-          }}
-        />
-      </div>
-
-      {/* Recovery Prompt */}
-      {session.status === "waiting_for_recovery" && session.pending_action?.type === "llm_failure" && (
-        <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-[11px] text-amber-300 space-y-2">
-          <div className="flex items-center gap-1.5 font-bold uppercase tracking-wider">
-            <AlertTriangle size={14} className="shrink-0 animate-pulse" /> LLM Execution Failed
+      {error && (
+        <div className="mb-4 rounded-xl border border-error/40 bg-error/10 p-3 text-xs text-error flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} />
+            <span>{error}</span>
           </div>
-          <p className="font-mono text-tertiary/80 leading-relaxed max-h-24 overflow-y-auto bg-surface-dim p-2 rounded border border-tertiary-container/10">
-            {session.pending_action.details}
-          </p>
-          <div className="flex gap-2 pt-1">
-            <button type="button" onClick={() => onRecover("retry")} className="rounded bg-tertiary-container/20 border border-tertiary-container/40 px-3 py-1.5 font-semibold hover:bg-tertiary-container/30 transition-colors active:scale-95 duration-200 flex-1">Retry Round</button>
-            <button type="button" onClick={() => onRecover("switch_to_api")} className="rounded bg-tertiary-container/20 border border-tertiary-container/40 px-3 py-1.5 font-semibold hover:bg-tertiary-container/30 transition-colors active:scale-95 duration-200 flex-1">Switch to API</button>
-            <button type="button" onClick={() => onRecover("cancel")} className="rounded border border-tertiary-container/20 px-3 py-1.5 font-semibold hover:bg-tertiary-container/10 transition-colors active:scale-95 duration-200 flex-1 text-tertiary/70 hover:text-tertiary">Cancel Loop</button>
-          </div>
+          <button onClick={() => setError(null)} className="text-error hover:opacity-80">
+            <X size={14} />
+          </button>
         </div>
       )}
 
-      {/* Final status banner */}
-      {(session.status !== "running" && session.status !== "waiting_for_recovery") && (
-        <div className={`rounded-lg border p-3 text-xs ${
-          session.status === "approved" ? "border-primary-container/40 bg-primary-container/10 text-primary/80" :
-          session.status === "unresolved" ? "border-tertiary-container/40 bg-tertiary-container/10 text-tertiary/80" :
-          "border-outline-variant/20 bg-surface-container text-on-surface-variant/60 dark:text-on-surface-variant/60"
-        }`}>
-          {session.status === "approved" && (
-            <div className="space-y-2">
-              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-primary-container">
-                <CheckCircle2 size={14} /> Loop approved after {session.current_round} round{session.current_round !== 1 ? "s" : ""}
-              </span>
-              {applied ? (
-                <div className="flex items-center gap-2 p-2 rounded-md bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-                  <CheckCircle2 size={15} />
-                  <span>Changes successfully applied to workspace files!</span>
-                </div>
-              ) : applyError ? (
-                <div className="space-y-2">
-                  <div className="flex items-start gap-2 p-2 rounded-md bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
-                    <XCircle size={14} className="shrink-0 mt-0.5" />
-                    <span>{applyError}</span>
-                  </div>
-                  <button
-                    onClick={() => switchToDiff(session.final_proposal_id)}
-                    className="text-xs text-primary underline hover:no-underline"
-                  >
-                    View diff manually →
-                  </button>
-                </div>
-              ) : session.final_proposal_id ? (
-                <div className="mt-2.5">
-                  <PermissionGate
-                    type="duo-finalize"
-                    details="The generator and critic models have agreed on the solution. Click Approve to apply changes directly to your workspace, or View Diff to inspect before applying."
-                    onApprove={handleApproveProposal}
-                    onReject={() => switchToDiff(session.final_proposal_id)}
-                    isLoading={applying}
-                  />
-                </div>
-              ) : null}
+      {/* ── Active Session Alert & Recovery Banner (Priority 1) ──────────────── */}
+      {isPausedRecovery && (
+        <div className="danger-glow rounded-xl p-6 mb-6 flex flex-col gap-4 shadow-xl">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-full bg-amber-500/10 text-amber-400 shrink-0">
+              <AlertTriangle size={22} />
             </div>
-          )}
-          {session.status === "unresolved" && (
+            <div className="flex-1">
+              <h3 className="font-ui-label-bold text-ui-label-bold text-amber-400 text-base mb-1">
+                Duo Loop Paused — Recovery Action Required
+              </h3>
+              <p className="text-xs text-on-surface leading-relaxed">
+                The generator or critic model encountered an inference error (e.g. rate limit, connection timeout, or invalid JSON). Choose a recovery action to continue the loop:
+              </p>
+            </div>
+          </div>
+
+          {/* ── Dynamic Model Switcher Panel ── */}
+          <div className="bg-surface/50 rounded-xl p-3.5 border border-outline/30 space-y-3">
             <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-[12px] font-semibold">
-                <AlertTriangle size={14} /> Unresolved after {session.max_rounds} rounds — review manually
+              <span className="text-xs font-semibold text-on-surface flex items-center gap-1.5">
+                <Sparkles size={14} className="text-primary" />
+                Select Replacement Model & Provider
               </span>
-              {session.final_proposal_id && (
-                <button
-                  onClick={() => switchToDiff(session.final_proposal_id)}
-                  className="flex items-center gap-1 rounded bg-tertiary-container/20 border border-tertiary-container/40 px-2 py-1 text-[11px] text-tertiary hover:bg-tertiary-container/30 transition-colors active:scale-95 duration-200"
+              <span className="text-[11px] text-on-surface-variant">Switch model to resume loop</span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              <div>
+                <label className="text-[11px] text-on-surface-variant font-medium block mb-1">Provider</label>
+                <select
+                  value={recoveryProvider}
+                  onChange={(e) => {
+                    const nextP = e.target.value;
+                    setRecoveryProvider(nextP);
+                    const preset = PROVIDER_PRESETS.find((p) => p.id === nextP);
+                    if (preset?.model_example) {
+                      setRecoveryModel(preset.model_example);
+                    }
+                  }}
+                  className="w-full bg-surface-variant/40 border border-outline/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:border-primary"
                 >
-                  <FileDiff size={11} /> Last Diff
-                </button>
+                  {PROVIDER_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label} {p.group === "api" ? "(Cloud API)" : "(Local)"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] text-on-surface-variant font-medium block mb-1">Model Name / ID</label>
+                <input
+                  type="text"
+                  value={recoveryModel}
+                  onChange={(e) => setRecoveryModel(e.target.value)}
+                  placeholder="e.g. llama-3.3-70b-versatile, gpt-4o"
+                  className="w-full bg-surface-variant/40 border border-outline/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:border-primary font-mono"
+                />
+              </div>
+            </div>
+
+            {/* Quick Model Suggestions */}
+            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+              <span className="text-[10px] text-on-surface-variant font-medium mr-1">Suggestions:</span>
+              {recoveryProvider === "groq" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("llama-3.3-70b-versatile")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "llama-3.3-70b-versatile" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    llama-3.3-70b-versatile (Recommended)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("llama-3.1-8b-instant")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "llama-3.1-8b-instant" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    llama-3.1-8b-instant (Fast / High Quota)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("openai/gpt-oss-120b")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "openai/gpt-oss-120b" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    openai/gpt-oss-120b
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("openai/gpt-oss-20b")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "openai/gpt-oss-20b" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    openai/gpt-oss-20b
+                  </button>
+                </>
+              )}
+              {recoveryProvider === "openai" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("gpt-4o")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "gpt-4o" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    gpt-4o
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("gpt-4o-mini")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "gpt-4o-mini" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    gpt-4o-mini
+                  </button>
+                </>
+              )}
+              {recoveryProvider === "gemini" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("gemini-2.5-flash")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "gemini-2.5-flash" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    gemini-2.5-flash
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("gemini-2.5-pro")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "gemini-2.5-pro" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    gemini-2.5-pro
+                  </button>
+                </>
               )}
             </div>
-          )}
-          {session.status === "cancelled" && (
-            <span className="flex items-center gap-1.5 text-[12px]">
-              <Square size={14} /> Session cancelled
-            </span>
-          )}
-          {session.status === "error" && (
-            <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[12px]">
-                <XCircle size={14} /> Session ended with an error
-              </span>
-              <button onClick={onRetry} className="rounded border border-red-500/40 px-2 py-1 text-[10px] font-semibold text-red-300 hover:bg-red-500/10">Retry</button>
-            </div>
-          )}
+          </div>
+
+          <div className="flex flex-wrap gap-2.5 pt-1">
+            <button
+              onClick={() => handleRecover("change_model", { provider: recoveryProvider, model: recoveryModel, api_key_provider: recoveryProvider })}
+              disabled={actionLoading}
+              className="px-4 py-2 rounded-full bg-primary text-[#001f24] font-ui-label-bold text-xs hover:bg-primary/90 transition-colors flex items-center gap-1.5 shadow-md cursor-pointer disabled:opacity-40"
+            >
+              <Sparkles size={13} />
+              <span>Switch Model & Resume</span>
+            </button>
+            <button
+              onClick={() => handleRecover("retry")}
+              disabled={actionLoading}
+              className="px-4 py-2 rounded-full bg-surface-variant text-on-surface font-ui-label-bold text-xs hover:bg-surface-variant/80 transition-colors flex items-center gap-1.5 border border-outline/30 cursor-pointer disabled:opacity-40"
+            >
+              <RotateCcw size={13} />
+              <span>Retry Current Model</span>
+            </button>
+            <button
+              onClick={() => handleRecover("cancel")}
+              disabled={actionLoading}
+              className="px-4 py-2 rounded-full border border-outline text-on-surface font-ui-label-bold text-xs hover:bg-surface-variant transition-colors cursor-pointer disabled:opacity-40"
+            >
+              Cancel Session
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Cancel button */}
-      {session.status === "running" && (
-        <button
-          onClick={onCancel}
-          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-400 hover:bg-red-500/20 transition-colors"
-        >
-          <Square size={12} /> Cancel Loop
-        </button>
+      {/* ── Approved Session Banner ────────────────────────────────────────── */}
+      {isApproved && activeSession?.final_proposal_id && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-5 mb-6 flex items-center justify-between shadow-lg">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-full bg-emerald-500/20 text-emerald-400">
+              <CheckCircle2 size={20} />
+            </div>
+            <div>
+              <h4 className="font-ui-label-bold text-ui-label-bold text-emerald-400">
+                Critic Approved Final Implementation
+              </h4>
+              <p className="text-xs text-on-surface-variant mt-0.5">
+                All verification criteria satisfied. Proposal #{activeSession.final_proposal_id.slice(0, 8)} is ready to apply to workspace.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent("code-os:switch-top-view", { detail: "proposals" }));
+              }}
+              className="px-4 py-2 rounded-full border border-outline text-on-surface font-ui-label-bold text-xs hover:bg-surface-variant transition-colors cursor-pointer flex items-center gap-1.5"
+            >
+              <Eye size={13} />
+              <span>Inspect Diff</span>
+            </button>
+            {appliedSuccess ? (
+              <span className="px-5 py-2 rounded-full bg-emerald-500 text-[#001f24] font-ui-label-bold text-xs flex items-center gap-1.5">
+                <Check size={14} /> Applied to Files
+              </span>
+            ) : (
+              <button
+                onClick={handleApplyFinalProposal}
+                disabled={applyingProposal}
+                className="px-6 py-2 rounded-full bg-emerald-400 text-[#001f24] font-ui-label-bold text-xs hover:bg-emerald-300 transition-all shadow-md cursor-pointer flex items-center gap-1.5 disabled:opacity-40"
+              >
+                {applyingProposal ? <Loader2 size={13} className="animate-spin" /> : <Check size={14} />}
+                <span>Authorize &amp; Apply Changes</span>
+              </button>
+            )}
+          </div>
+        </div>
       )}
 
-      {/* Rounds */}
-      <div className="space-y-2">
-        {session.rounds.map((round, idx) => (
-          <RoundCard
-            key={round.round_number}
-            round={round}
-            isLatest={idx === session.rounds.length - 1}
-          />
-        ))}
-        {session.status === "running" && session.rounds.length === 0 && (
-          <div className="flex items-center justify-center gap-2 py-6 text-slate-500 text-xs">
-            <Loader2 size={14} className="animate-spin" /> Starting first round…
+      {/* ── Top Grid: Task Division & Agent Configuration ──────────────────── */}
+      <div className={`grid grid-cols-1 ${compact ? "gap-4" : "lg:grid-cols-2 gap-6"} mb-8`}>
+        {/* Left Card: Task Division */}
+        <div className="bg-surface-container-low rounded-xl border border-surface-container-high p-6 flex flex-col gap-4 shadow-lg">
+          <div className="flex justify-between items-center border-b border-surface-variant pb-3">
+            <h3 className="font-ui-label-bold text-ui-label-bold text-on-surface">Task Division</h3>
+            <div className="flex items-center gap-2">
+              <span className="font-caption text-caption text-on-surface-variant">Max Rounds</span>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={maxRounds}
+                onChange={(e) => setMaxRounds(Math.max(1, Math.min(20, Number(e.target.value))))}
+                disabled={isRunning}
+                className="w-14 bg-[#131315] border border-surface-variant rounded px-2 py-1 text-xs font-mono text-center text-on-surface focus:border-primary-container focus:outline-none disabled:opacity-50"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="font-caption text-caption text-primary font-bold mb-1.5 block uppercase tracking-wider">
+              Generator Task
+            </label>
+            <textarea
+              value={generatorTask}
+              onChange={(e) => setGeneratorTask(e.target.value)}
+              disabled={isRunning}
+              placeholder="Define the primary objective (e.g. Implement resilient WebSocket connection pool with automatic backoff)..."
+              rows={4}
+              className="w-full bg-[#131315] border border-surface-variant rounded-lg p-3 text-xs text-on-surface placeholder:text-outline-variant focus:border-primary-container focus:outline-none resize-none font-mono disabled:opacity-50"
+            />
+          </div>
+
+          <div>
+            <label className="font-caption text-caption text-tertiary-container font-bold mb-1.5 block uppercase tracking-wider">
+              Critic Instructions (Strict Mode)
+            </label>
+            <textarea
+              value={criticInstructions}
+              onChange={(e) => setCriticInstructions(e.target.value)}
+              disabled={isRunning}
+              placeholder="Define constraints, security standards, and review criteria (e.g. Verify thread-safety, no memory leaks, edge cases handled)..."
+              rows={4}
+              className="w-full bg-[#131315] border border-surface-variant rounded-lg p-3 text-xs text-on-surface placeholder:text-outline-variant focus:border-primary-container focus:outline-none resize-none font-mono disabled:opacity-50"
+            />
+          </div>
+        </div>
+
+        {/* Right Card: Agent Configuration */}
+        <div className="bg-surface-container-low rounded-xl border border-surface-container-high p-6 flex flex-col gap-4 shadow-lg">
+          <h3 className="font-ui-label-bold text-ui-label-bold text-on-surface border-b border-surface-variant pb-3">
+            Agent Configuration
+          </h3>
+
+          {/* Generator Role Sub-card */}
+          <div className="bg-[#1e1f24] rounded-xl border border-white/5 p-4 space-y-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-on-surface">
+              <span className="material-symbols-outlined text-primary text-[18px]">edit_note</span>
+              <span>Generator Role</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="font-caption text-[11px] text-on-surface-variant mb-1 block">Provider</label>
+                <select
+                  value={genConfig.preset}
+                  onChange={(e) => setGenConfig({ ...genConfig, preset: e.target.value })}
+                  disabled={isRunning}
+                  className="custom-select w-full bg-[#131315] border border-surface-variant rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:border-primary-container focus:outline-none disabled:opacity-50"
+                >
+                  <option value="ollama">Ollama (Local)</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="anthropic">Anthropic</option>
+                  <option value="groq">Groq</option>
+                  <option value="deepseek">DeepSeek</option>
+                </select>
+              </div>
+              <div>
+                <label className="font-caption text-[11px] text-on-surface-variant mb-1 block">Model</label>
+                <input
+                  type="text"
+                  value={genConfig.model}
+                  onChange={(e) => setGenConfig({ ...genConfig, model: e.target.value })}
+                  disabled={isRunning}
+                  className="w-full bg-[#131315] border border-surface-variant rounded-lg px-2.5 py-1.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none disabled:opacity-50"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Critic Role Sub-card */}
+          <div className="bg-[#1e1f24] rounded-xl border border-white/5 p-4 space-y-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-on-surface">
+              <span className="material-symbols-outlined text-tertiary text-[18px]">rate_review</span>
+              <span>Critic Role</span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="font-caption text-[11px] text-on-surface-variant mb-1 block">Provider</label>
+                <select
+                  value={criticConfig.preset}
+                  onChange={(e) => setCriticConfig({ ...criticConfig, preset: e.target.value })}
+                  disabled={isRunning}
+                  className="custom-select w-full bg-[#131315] border border-surface-variant rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:border-primary-container focus:outline-none disabled:opacity-50"
+                >
+                  <option value="anthropic">Anthropic</option>
+                  <option value="openai">OpenAI</option>
+                  <option value="groq">Groq</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="ollama">Ollama (Local)</option>
+                </select>
+              </div>
+              <div>
+                <label className="font-caption text-[11px] text-on-surface-variant mb-1 block">Model</label>
+                <input
+                  type="text"
+                  value={criticConfig.model}
+                  onChange={(e) => setCriticConfig({ ...criticConfig, model: e.target.value })}
+                  disabled={isRunning}
+                  className="w-full bg-[#131315] border border-surface-variant rounded-lg px-2.5 py-1.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none disabled:opacity-50"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Bottom Section: Real Execution Stream ──────────────────────────── */}
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h2 className="font-headline-md text-headline-md text-on-surface font-bold">
+            Execution Stream
+          </h2>
+          {activeSession && (
+            <button
+              onClick={() => {
+                setActiveSession(null);
+                setGeneratorTask("");
+                setCriticInstructions("");
+              }}
+              className="text-xs text-on-surface-variant hover:text-on-surface underline font-mono cursor-pointer"
+            >
+              + Start New Session
+            </button>
+          )}
+        </div>
+
+        {activeSession?.rounds && activeSession.rounds.length > 0 ? (
+          activeSession.rounds.map((round) => (
+            <div key={round.round_number} className="space-y-4">
+              {/* Generator Round Card */}
+              <div className="bg-[#1e1f24] rounded-xl border border-white/5 p-6 shadow-lg">
+                <div className="flex justify-between items-center mb-3">
+                  <div className="flex items-center gap-2 font-ui-label-bold text-ui-label-bold text-on-surface">
+                    <span className="material-symbols-outlined text-primary text-[18px]">edit_note</span>
+                    <span>Generator ({activeSession.generator?.model || "Generator"}) — Round {round.round_number} Output</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-xs font-mono text-on-surface-variant bg-surface-container-low px-2 py-0.5 rounded">
+                    <Clock size={12} className="text-primary-container" />
+                    <span>{round.created_at ? new Date(round.created_at).toLocaleTimeString() : ""}</span>
+                  </div>
+                </div>
+
+                <div className="bg-[#0a0a0c] border border-surface-variant rounded-lg p-4 font-code-sm text-code-sm text-on-surface whitespace-pre-wrap max-h-64 overflow-y-auto font-mono">
+                  {round.generator_output || <span className="text-outline-variant italic">Generating code stream...</span>}
+                </div>
+              </div>
+
+              {/* Critic Verdict Card */}
+              {round.critic_verdict ? (
+                <div className="bg-[#1e1f24] rounded-xl border border-white/5 p-6 shadow-lg space-y-3">
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-2 font-ui-label-bold text-ui-label-bold text-on-surface">
+                      <span className="material-symbols-outlined text-tertiary text-[18px]">rate_review</span>
+                      <span>Critic Analysis ({activeSession.critic?.model || "Critic"})</span>
+                    </div>
+                    <span className={`px-3 py-1 rounded-full font-caption text-caption font-bold uppercase ${
+                      round.critic_verdict.approved
+                        ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
+                        : "bg-error/10 text-error border border-error/30"
+                    }`}>
+                      {round.critic_verdict.approved ? "VERDICT: APPROVED" : "VERDICT: REJECTED"}
+                    </span>
+                  </div>
+
+                  {round.critic_verdict.reasoning && (
+                    <p className="text-xs text-on-surface-variant leading-relaxed italic bg-surface-dim/40 p-3 rounded border border-outline-variant/10">
+                      {round.critic_verdict.reasoning}
+                    </p>
+                  )}
+
+                  {round.critic_verdict.issues && round.critic_verdict.issues.length > 0 && (
+                    <div className="space-y-2 pt-2">
+                      {round.critic_verdict.issues.map((issue, idx) => (
+                        <div key={idx} className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs flex items-start gap-2">
+                          <span className="px-1.5 py-0.5 rounded font-bold text-[9px] uppercase bg-amber-500/20 text-amber-300 shrink-0">
+                            {issue.severity}
+                          </span>
+                          <div className="flex-1">
+                            <span className="text-on-surface font-medium">{issue.description}</span>
+                            {issue.suggested_fix && (
+                              <p className="text-on-surface-variant/70 text-[11px] mt-1">Suggested fix: {issue.suggested_fix}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-on-surface-variant/50 flex items-center justify-center gap-2">
+                  <Loader2 size={14} className="animate-spin text-primary-container" />
+                  <span>Awaiting Critic Analysis for Round {round.round_number}...</span>
+                </div>
+              )}
+            </div>
+          ))
+        ) : (
+          <div className="rounded-xl border border-dashed border-white/10 p-12 text-center text-xs text-on-surface-variant/50 space-y-2">
+            <span className="material-symbols-outlined text-3xl text-outline-variant">loop</span>
+            <p>Click "Launch Duo Loop" to start the generator/critic iterative feedback cycle.</p>
           </div>
         )}
       </div>
     </div>
-  );
-}
-
-// ── Main panel ────────────────────────────────────────────────────────────────
-
-// Default provider configs are initialized from aiStore in the component
-export function DuoPanel({ compact = false }: { compact?: boolean }) {
-  const currentWorkspace = useWorkspaceStore((s) => s.currentWorkspace);
-  const models = useAIStore((s) => s.models);
-
-  // Sync defaults from current AI store provider so Duo Loop uses whatever is already configured
-  const aiPreset = useAIStore((s) => s.preset);
-  const aiModel = useAIStore((s) => s.model);
-  const aiBaseUrl = useAIStore((s) => s.baseUrl);
-  const aiApiKeyProvider = useAIStore((s) => s.apiKeyProvider);
-
-  const defaultProvider: ProviderConfig = {
-    preset: aiPreset || "ollama",
-    model: aiModel || getPreset(aiPreset)?.model_example || "llama3",
-    base_url: aiBaseUrl,
-    api_key_provider: aiApiKeyProvider ?? undefined,
-  };
-
-  // Form state
-  const [task, setTask] = useState("");
-  const [criticPrompt, setCriticPrompt] = useState("Identify race conditions, memory bottlenecks, or architectural flaws in proposed modifications.");
-  const [generator, setGenerator] = useState<ProviderConfig>(defaultProvider);
-  const [critic, setCritic] = useState<ProviderConfig>(defaultProvider);
-  const [maxRounds, setMaxRounds] = useState(5);
-  const [showHistory, setShowHistory] = useState(false);
-  const [configuredKeys, setConfiguredKeys] = useState<string[]>([]);
-
-  // Keep generator/critic updated if store model resolves late
-  useEffect(() => {
-    if (!generator.model && aiModel) {
-      setGenerator((prev) => ({ ...prev, model: aiModel }));
-    }
-    if (!critic.model && aiModel) {
-      setCritic((prev) => ({ ...prev, model: aiModel }));
-    }
-  }, [aiModel, generator.model, critic.model]);
-
-  // Session state
-  const [activeSession, setActiveSession] = useState<DuoSession | null>(null);
-  const [sessionHistory, setSessionHistory] = useState<DuoSession[]>([]);
-  const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  // Load configured keys for badge display in ProviderSelector
-  useEffect(() => {
-    void api.get<{ provider_id: string; configured: boolean }[]>("/api/settings/api-keys")
-      .then((keys) => setConfiguredKeys(keys.filter((k) => k.configured).map((k) => k.provider_id)))
-      .catch(() => undefined);
-  }, []);
-
-  // Listen for utility-switch events from round cards
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const utility = (e as CustomEvent<string>).detail;
-      window.dispatchEvent(new CustomEvent("code-os:menu", { detail: `view.switchUtility:${utility}` }));
-    };
-    window.addEventListener("code-os:switch-utility", handler);
-    return () => window.removeEventListener("code-os:switch-utility", handler);
-  }, []);
-
-  // Polling
-  const startPolling = useCallback((sessionId: string) => {
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(async () => {
-      try {
-        const data = await api.get<DuoSession>(`/api/duo/sessions/${sessionId}`);
-        setActiveSession(data);
-        if (data.status !== "running" && data.status !== "waiting_for_recovery") {
-          clearInterval(pollRef.current!);
-          pollRef.current = null;
-        }
-      } catch {
-        // Network blip — keep polling
-      }
-    }, 2000);
-  }, []);
-
-  useEffect(() => () => { if (pollRef.current) clearInterval(pollRef.current); }, []);
-
-  // Load session history on mount / workspace change
-  useEffect(() => {
-    if (!currentWorkspace) return;
-    void (async () => {
-      try {
-        const data = await api.get<DuoSession[]>(`/api/duo/sessions?workspace=${encodeURIComponent(currentWorkspace.path)}`);
-        setSessionHistory(data);
-        // Restore active running or recovery session if any
-        const active = data.find((s) => s.status === "running" || s.status === "waiting_for_recovery");
-        if (active) {
-          setActiveSession(active);
-          startPolling(active.id);
-        }
-      } catch { /* ignore */ }
-    })();
-  }, [currentWorkspace, startPolling]);
-
-  const handleStart = async () => {
-    if (!currentWorkspace || !task.trim()) return;
-    setError(null);
-    setStarting(true);
-
-    // Map ProviderConfig → backend ModelConfig with robust preset fallback
-    const toModelConfig = (cfg: ProviderConfig) => {
-      const presetObj = getPreset(cfg.preset);
-      const wireProvider = presetObj ? presetObj.provider : (cfg.preset === "ollama" ? "ollama" : "openai-compatible");
-      return {
-        provider: wireProvider,
-        model: cfg.model || presetObj?.model_example || aiModel || "llama3",
-        base_url: cfg.base_url || presetObj?.base_url,
-        api_key_provider: cfg.api_key_provider ?? presetObj?.api_key_provider ?? undefined,
-      };
-    };
-
-    try {
-      const session = await api.post<DuoSession>("/api/duo/sessions", {
-        workspace: currentWorkspace.path,
-        task_description: task.trim(),
-        generator: toModelConfig(generator),
-        critic: toModelConfig(critic),
-        max_rounds: maxRounds,
-      });
-      setActiveSession(session);
-      setSessionHistory((h) => [session, ...h]);
-      startPolling(session.id);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setStarting(false);
-    }
-  };
-
-  const handleCancel = async () => {
-    if (!activeSession) return;
-    try {
-      const updated = await api.post<DuoSession>(`/api/duo/sessions/${activeSession.id}/cancel`);
-      setActiveSession(updated);
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    } catch { /* ignore */ }
-  };
-
-  const handleRecover = async (action: "retry" | "switch_to_api" | "cancel") => {
-    if (!activeSession) return;
-    try {
-      await api.post(`/api/duo/sessions/${activeSession.id}/recover`, { action });
-      // Polling will catch the updated status
-    } catch { /* ignore */ }
-  };
-
-  const canStart = !!(currentWorkspace && task.trim() && generator.model && critic.model && !starting && activeSession?.status !== "running");
-
-  /* ── Compact (sidebar) layout ─────────────────────────────────────────── */
-  if (compact) {
-    return (
-      <main
-        data-testid="duo-loop-panel"
-        className="flex flex-col h-full overflow-y-auto bg-[#131314] text-on-surface select-none"
-      >
-        {/* Compact Header */}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 shrink-0">
-          <div className="flex items-center gap-1.5">
-            <span className="material-symbols-outlined text-primary text-sm">loop</span>
-            <span className="text-[11px] font-bold text-on-surface tracking-tight">Duo Loop</span>
-          </div>
-          <div className="bg-surface-variant px-1.5 py-0.5 rounded font-mono text-[9px] text-primary-fixed uppercase flex items-center gap-1 border border-primary/20">
-            <span className="w-1 h-1 rounded-full bg-primary animate-pulse" />
-            {activeSession ? `R${activeSession.current_round}/${activeSession.max_rounds}` : "0/5"}
-          </div>
-        </div>
-
-        {/* Compact scrollable body */}
-        <div className="flex flex-col gap-2 p-2 overflow-y-auto flex-1 min-h-0">
-
-          {/* Error */}
-          {error && (
-            <div className="text-[9px] text-error bg-error/5 border border-error/30 rounded p-1.5">{error}</div>
-          )}
-
-          {/* Task input */}
-          <div className="glass-panel rounded-md p-2 flex flex-col gap-1.5">
-            <label className="text-[9px] font-bold uppercase tracking-wider text-secondary">Task</label>
-            <textarea
-              rows={3}
-              value={task}
-              onChange={(e) => setTask(e.target.value)}
-              placeholder="Describe the task for the Generator AI…"
-              className="w-full bg-transparent text-on-surface text-[10px] focus:outline-none resize-none font-mono leading-relaxed placeholder:text-on-surface-variant/30 select-text"
-            />
-          </div>
-
-          {/* Critic prompt */}
-          <div className="glass-panel rounded-md p-2 flex flex-col gap-1.5">
-            <label className="text-[9px] font-bold uppercase tracking-wider text-tertiary">Critic Instructions</label>
-            <textarea
-              rows={2}
-              value={criticPrompt}
-              onChange={(e) => setCriticPrompt(e.target.value)}
-              placeholder="Identify flaws in proposed modifications…"
-              className="w-full bg-transparent text-on-surface text-[10px] focus:outline-none resize-none font-mono leading-relaxed placeholder:text-on-surface-variant/30 select-text"
-            />
-          </div>
-
-          {/* Generator + Critic model pickers stacked */}
-          <div className="glass-panel rounded-md p-2 flex flex-col gap-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-outline">Agents</span>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[9px] text-on-surface-variant">Rounds</span>
-                <select
-                  value={maxRounds}
-                  onChange={(e) => setMaxRounds(Number(e.target.value))}
-                  className="bg-surface-container-high text-on-surface border border-white/10 rounded px-1.5 py-0.5 text-[9px] font-mono"
-                >
-                  {[3, 5, 8, 10].map((n) => <option key={n} value={n}>{n}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <div className="bg-surface-container-low rounded p-1.5 border border-secondary/30">
-                <div className="text-[9px] text-secondary uppercase font-bold mb-1">Generator</div>
-                <ProviderSelector value={generator} onChange={setGenerator} configuredKeys={configuredKeys} models={models} compact />
-              </div>
-              <div className="bg-surface-container-low rounded p-1.5 border border-tertiary/30">
-                <div className="text-[9px] text-tertiary uppercase font-bold mb-1">Critic</div>
-                <ProviderSelector value={critic} onChange={setCritic} configuredKeys={configuredKeys} models={models} compact />
-              </div>
-            </div>
-          </div>
-
-          {/* Launch / Active session */}
-          {!activeSession ? (
-            <button
-              onClick={() => void handleStart()}
-              disabled={!canStart}
-              className="bg-primary-container text-on-primary-container font-mono text-[10px] px-4 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(0,229,255,0.3)] disabled:opacity-50 w-full"
-            >
-              {starting ? "Starting…" : "Launch Duo Loop"}
-            </button>
-          ) : (
-            <div className="space-y-2">
-              <SessionView
-                session={activeSession}
-                onCancel={() => void handleCancel()}
-                onRetry={() => void handleStart()}
-                onRecover={(action) => void handleRecover(action)}
-              />
-              <button
-                type="button"
-                onClick={() => setActiveSession(null)}
-                className="text-[9px] text-on-surface-variant hover:text-on-surface underline font-mono w-full text-right"
-              >
-                + New Session
-              </button>
-            </div>
-          )}
-
-          {/* Session history */}
-          {sessionHistory.length > 1 && (
-            <div className="glass-panel rounded-md p-2 flex flex-col gap-1">
-              <span className="text-[9px] font-bold uppercase tracking-wider text-outline">History</span>
-              <div className="space-y-1 max-h-32 overflow-y-auto">
-                {sessionHistory.slice(0, 5).map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => setActiveSession(s)}
-                    className="w-full text-left text-[9px] bg-surface-container-low border border-white/5 rounded p-1.5 hover:bg-surface-container transition-colors"
-                  >
-                    <div className="flex justify-between items-center">
-                      <span className="font-mono text-on-surface-variant truncate max-w-[140px]">{s.task_description}</span>
-                      <StatusBadge status={s.status} />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-        </div>
-      </main>
-    );
-  }
-
-  /* ── Full (topbar) layout — unchanged ──────────────────────────────────── */
-  return (
-    <main data-testid="duo-loop-panel" className="flex-1 flex flex-col p-3 sm:p-4 md:p-6 gap-3 sm:gap-4 overflow-y-auto bg-[#131314] text-on-surface h-full select-none">
-
-      {/* Page Header */}
-      <header className="flex justify-between items-center mb-1 shrink-0 flex-wrap gap-2">
-        <div className="flex items-center gap-2 sm:gap-3">
-          <span className="material-symbols-outlined text-primary text-xl sm:text-3xl">loop</span>
-          <h1 className="text-base sm:text-headline-lg text-on-surface font-bold">Duo Loop</h1>
-        </div>
-        <div className="bg-surface-variant px-2.5 py-1 rounded font-micro-label text-[10px] sm:text-micro-label text-primary-fixed uppercase flex items-center gap-1.5 border border-primary/20 shadow-[0_0_8px_rgba(0,229,255,0.1)]">
-          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
-          <span>
-            {activeSession ? `ROUND ${activeSession.current_round} / ${activeSession.max_rounds}` : "ROUND 0 / 5"}
-          </span>
-        </div>
-      </header>
-
-
-      {/* Configuration Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-2 shrink-0">
-        {/* Task Division */}
-        <div className="glass-panel rounded-lg p-4 flex flex-col gap-4">
-          <div className="flex items-center justify-between border-b border-white/5 pb-2">
-            <h2 className="font-micro-label text-micro-label text-on-surface-variant uppercase font-bold">Task Division</h2>
-            <div className="flex items-center gap-2">
-              <label className="font-micro-label text-micro-label text-on-surface-variant/60">Max Rounds</label>
-              <select
-                value={maxRounds}
-                onChange={(e) => setMaxRounds(Number(e.target.value))}
-                className="bg-surface-container-high text-on-surface border border-white/10 rounded px-2 py-0.5 text-xs font-mono"
-              >
-                {[3,5,8,10].map(n => <option key={n} value={n}>{n}</option>)}
-              </select>
-            </div>
-          </div>
-          <div className="flex flex-col gap-3">
-            <div className="bg-surface-container-low rounded p-3 border border-secondary/20 focus-within:border-secondary/50 transition-colors">
-              <label className="font-micro-label text-micro-label text-secondary mb-2 block uppercase font-bold">Generator Task</label>
-              <textarea
-                rows={3}
-                value={task}
-                onChange={(e) => setTask(e.target.value)}
-                placeholder="Describe the task for the Generator AI. E.g. Refactor AuthModule for better concurrency. Ensure thread safety..."
-                className="w-full bg-transparent text-on-surface text-sm focus:outline-none resize-none font-code-block leading-relaxed placeholder:text-on-surface-variant/30 select-text"
-              />
-            </div>
-            <div className="bg-surface-container-low rounded p-3 border border-tertiary/20 focus-within:border-tertiary/50 transition-colors">
-              <label className="font-micro-label text-micro-label text-tertiary mb-2 block uppercase font-bold">Critic Instructions (Strict Mode)</label>
-              <textarea
-                rows={2}
-                value={criticPrompt}
-                onChange={(e) => setCriticPrompt(e.target.value)}
-                placeholder="Identify race conditions, memory bottlenecks, or architectural flaws in proposed modifications..."
-                className="w-full bg-transparent text-on-surface text-sm focus:outline-none resize-none font-code-block leading-relaxed placeholder:text-on-surface-variant/30 select-text"
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Agent Selection */}
-        <div className="glass-panel rounded-lg p-4 flex flex-col gap-4">
-          <div className="flex items-center justify-between border-b border-white/5 pb-2">
-            <h2 className="font-micro-label text-micro-label text-on-surface-variant uppercase font-bold">Agent Selection</h2>
-            <span className="material-symbols-outlined text-outline text-sm">group</span>
-          </div>
-          <div className="grid grid-cols-2 gap-3 h-full">
-            {/* Generator Role */}
-            <div className="bg-surface-container-low rounded p-3 flex flex-col border border-secondary/30 relative overflow-hidden">
-              <div className="font-micro-label text-micro-label text-secondary uppercase mb-2 font-bold">Generator Role</div>
-              <ProviderSelector
-                value={generator}
-                onChange={setGenerator}
-                configuredKeys={configuredKeys}
-                models={models}
-                compact
-              />
-            </div>
-            {/* Critic Role */}
-            <div className="bg-surface-container-low rounded p-3 flex flex-col border border-tertiary/30 relative overflow-hidden">
-              <div className="font-micro-label text-micro-label text-tertiary uppercase mb-2 font-bold">Critic Role</div>
-              <ProviderSelector
-                value={critic}
-                onChange={setCritic}
-                configuredKeys={configuredKeys}
-                models={models}
-                compact
-              />
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Stream Section */}
-      <div className="flex flex-col gap-4 flex-1 min-h-0">
-        <div className="flex items-center gap-2">
-          <h2 className="font-micro-label text-micro-label text-on-surface-variant uppercase tracking-widest font-bold">Execution Stream</h2>
-          <div className="h-[1px] flex-1 bg-white/5" />
-          {!activeSession && (
-            <button
-              onClick={() => void handleStart()}
-              disabled={!canStart}
-              className="bg-primary-container text-on-primary-container font-micro-label text-micro-label px-5 py-1.5 rounded-full font-bold uppercase tracking-wider shadow-[0_0_12px_rgba(0,229,255,0.4)] disabled:opacity-50"
-            >
-              {starting ? "Starting Duo..." : "Launch Duo Loop"}
-            </button>
-          )}
-        </div>
-
-        {/* Active Session View Banner & Controls */}
-        {activeSession && (
-          <div className="space-y-4">
-            <SessionView
-              session={activeSession}
-              onCancel={() => void handleCancel()}
-              onRetry={() => void handleStart()}
-              onRecover={(action) => void handleRecover(action)}
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveSession(null)}
-                className="text-xs text-on-surface-variant hover:text-on-surface underline font-mono"
-              >
-                + Start New Duo Session
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Demo Stream View if no session running */}
-        {!activeSession && (
-          <div className="space-y-3">
-            {/* Demo Generator Card */}
-            <div className="glass-panel rounded-lg p-0 border-l-2 border-l-secondary overflow-hidden ml-4">
-              <div className="bg-surface-variant/30 px-4 py-2 flex items-center justify-between border-b border-white/5">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-secondary text-sm">smart_toy</span>
-                  <span className="font-micro-label text-micro-label text-secondary uppercase font-bold">Generator ({generator.model})</span>
-                  <span className="font-micro-label text-micro-label text-on-surface-variant ml-2">Round 2 Output</span>
-                </div>
-                <span className="font-micro-label text-micro-label text-on-surface-variant">2.4s</span>
-              </div>
-              <div className="p-4 font-code-block text-code-block text-on-surface text-sm overflow-x-auto bg-surface-container-lowest font-mono leading-relaxed">
-                <pre><code><span className="text-secondary-fixed-dim">export</span> <span className="text-primary">{"class"}</span> AuthModule {"{\n"}
-  <span className="text-secondary-fixed-dim">private</span> lock = <span className="text-secondary-fixed-dim">new</span> Mutex();{"\n"}
-  <span className="text-primary-fixed">async</span> validateToken(token: <span className="text-tertiary">string</span>) {"{\n"}
-    <span className="text-secondary-fixed-dim">await</span> <span className="text-primary-container">this</span>.lock.acquire();{"\n"}
-    <span className="text-secondary-fixed-dim">try</span> {"{\n"}
-      <span className="text-outline-variant">// Validation logic</span>{"\n"}
-      <span className="text-secondary-fixed-dim">const</span> isValid = <span className="text-secondary-fixed-dim">await</span> cache.check(token);{"\n"}
-      <span className="text-secondary-fixed-dim">return</span> isValid;{"\n"}
-    {"}"} <span className="text-secondary-fixed-dim">finally</span> {"{\n"}
-      <span className="text-primary-container">this</span>.lock.release();{"\n"}
-    {"}"}\n  {"}"}\n{"}"}</code></pre>
-              </div>
-            </div>
-
-            {/* Demo Critic Card */}
-            <div className="glass-panel rounded-lg p-0 border-l-2 border-l-tertiary overflow-hidden ml-8">
-              <div className="bg-surface-variant/30 px-4 py-2 flex items-center justify-between border-b border-white/5">
-                <div className="flex items-center gap-2">
-                  <span className="material-symbols-outlined text-tertiary text-sm">psychology</span>
-                  <span className="font-micro-label text-micro-label text-tertiary uppercase font-bold">Critic ({critic.model})</span>
-                </div>
-                <div className="bg-error-container/20 border border-error/30 text-error px-2 py-0.5 rounded flex items-center gap-1 font-micro-label text-micro-label font-bold uppercase">
-                  <span className="material-symbols-outlined text-[10px]">close</span>
-                  REJECTED
-                </div>
-              </div>
-              <div className="p-4 font-body-sm text-body-sm text-on-surface">
-                <p className="mb-2 text-on-surface-variant">The implementation introduces a severe bottleneck. Using a single global Mutex for token validation means that all concurrent requests will be serialized, completely defeating the purpose of asynchronous concurrency.</p>
-                <div className="bg-surface-container-highest p-2.5 rounded border border-white/5 font-code-block text-code-block text-xs mt-2 text-outline font-mono">
-                  &gt; Fix requirement: Implement a per-token locking mechanism or use a lock-free optimistic caching strategy to allow non-conflicting validations to proceed concurrently.
-                </div>
-              </div>
-            </div>
-
-            {/* Demo Iterated Generator Card (Active/Shimmer) */}
-            <div className="glass-panel rounded-lg p-0 border-l-2 border-l-secondary overflow-hidden ml-4 relative">
-              <div className="absolute inset-0 shimmer pointer-events-none z-0" />
-              <div className="relative z-10">
-                <div className="bg-surface-variant/50 px-4 py-2 flex items-center justify-between border-b border-white/5">
-                  <div className="flex items-center gap-2">
-                    <span className="material-symbols-outlined text-secondary text-sm animate-spin">autorenew</span>
-                    <span className="font-micro-label text-micro-label text-secondary uppercase font-bold">Generator ({generator.model})</span>
-                    <span className="font-micro-label text-micro-label text-on-surface-variant ml-2">Round 3 Generating...</span>
-                  </div>
-                  <div className="flex gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-bounce" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-bounce" style={{ animationDelay: "0.1s" }} />
-                    <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-bounce" style={{ animationDelay: "0.2s" }} />
-                  </div>
-                </div>
-                <div className="p-4 font-code-block text-code-block text-on-surface text-sm opacity-70 bg-surface-container-lowest font-mono">
-                  <pre><code><span className="text-secondary-fixed-dim">export</span> <span className="text-primary">{"class"}</span> AuthModule {"{\n"}  <span className="text-outline-variant">// Refactoring based on critic feedback</span>{"\n"}  <span className="text-secondary-fixed-dim">private</span> tokenLocks = <span className="text-secondary-fixed-dim">new</span> Map&lt;<span className="text-tertiary">string</span>, Mutex&gt;();{"\n"}  <span className="text-primary-fixed">async</span> validateToken(token: <span className="text-tertiary">string</span>) {"{\n"}    <span className="text-outline-variant">...</span></code><span className="inline-block w-2 h-4 bg-secondary ml-1 animate-pulse align-middle" /></pre>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Bottom Action */}
-      {activeSession?.status === "running" && (
-        <div className="mt-4 flex justify-end shrink-0">
-          <button
-            onClick={() => void handleCancel()}
-            className="bg-surface-container text-error hover:bg-error/10 border border-error/30 px-4 py-2 rounded-full font-body-sm text-body-sm font-semibold transition-colors flex items-center gap-2"
-          >
-            <span className="material-symbols-outlined text-sm">stop_circle</span>
-            Halt Loop
-          </button>
-        </div>
-      )}
-    </main>
   );
 }

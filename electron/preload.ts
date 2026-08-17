@@ -20,6 +20,7 @@ const api = {
   selectWorkspaceFolder: () => ipcRenderer.invoke("workspace:select-folder"),
   revealInSystemExplorer: (path: string) => ipcRenderer.invoke("shell:reveal", path),
   copyText: (text: string) => ipcRenderer.invoke("clipboard:copy", text),
+  openExternal: (url: string) => ipcRenderer.invoke("shell:openExternal", url),
   onMenuAction: (callback: (action: string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, action: string) => callback(action);
     ipcRenderer.on("menu:action", listener);

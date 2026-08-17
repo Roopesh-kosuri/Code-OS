@@ -28,13 +28,25 @@ const terminalSessions = new Map<string, TerminalPtySession>();
 let terminalIdCounter = 0;
 
 function sendTerminalOutput(sessionId: string, data: string): void {
-  mainWindow?.webContents.send("terminal:output", sessionId, data);
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("terminal:output", sessionId, data);
+    }
+  } catch {
+    // Window is closing/destroyed; ignore stream data during app shutdown
+  }
 }
 
 // ── Menu ───────────────────────────────────────────────────────────
 
 function sendMenuAction(action: string): void {
-  mainWindow?.webContents.send("menu:action", action);
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("menu:action", action);
+    }
+  } catch {
+    // Ignore if window destroyed
+  }
 }
 
 function createMenu(): void {
@@ -162,6 +174,10 @@ ipcMain.handle("workspace:select-folder", async () => {
 
 ipcMain.handle("shell:reveal", (_event, targetPath: string) => {
   shell.showItemInFolder(targetPath);
+});
+
+ipcMain.handle("shell:openExternal", (_event, url: string) => {
+  void shell.openExternal(url);
 });
 
 ipcMain.handle("clipboard:copy", (_event, text: string) => {
@@ -367,8 +383,11 @@ ipcMain.handle("backend:getStatus", () => {
 
 app.whenReady().then(async () => {
   await backend.start();
+  // Bundled PyInstaller binary needs ~15-20s on first cold start (self-extraction).
+  // Dev mode system Python is fast, so use a shorter timeout there.
+  const tokenWaitMs = isDev ? 6_000 : 35_000;
   try {
-    await backend.waitForToken(4_000);
+    await backend.waitForToken(tokenWaitMs);
     console.log("[app] session token ready");
   } catch {
     console.warn("[app] session token wait timed out; opening window anyway");
