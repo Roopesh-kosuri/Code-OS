@@ -56,44 +56,94 @@ from app.features.ai.schemas import FileChange
 
 # ── 1. Adaptive Effort Routing Regression Tests ──────────────────────────────
 
+# ── 1. Adaptive Effort Routing Regression Tests ──────────────────────────────
+
 def test_regression_adaptive_tier_routing():
     """Verify tier routing: Tier 0 (Fast Answer), Tier 1 (Quick Task), Tier 2 (Deep Task)."""
-    # Tier 0: Pure questions, explanations, conceptual lookups
-    t0_q1, l0_1 = _classify_task_effort("what does is_source_file in inventory_generator.py do?")
+    # Phase 0 Case 1: "hi" -> Tier 0 (Fast Answer), even when IDE attaches open editor files
+    t0_hi, l0_hi, r0_hi = _classify_task_effort("hi", attached_paths=["src/App.tsx", "src/main.ts"])
+    assert t0_hi == 0
+    assert "Fast Answer" in l0_hi
+    assert "greeting" in r0_hi
+
+    # Conversational greetings with punctuation or extra words
+    t0_hi2, l0_hi2, _ = _classify_task_effort("Hello there!")
+    assert t0_hi2 == 0
+
+    # Phase 0 Case 2: "what does is_source_file do?" -> Tier 0 (Fast Answer)
+    t0_q1, l0_1, r0_1 = _classify_task_effort("what does is_source_file do?")
     assert t0_q1 == 0
     assert "Fast Answer" in l0_1
 
-    t0_q2, l0_2 = _classify_task_effort("explain how the rate limiter works in backend/app/core/rate_limiter.py")
+    t0_q2, l0_2, _ = _classify_task_effort("explain how the rate limiter works in backend/app/core/rate_limiter.py")
     assert t0_q2 == 0
 
-    t0_q3, l0_3 = _classify_task_effort("where is the database connection string defined?")
+    t0_q3, l0_3, _ = _classify_task_effort("where is the database connection string defined?")
     assert t0_q3 == 0
 
-    # Tier 1: Single file edits, quick commands, surgical changes
-    t1_q1, l1_1 = _classify_task_effort("add '.yaml' to SOURCE_EXTENSIONS in inventory_generator.py")
+    # Phase 0 Case 3: "add '.yaml' to SOURCE_EXTENSIONS" -> Tier 1 (Quick Task)
+    t1_q1, l1_1, r1_1 = _classify_task_effort("add '.yaml' to SOURCE_EXTENSIONS")
     assert t1_q1 == 1
     assert "Quick Task" in l1_1
+    assert "add" in r1_1
 
-    t1_q2, l1_2 = _classify_task_effort("fix the typo in line 42 of src/App.tsx")
+    t1_q2, l1_2, _ = _classify_task_effort("fix the typo in line 42 of src/App.tsx")
     assert t1_q2 == 1
 
-    t1_q3, l1_3 = _classify_task_effort("run pytest on tests/test_auth.py")
+    t1_q3, l1_3, _ = _classify_task_effort("run pytest on tests/test_auth.py")
     assert t1_q3 == 1
 
-    # Tier 2: Multi-file, generations, full site builds, refactors
-    t2_q1, l2_1 = _classify_task_effort("build a complete modern single-page portfolio site with CSS parallax")
+    # Phase 0 Case 4: "build a whatsapp clone with chat, contacts and media sharing" -> Tier 2 (Deep think)
+    t2_clone, l2_clone, r2_clone = _classify_task_effort("build a whatsapp clone with chat, contacts and media sharing")
+    assert t2_clone == 2
+    assert "Deep think" in l2_clone
+
+    t2_q1, l2_1, _ = _classify_task_effort("build a complete modern single-page portfolio site with CSS parallax")
     assert t2_q1 == 2
     assert "Deep think" in l2_1
 
-    t2_q2, l2_2 = _classify_task_effort("refactor the entire authentication system across all files")
+    t2_q2, l2_2, _ = _classify_task_effort("refactor the entire authentication system across all files")
     assert t2_q2 == 2
 
-    t2_q3, l2_3 = _classify_task_effort("generate a full HTML site with 1000+ lines")
+    t2_q3, l2_3, _ = _classify_task_effort("generate a full HTML site with 1000+ lines")
     assert t2_q3 == 2
 
+    # Phase 1 Classifier canonical cases:
+    # "Build a small project called X with tests and README" -> Tier 2
+    t2_canon1, l2_canon1, _ = _classify_task_effort("Build a small project called X with tests and README")
+    assert t2_canon1 == 2
+    assert "Deep think" in l2_canon1
+
+    t2_canon2, l2_canon2, _ = _classify_task_effort("create mini_notes with tests and readme")
+    assert t2_canon2 == 2
+    assert "Deep think" in l2_canon2
+
+    t2_canon3, l2_canon3, _ = _classify_task_effort("Build a small CLI called mini_notes with tests and README")
+    assert t2_canon3 == 2
+    assert "Deep think" in l2_canon3
+
+    t2_canon4, l2_canon4, _ = _classify_task_effort("Build a small tool called mini_notes with tests and README")
+    assert t2_canon4 == 2
+    assert "Deep think" in l2_canon4
+
     # Agent mode toggle manual override: forces at least Tier 1
-    t_agent, l_agent = _classify_task_effort("what is Python?", is_agent_mode=True)
+    t_agent, l_agent, _ = _classify_task_effort("what is Python?", is_agent_mode=True)
     assert t_agent >= 1
+
+
+def test_regression_tier0_lean_prompt_zero_overhead():
+    """Verify Tier 0 prompt construction is instantaneous, lean, and does not leak heavy context."""
+    lean_prompt = _build_system_prompt(
+        workspace="/tmp/fake",
+        tier=0,
+        context={"workspace": "/tmp/fake", "active_file": {"name": "huge.py", "content": "x" * 10000}},
+        rag_snippet_summary="### File foo.py:\n...",
+        project_memory="Convention: use strict types",
+    )
+    assert "You are Rony Agent" in lean_prompt
+    assert "huge.py" not in lean_prompt
+    assert "Convention:" not in lean_prompt
+    assert "foo.py" not in lean_prompt
 
 
 # ── 2. Project Memory (RONY.md) Regression Tests ─────────────────────────────
@@ -298,3 +348,59 @@ def test_regression_interactive_ask_user():
     assert respond_to_user_question(action_id, "Markdown") is True
     assert pending.selected_option == "Markdown"
     assert pending.event.is_set()
+
+
+# ── 11. Clear All Pending On Cancel Regression Tests ─────────────────────────
+
+def test_regression_clear_all_pending():
+    """Verify clear_all_pending unblocks and dismisses all pending approval and ask_user cards."""
+    from app.features.ai.chat_harness import clear_all_pending
+
+    _pending_approvals.clear()
+    _pending_user_responses.clear()
+
+    act_id = "test-act-cancel-1"
+    pending_appr = PendingApproval(
+        action_id=act_id,
+        action_type="command",
+        detail="rm -rf /",
+        reason="Dangerous",
+    )
+    _pending_approvals[act_id] = pending_appr
+
+    ask_id = "test-ask-cancel-2"
+    pending_ask = PendingUserResponse(
+        action_id=ask_id,
+        question="Which format?",
+        options=["A", "B"],
+    )
+    _pending_user_responses[ask_id] = pending_ask
+
+    cleared = clear_all_pending()
+    assert cleared == 2
+    assert pending_appr.event.is_set()
+    assert pending_appr.approved is False
+    assert act_id not in _pending_approvals
+
+    assert pending_ask.event.is_set()
+    assert pending_ask.selected_option == "Cancelled"
+    assert ask_id not in _pending_user_responses
+
+
+def test_regression_clean_response_text_error_markers():
+    """Verify that _clean_response_text strips [TRUNCATED] and [Error:] markers."""
+    raw = (
+        "[PLAN]\n1. Step 1\n[/PLAN]\n"
+        "Here is the clean text.\n"
+        "[TRUNCATED: output exceeded token limit]\n"
+        "[Error: AI provider call failed: timeout]\n"
+        "[DONE]"
+    )
+    cleaned = _clean_response_text(raw)
+    assert "[PLAN]" not in cleaned
+    assert "[/PLAN]" not in cleaned
+    assert "[TRUNCATED" not in cleaned
+    assert "[Error:" not in cleaned
+    assert "[DONE]" not in cleaned
+    assert "Here is the clean text." in cleaned
+
