@@ -812,23 +812,43 @@ MAX_ACTIVITY_LOG_LINES = 10000             # 10,000 entries before rotation
 MAX_ACTIVITY_LOG_FILES = 3                 # Keep only activity_log.jsonl, .1.jsonl, .2.jsonl
 
 
-def _rotate_activity_log(log_path: Path, max_size_mb: int = 10, max_files: int = 3) -> None:
-    """Rotate activity log when size > max_size_mb."""
-    if not log_path.is_file():
+def _rotate_activity_log(log_path: Path | str, max_size_mb: float = 2.0, max_files: int = 3) -> None:
+    """Rotate activity log when size exceeds max_size_mb."""
+    p = Path(log_path)
+    if p.is_dir():
+        p = p / ".code_os" / "activity_log.jsonl"
+    elif p.name != "activity_log.jsonl" and not p.suffix:
+        p = p / ".code_os" / "activity_log.jsonl"
+
+    if not p.is_file():
         return
 
     try:
-        if log_path.stat().st_size > max_size_mb * 1024 * 1024:
+        if p.stat().st_size > max_size_mb * 1024 * 1024:
             # Rotate existing archives
             for i in range(max_files - 1, 0, -1):
-                old = log_path.parent / f"activity_log.{i}.jsonl"
-                new = log_path.parent / f"activity_log.{i+1}.jsonl"
+                old = p.parent / f"activity_log.{i}.jsonl"
+                new = p.parent / f"activity_log.{i+1}.jsonl"
                 if old.exists():
                     if i == max_files - 1:
-                        old.unlink()  # Delete oldest
+                        try:
+                            old.unlink()  # Delete oldest
+                        except Exception:
+                            pass
                     else:
-                        old.rename(new)
-            log_path.rename(log_path.parent / "activity_log.1.jsonl")
+                        try:
+                            if new.exists():
+                                new.unlink()
+                            old.rename(new)
+                        except Exception:
+                            pass
+            try:
+                target_1 = p.parent / "activity_log.1.jsonl"
+                if target_1.exists():
+                    target_1.unlink()
+                p.rename(target_1)
+            except Exception:
+                pass
     except Exception as exc:
         logger.warning("chat_harness: error rotating activity log: %s", exc)
 
