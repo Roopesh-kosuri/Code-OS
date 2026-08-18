@@ -103,7 +103,7 @@ def _handle_read_file(workspace: str, arguments: dict) -> ToolResult:
         if end_idx < total_lines:
             truncated_hint = f"\n... [Showing lines {start_line}-{end_idx} of {total_lines}. To view more, call read_file with path='{rel_path}', start_line={end_idx + 1}]"
 
-        return ToolResult(tool_name="read_file", success=True, output=f"{header}\n{content}{truncated_hint}")
+        return ToolResult(tool_name="read_file", success=True, output=f"{header}\n<untrusted_file_content path=\"{rel_path}\">\n{content}\n</untrusted_file_content>{truncated_hint}")
     except OSError as exc:
         return ToolResult(tool_name="read_file", success=False, output="", error=f"Read error: {exc}")
 
@@ -362,6 +362,22 @@ AGENT_TOOLS = {
             "updated": "The new code to write.",
         },
     },
+    "take_screenshot": {
+        "description": "Capture an offscreen visual rendering of a workspace HTML file/URL (preview mode) or the CODE OS application window (app_window mode) and inspect it using Vision QA analysis.",
+        "parameters": {
+            "mode": "Mode of capture: 'preview' (render HTML/URL offscreen) or 'app_window' (capture CODE OS app screen). Default is 'preview'.",
+            "target": "Workspace HTML file (e.g. 'index.html' or 'hello.html') or localhost URL (e.g. 'http://localhost:3000') to render in preview mode.",
+            "question": "Specific visual question to inspect (e.g. 'Does the nav render, are sections visible, is anything overlapping or broken?').",
+        },
+    },
+    "inspect_visuals": {
+        "description": "Alias for take_screenshot to visually inspect rendered pages or application window.",
+        "parameters": {
+            "mode": "Mode of capture: 'preview' or 'app_window'.",
+            "target": "Workspace HTML file or URL to preview.",
+            "question": "Specific visual question to inspect.",
+        },
+    },
 }
 
 
@@ -492,9 +508,15 @@ You have access to workspace tools to explore, read, test, and edit files:
 [TOOL_CALL: run_test]
 {{"command": "python -m pytest tests/test_rag_pipeline.py"}}
 [/TOOL_CALL]
+
+**take_screenshot** — Inspect the rendered visual appearance of an HTML file or application window:
+[TOOL_CALL: take_screenshot]
+{{"mode": "preview", "target": "hello.html", "question": "Does the navigation render properly, are sections visible, and is any text overlapping?"}}
+[/TOOL_CALL]
 {edit_doc}
 IMPORTANT RULES:
 - When you need to understand existing code or match interfaces before writing changes, use read_file and list_directory FIRST.
+- To inspect visual layout, UI designs, or test if generated web pages look right, use take_screenshot with a specific question.
 - Do NOT guess or hallucinate file contents or module paths — read them with read_file.
 {rules_edit}
 - When you are finished (all changes made, no more tools needed), output [DONE] on its own line.
