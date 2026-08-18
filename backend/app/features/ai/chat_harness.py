@@ -763,42 +763,29 @@ def _sse_error(message: str, **kwargs) -> str:
 # ── Searchable Agent Activity Timeline Log ───────────────────────────────────
 
 MAX_ACTIVITY_LOG_BYTES = 10 * 1024 * 1024  # 10 MB per archive
+MAX_ACTIVITY_LOG_LINES = 10000             # 10,000 entries before rotation
+MAX_ACTIVITY_LOG_FILES = 3                 # Keep only activity_log.jsonl, .1.jsonl, .2.jsonl
 
 
-def _tail_lines(file_path: Path, max_lines: int = 1000) -> list[str]:
-    """Read lines from the end of a file backwards without loading entire file into memory."""
-    if not file_path.is_file():
-        return []
-    lines: list[str] = []
-    chunk_size = 64 * 1024
+def _rotate_activity_log(log_path: Path, max_size_mb: int = 10, max_files: int = 3) -> None:
+    """Rotate activity log when size > max_size_mb."""
+    if not log_path.is_file():
+        return
+
     try:
-        with file_path.open("rb") as f:
-            f.seek(0, os.SEEK_END)
-            file_size = f.tell()
-            remainder = b""
-            pos = file_size
-
-            while pos > 0 and len(lines) < max_lines:
-                read_size = min(chunk_size, pos)
-                pos -= read_size
-                f.seek(pos, os.SEEK_SET)
-                chunk = f.read(read_size) + remainder
-                chunk_lines = chunk.split(b"\n")
-                if pos > 0:
-                    remainder = chunk_lines[0]
-                    chunk_lines = chunk_lines[1:]
-                else:
-                    remainder = b""
-
-                for raw_line in reversed(chunk_lines):
-                    s_line = raw_line.strip().decode("utf-8", errors="replace")
-                    if s_line:
-                        lines.append(s_line)
-                        if len(lines) >= max_lines:
-                            break
+        if log_path.stat().st_size > max_size_mb * 1024 * 1024:
+            # Rotate existing archives
+            for i in range(max_files - 1, 0, -1):
+                old = log_path.parent / f"activity_log.{i}.jsonl"
+                new = log_path.parent / f"activity_log.{i+1}.jsonl"
+                if old.exists():
+                    if i == max_files - 1:
+                        old.unlink()  # Delete oldest
+                    else:
+                        old.rename(new)
+            log_path.rename(log_path.parent / "activity_log.1.jsonl")
     except Exception as exc:
-        logger.warning("chat_harness: error in _tail_lines: %s", exc)
-    return lines
+        logger.warning("chat_harness: error rotating activity log: %s", exc)
 
 
 def _append_activity_log(workspace: str, entry: dict) -> None:
@@ -810,24 +797,8 @@ def _append_activity_log(workspace: str, entry: dict) -> None:
         os_dir.mkdir(parents=True, exist_ok=True)
         p = os_dir / "activity_log.jsonl"
 
-        # Log rotation check (cap at 10MB)
-        if p.is_file() and p.stat().st_size >= MAX_ACTIVITY_LOG_BYTES:
-            rotated_1 = os_dir / "activity_log.1.jsonl"
-            rotated_2 = os_dir / "activity_log.2.jsonl"
-            if rotated_1.is_file():
-                if rotated_2.is_file():
-                    try:
-                        rotated_2.unlink()
-                    except Exception:
-                        pass
-                try:
-                    rotated_1.rename(rotated_2)
-                except Exception:
-                    pass
-            try:
-                p.rename(rotated_1)
-            except Exception:
-                pass
+        # Check and rotate if size > 10MB
+        _rotate_activity_log(p, max_size_mb=10, max_files=MAX_ACTIVITY_LOG_FILES)
 
         entry.setdefault("timestamp", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         entry.setdefault("action_type", "general")
@@ -841,49 +812,131 @@ def _append_activity_log(workspace: str, entry: dict) -> None:
         logger.warning("chat_harness: failed to append to activity log: %s", exc)
 
 
-def _load_activity_log(workspace: str, search: str = "", filter_type: str = "all", limit: int = 100) -> list[dict]:
-    """Load and filter entries from <workspace>/.code_os/activity_log.jsonl in reverse chronological order."""
-    if not workspace:
-        return []
-    p = Path(workspace) / ".code_os" / "activity_log.jsonl"
-    if not p.is_file():
-        return []
+def _load_activity_log_tail(
+    log_path: Path,
+    limit: int = 100,
+    offset: int = 0,
+    search: str = "",
+    filter_type: str = "all",
+) -> tuple[list[dict], int, bool]:
+    """Read activity log from end with backward seeking, supporting offset, limit, search, and filtering."""
+    if not log_path.is_file():
+        return [], 0, False
 
     search_lower = search.lower().strip()
-    filtered: list[dict] = []
+    entries: list[dict] = []
+    total_matched = 0
+    skipped = 0
 
-    # Read lines in reverse from EOF directly (bounded memory & CPU)
-    raw_lines = _tail_lines(p, max_lines=max(limit * 10, 1000))
-    for line in raw_lines:
-        try:
-            e = json.loads(line)
-        except Exception:
-            continue
+    try:
+        with log_path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            file_size = f.tell()
+            block_size = 8192
+            buffer = b""
+            position = file_size
 
-        act_type = str(e.get("action_type", "")).lower()
-        outcome = str(e.get("outcome", "")).lower()
-        target = str(e.get("target", "")).lower()
-        details = str(e.get("details", "")).lower()
+            while position > 0:
+                read_size = min(block_size, position)
+                position -= read_size
+                f.seek(position, os.SEEK_SET)
+                buffer = f.read(read_size) + buffer
+                lines = buffer.split(b"\n")
+                buffer = lines[0]  # Keep incomplete first line
 
-        # Type filter
-        if filter_type == "edits" and act_type not in ("edit_proposal", "edit_file", "append_file", "undo_turn"):
-            continue
-        if filter_type == "commands" and act_type not in ("command_run", "run_command", "run_test", "security_policy_blocked"):
-            continue
-        if filter_type == "failures" and outcome not in ("failed", "rejected", "error", "regression_detected", "timed_out", "blocked"):
-            continue
+                for raw_line in reversed(lines[1:]):
+                    line_str = raw_line.strip().decode("utf-8", errors="replace")
+                    if not line_str:
+                        continue
+                    try:
+                        e = json.loads(line_str)
+                    except Exception:
+                        continue
 
-        # Search query filter
-        if search_lower:
-            combined = f"{act_type} {outcome} {target} {details}"
-            if search_lower not in combined:
-                continue
+                    act_type = str(e.get("action_type", "")).lower()
+                    outcome = str(e.get("outcome", "")).lower()
+                    target = str(e.get("target", "")).lower()
+                    details = str(e.get("details", "")).lower()
 
-        filtered.append(e)
-        if len(filtered) >= limit:
-            break
+                    # Type filter
+                    if filter_type == "edits" and act_type not in ("edit_proposal", "edit_file", "append_file", "undo_turn"):
+                        continue
+                    if filter_type == "commands" and act_type not in ("command_run", "run_command", "run_test", "security_policy_blocked"):
+                        continue
+                    if filter_type == "failures" and outcome not in ("failed", "rejected", "error", "regression_detected", "timed_out", "blocked"):
+                        continue
 
-    return filtered
+                    # Search query filter
+                    if search_lower:
+                        combined = f"{act_type} {outcome} {target} {details}"
+                        if search_lower not in combined:
+                            continue
+
+                    total_matched += 1
+
+                    if skipped < offset:
+                        skipped += 1
+                        continue
+
+                    if len(entries) < limit:
+                        entries.append(e)
+
+            # Handle final remainder in buffer
+            if buffer.strip():
+                try:
+                    e = json.loads(buffer.strip().decode("utf-8", errors="replace"))
+                    act_type = str(e.get("action_type", "")).lower()
+                    outcome = str(e.get("outcome", "")).lower()
+                    target = str(e.get("target", "")).lower()
+                    details = str(e.get("details", "")).lower()
+                    match = True
+                    if filter_type == "edits" and act_type not in ("edit_proposal", "edit_file", "append_file", "undo_turn"):
+                        match = False
+                    elif filter_type == "commands" and act_type not in ("command_run", "run_command", "run_test", "security_policy_blocked"):
+                        match = False
+                    elif filter_type == "failures" and outcome not in ("failed", "rejected", "error", "regression_detected", "timed_out", "blocked"):
+                        match = False
+                    if match and search_lower:
+                        combined = f"{act_type} {outcome} {target} {details}"
+                        if search_lower not in combined:
+                            match = False
+                    if match:
+                        total_matched += 1
+                        if skipped < offset:
+                            skipped += 1
+                        elif len(entries) < limit:
+                            entries.append(e)
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.warning("chat_harness: failed reading activity log tail: %s", exc)
+
+    has_more = (offset + len(entries)) < total_matched
+    return entries, total_matched, has_more
+
+
+def _load_activity_log(
+    workspace: str,
+    search: str = "",
+    filter_type: str = "all",
+    limit: int = 100,
+    offset: int = 0,
+    return_metadata: bool = False,
+):
+    """Load and filter entries from <workspace>/.code_os/activity_log.jsonl in reverse chronological order."""
+    if not workspace:
+        return {"entries": [], "total": 0, "has_more": False} if return_metadata else []
+    p = Path(workspace) / ".code_os" / "activity_log.jsonl"
+    if not p.is_file():
+        return {"entries": [], "total": 0, "has_more": False} if return_metadata else []
+
+    limit = min(max(1, limit), 1000)
+    offset = max(0, offset)
+    entries, total, has_more = _load_activity_log_tail(p, limit=limit, offset=offset, search=search, filter_type=filter_type)
+
+    if return_metadata:
+        return {"entries": entries, "total": total, "has_more": has_more}
+    return entries
 
 
 # ── Checkpoint-Resume for Interrupted Runs ───────────────────────────────────

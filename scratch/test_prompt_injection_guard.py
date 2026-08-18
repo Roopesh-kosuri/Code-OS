@@ -34,7 +34,7 @@ from app.features.ai.chat_harness import (
     _gather_budgeted_rag_context,
     _append_activity_log,
     _load_activity_log,
-    _tail_lines,
+    _load_activity_log_tail,
     _pending_approvals,
     _LEAN_CHAT_SYSTEM_PROMPT,
     _QUICK_TASK_SYSTEM_PROMPT,
