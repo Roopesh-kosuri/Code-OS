@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api } from "../lib/api";
 import { getPreset } from "../lib/providerPresets";
+import { getDefaultVisionModel } from "../lib/models";
 import type { ChatMessage, ModelDto } from "../types/api";
 import { useWorkspaceStore } from "./workspaceStore";
 import { useEditorStore } from "./editorStore";
@@ -29,10 +30,13 @@ export interface AgentStatus {
     | "memory_updated"
     | "verified_disk"
     | "self_critique"
+    | "secret_scan"
+    | "regression_guard"
     | "tool_skipped"
     | "replan"
     | "partial_report"
-    | "audit";
+    | "audit"
+    | "vision";
   message: string;
   tool?: string;
   detail?: string;
@@ -55,6 +59,7 @@ export interface PendingApprovalState {
   proposal_id?: string;
   path?: string;
   diff_summary?: string;
+  is_native_fallback?: boolean;
 }
 
 export interface PendingUserResponseState {
@@ -84,15 +89,54 @@ export interface CommandExecution {
   success: boolean;
 }
 
+export interface AttachedImage {
+  name: string;
+  dataUrl: string;
+  size?: number;
+  type?: string;
+}
+
+export interface CheckpointInfo {
+  turn_number: number;
+  commit_hash: string;
+  touched_files: string[];
+  undone?: boolean;
+}
+
+export interface InterruptedState {
+  user_query: string;
+  tier: number;
+  iteration: number;
+  max_iterations: number;
+  messages: { role: string; content: string }[];
+  dag_plan_steps: DAGPlanStep[];
+  staged_changes: { path: string; original: string; updated: string }[];
+  tokens_used: number;
+  tools_executed: number;
+  timestamp: string;
+}
+
+export interface ActivityLogEntry {
+  timestamp: string;
+  action_type: string;
+  target: string;
+  outcome: string;
+  tier?: number;
+  token_count?: number;
+  details?: string;
+}
+
 export interface ExtendedChatMessage extends ChatMessage {
   id?: string;
   model?: string;
   attached_paths?: string[];
+  attached_images?: AttachedImage[];
   created_at?: string;
   agentStatus?: AgentStatus | null;
   agentPlan?: AgentPlan | null;
   agentToolHistory?: ToolEvent[];
   commands?: CommandExecution[];
+  checkpoint?: CheckpointInfo;
 }
 
 export interface ChatThread {
@@ -111,6 +155,7 @@ type AIState = {
   /** Canonical key ID for api_keys table lookup */
   apiKeyProvider: string | null;
   model: string;
+  visionModel: string;
   baseUrl: string;
   messages: ExtendedChatMessage[];
   models: ModelDto[];
@@ -121,12 +166,17 @@ type AIState = {
   agentMode: boolean;
   currentTier: number | null;
   currentTierLabel: string | null;
+  currentTierReason: string | null;
+  currentTokensUsed: number | null;
+  interruptedState: InterruptedState | null;
   agentStatus: AgentStatus | null;
   agentPlan: AgentPlan | null;
   agentToolHistory: ToolEvent[];
   pendingApproval: PendingApprovalState | null;
   pendingApprovals: PendingApprovalState[];
   pendingUserResponse: PendingUserResponseState | null;
+  streamStartTimestamp: number | null;
+  lastTokenTimestamp: number | null;
 
   // Multi-thread state
   currentThreadId: string | null;
@@ -134,6 +184,7 @@ type AIState = {
 
   setPreset: (presetId: string, baseUrlOverride?: string, modelOverride?: string) => void;
   setModel: (model: string) => void;
+  setVisionModel: (visionModel: string) => void;
   setBaseUrl: (baseUrl: string) => void;
   refreshModels: () => Promise<void>;
   stopGeneration: () => void;
@@ -142,19 +193,24 @@ type AIState = {
   toggleAgentMode: () => void;
   setAgentMode: (enabled: boolean) => void;
   clearAgentState: () => void;
-  approveAction: (actionId: string) => Promise<void>;
+  clearPendingUserResponse: () => void;
+  checkInterruptedState: (workspace?: string) => Promise<void>;
+  resumeInterruptedRun: (workspace?: string) => Promise<void>;
+  dismissInterruptedState: (workspace?: string) => Promise<void>;
+  approveAction: (actionId: string, alwaysAllow?: boolean, trustPattern?: string) => Promise<void>;
   rejectAction: (actionId: string) => Promise<void>;
   respondToUserQuestion: (actionId: string, answer: string) => Promise<void>;
   sendAgentMessage: (content: string, attachedPaths?: string[]) => Promise<void>;
+  undoTurn: (commitHash: string, touchedFiles: string[]) => Promise<{ success: boolean; message: string; restored_files: string[] }>;
 
   // Actions
-  loadThreads: (workspace: string) => Promise<void>;
+  loadThreads: (workspace?: string) => Promise<void>;
   switchThread: (threadId: string) => Promise<void>;
   newThread: (workspace?: string) => Promise<void>;
   renameThread: (threadId: string, title: string) => Promise<void>;
   deleteThread: (threadId: string) => Promise<void>;
   
-  sendMessage: (content: string, attachedPaths?: string[]) => Promise<void>;
+  sendMessage: (content: string, attachedPaths?: string[], attachedImages?: AttachedImage[]) => Promise<void>;
   regenerate: (messageIndex?: number) => Promise<void>;
   editMessage: (index: number, newContent: string) => Promise<void>;
   deleteMessagePair: (index: number) => Promise<void>;
@@ -165,6 +221,7 @@ let activeController: AbortController | null = null;
 const savedPreset = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_preset") || "auto" : "auto";
 const savedPresetObj = getPreset(savedPreset);
 const savedModel = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_model") ?? (savedPresetObj?.model_example || "") : "";
+const savedVisionModel = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_vision_model") ?? getDefaultVisionModel(savedPreset) : getDefaultVisionModel(savedPreset);
 const savedBaseUrl = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_base_url") ?? (savedPresetObj?.base_url || "") : "";
 const savedApiKeyProvider = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_api_key_provider") ?? (savedPresetObj?.api_key_provider || null) : null;
 
@@ -173,6 +230,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   provider: savedPresetObj?.provider || "auto",
   apiKeyProvider: savedApiKeyProvider,
   model: savedModel,
+  visionModel: savedVisionModel,
   baseUrl: savedBaseUrl,
   messages: [],
   models: [],
@@ -183,12 +241,17 @@ export const useAIStore = create<AIState>((set, get) => ({
   agentMode: false,
   currentTier: null,
   currentTierLabel: null,
+  currentTierReason: null,
+  currentTokensUsed: null,
+  interruptedState: null,
   agentStatus: null,
   agentPlan: null,
   agentToolHistory: [],
   pendingApproval: null,
   pendingApprovals: [],
   pendingUserResponse: null,
+  streamStartTimestamp: null,
+  lastTokenTimestamp: null,
 
   currentThreadId: null,
   threads: [],
@@ -205,6 +268,9 @@ export const useAIStore = create<AIState>((set, get) => ({
     set({
       currentTier: null,
       currentTierLabel: null,
+      currentTierReason: null,
+      currentTokensUsed: null,
+      interruptedState: null,
       agentStatus: null,
       agentPlan: null,
       agentToolHistory: [],
@@ -214,9 +280,125 @@ export const useAIStore = create<AIState>((set, get) => ({
     });
   },
 
-  approveAction: async (actionId: string) => {
+  clearPendingUserResponse: () => {
+    set({ pendingUserResponse: null });
+  },
+
+  checkInterruptedState: async (workspace) => {
+    const ws = workspace || useWorkspaceStore.getState().currentWorkspace?.path || "";
+    if (!ws) return;
     try {
-      await api.post(`/api/ai/chat-agent/approve/${actionId}`);
+      const res = await api.get<{ has_interrupted: boolean; state: InterruptedState | null }>(
+        `/api/ai/chat-agent/interrupted-state?workspace=${encodeURIComponent(ws)}`
+      );
+      set({ interruptedState: res.has_interrupted ? res.state : null });
+    } catch {
+      set({ interruptedState: null });
+    }
+  },
+
+  resumeInterruptedRun: async (workspace) => {
+    const ws = workspace || useWorkspaceStore.getState().currentWorkspace?.path || "";
+    const state = get().interruptedState;
+    if (!ws || !state) return;
+    set({ streaming: true, error: null, interruptedState: null, agentMode: true });
+
+    try {
+      const controller = new AbortController();
+      activeController = controller;
+
+      // Add resumed assistant placeholder if needed
+      const msgs = get().messages;
+      if (msgs.length === 0 || msgs[msgs.length - 1].role !== "assistant") {
+        set({
+          messages: [
+            ...msgs,
+            {
+              role: "assistant",
+              content: "",
+              agentStatus: { type: "thinking", message: `Resuming task from step ${state.iteration + 1}...` },
+            },
+          ],
+        });
+      }
+
+      await api.streamSSE(
+        "/api/ai/chat-agent/resume",
+        {
+          workspace: ws,
+          provider: get().provider,
+          model: get().model,
+          base_url: get().baseUrl || undefined,
+          api_key_provider: get().apiKeyProvider || undefined,
+        },
+        (eventType: string, data: any) => {
+          if (eventType === "tier_routing") {
+            const tierVal = typeof data.tier === "number" ? data.tier : 0;
+            const labelVal = data.label || (tierVal === 0 ? "Fast path" : (tierVal === 1 ? "Quick task" : "Deep think"));
+            set({ currentTier: tierVal, currentTierLabel: labelVal, currentTierReason: data.reason || labelVal });
+          } else if (eventType === "metrics") {
+            if (typeof data.tokens_used === "number") {
+              set({ currentTokensUsed: data.tokens_used });
+            }
+          } else if (eventType === "status") {
+            const statusObj: AgentStatus = {
+              type: data.type || "thinking",
+              message: data.message || "",
+              tool: data.tool,
+              detail: data.detail,
+              command: data.command,
+              tier: data.tier,
+              label: data.label,
+            };
+            set((s) => {
+              const messages = [...s.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant") {
+                messages[messages.length - 1] = { ...last, agentStatus: statusObj };
+              }
+              return { agentStatus: statusObj, messages };
+            });
+          } else if (eventType === "token") {
+            const tokenStr = typeof data === "string" ? data : (data.content || "");
+            set((s) => {
+              const messages = [...s.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant") {
+                messages[messages.length - 1] = { ...last, content: last.content + tokenStr };
+              }
+              return { messages };
+            });
+          } else if (eventType === "done") {
+            set({ streaming: false, interruptedState: null });
+          }
+        },
+        controller.signal
+      );
+    } catch (err: any) {
+      if (err.name !== "AbortError") {
+        set({ error: err.message || "Failed to resume interrupted run", streaming: false });
+      }
+    } finally {
+      activeController = null;
+      set({ streaming: false });
+    }
+  },
+
+  dismissInterruptedState: async (workspace) => {
+    const ws = workspace || useWorkspaceStore.getState().currentWorkspace?.path || "";
+    if (!ws) return;
+    try {
+      await api.delete(`/api/ai/chat-agent/interrupted-state?workspace=${encodeURIComponent(ws)}`);
+    } catch {}
+    set({ interruptedState: null });
+  },
+
+  approveAction: async (actionId: string, alwaysAllow: boolean = false, trustPattern?: string) => {
+    try {
+      await api.post(`/api/ai/chat-agent/approve/${actionId}`, {
+        always_allow: alwaysAllow,
+        trust_pattern: trustPattern,
+      });
       set((state) => {
         const remaining = (state.pendingApprovals || []).filter((a) => a.action_id !== actionId);
         return {
@@ -244,12 +426,47 @@ export const useAIStore = create<AIState>((set, get) => ({
     }
   },
 
+  undoTurn: async (commitHash: string, touchedFiles: string[]) => {
+    const workspace = useWorkspaceStore.getState().currentWorkspace?.path || "";
+    try {
+      const res = await api.post<{ success: boolean; message: string; restored_files: string[] }>(
+        "/api/ai/chat-agent/undo-turn",
+        {
+          workspace,
+          commit_hash: commitHash,
+          touched_files: touchedFiles,
+        }
+      );
+      set((state) => {
+        const messages = state.messages.map((m) => {
+          if (m.checkpoint?.commit_hash === commitHash) {
+            return {
+              ...m,
+              checkpoint: { ...m.checkpoint, undone: true },
+            };
+          }
+          return m;
+        });
+        return { messages };
+      });
+      return res;
+    } catch (err) {
+      console.error("Failed to undo turn:", err);
+      throw err;
+    }
+  },
+
   respondToUserQuestion: async (actionId: string, answer: string) => {
+    // Optimistically dismiss the clarification card immediately so it vanishes without lag
+    set({ pendingUserResponse: null });
     try {
       await api.post(`/api/ai/chat-agent/respond/${actionId}`, { answer });
-      set({ pendingUserResponse: null });
     } catch (err) {
-      console.error("Failed to submit question response:", err);
+      console.warn("Failed to submit in-stream response or action expired:", err);
+      // Fallback: if the in-stream listener already closed, fallback to sending as a normal user message
+      if (!get().streaming) {
+        void get().sendMessage(answer);
+      }
     }
   },
 
@@ -296,6 +513,13 @@ export const useAIStore = create<AIState>((set, get) => ({
     set({ model });
   },
 
+  setVisionModel: (visionModel) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("code_os_ai_vision_model", visionModel);
+    }
+    set({ visionModel });
+  },
+
   setBaseUrl: (baseUrl) => {
     if (typeof window !== "undefined") {
       localStorage.setItem("code_os_ai_base_url", baseUrl);
@@ -331,16 +555,20 @@ export const useAIStore = create<AIState>((set, get) => ({
   stopGeneration: () => {
     activeController?.abort();
     activeController = null;
-    set({ streaming: false });
+    void api.post("/api/ai/chat-agent/cancel").catch(() => {});
+    set({ streaming: false, pendingUserResponse: null, pendingApproval: null, pendingApprovals: [], streamStartTimestamp: null, lastTokenTimestamp: null });
   },
 
   // ── Multi-thread actions ────────────────────────────────────────────────────
 
-  loadThreads: async (workspace) => {
+  loadThreads: async (workspace?: string) => {
     try {
-      const list = await api.get<ChatThread[]>("/api/ai/threads", { workspace });
+      const list = await api.get<ChatThread[]>("/api/ai/threads", workspace ? { workspace } : undefined);
       set({ threads: list });
-      if (!get().currentThreadId && list.length > 0) {
+      const lastActiveId = typeof window !== "undefined" ? localStorage.getItem("code-os:active-chat-thread-id") : null;
+      if (lastActiveId && list.some((t) => t.id === lastActiveId)) {
+        await get().switchThread(lastActiveId);
+      } else if (!get().currentThreadId && list.length > 0) {
         await get().switchThread(list[0].id);
       }
     } catch (err) {
@@ -350,18 +578,27 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   switchThread: async (threadId) => {
     try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("code-os:active-chat-thread-id", threadId);
+      }
       const messages = await api.get<ExtendedChatMessage[]>(`/api/ai/threads/${threadId}/messages`);
-      set({ currentThreadId: threadId, messages, error: null });
+      set({ currentThreadId: threadId, messages, error: null, pendingUserResponse: null, pendingApproval: null, pendingApprovals: [] });
     } catch (err) {
       set({ error: "Failed to switch thread" });
     }
   },
 
   newThread: async (workspace) => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("code-os:active-chat-thread-id");
+    }
     set({
       currentThreadId: null,
       messages: [],
       error: null,
+      pendingUserResponse: null,
+      pendingApproval: null,
+      pendingApprovals: [],
     });
   },
 
@@ -379,6 +616,9 @@ export const useAIStore = create<AIState>((set, get) => ({
   deleteThread: async (threadId) => {
     try {
       await api.delete(`/api/ai/threads/${threadId}`);
+      if (typeof window !== "undefined" && localStorage.getItem("code-os:active-chat-thread-id") === threadId) {
+        localStorage.removeItem("code-os:active-chat-thread-id");
+      }
       set((state) => {
         const nextThreads = state.threads.filter((t) => t.id !== threadId);
         const nextThreadId = state.currentThreadId === threadId ? nextThreads[0]?.id ?? null : state.currentThreadId;
@@ -399,12 +639,10 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   // ── Message Actions with Adaptive Tier Routing ──────────────────────────────
 
-  sendMessage: async (content, attachedPaths = []) => {
-    const workspace = useWorkspaceStore.getState().currentWorkspace?.path;
+  sendMessage: async (content, attachedPaths = [], attachedImages = []) => {
+    const workspace = useWorkspaceStore.getState().currentWorkspace?.path || "";
     const restrictedMode = useWorkspaceStore.getState().restrictedMode;
     
-    if (!workspace) return;
-
     if (restrictedMode && (content.toLowerCase().includes("write") || content.toLowerCase().includes("edit") || content.toLowerCase().includes("modify") || content.toLowerCase().includes("change"))) {
       set({ error: "File operations are disabled in Restricted Mode. Switch to Trusted mode to enable AI file writes." });
       return;
@@ -416,6 +654,9 @@ export const useAIStore = create<AIState>((set, get) => ({
       const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "…" : "");
       try {
         const newT = await api.post<ChatThread>("/api/ai/threads", { id, workspace, title: cleanTitle });
+        if (typeof window !== "undefined") {
+          localStorage.setItem("code-os:active-chat-thread-id", id);
+        }
         set((state) => ({
           currentThreadId: id,
           threads: [newT, ...state.threads],
@@ -437,6 +678,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       role: "user",
       content,
       attached_paths: attachedPaths,
+      attached_images: attachedImages,
       created_at: new Date().toISOString(),
     };
     const assistantMessage: ExtendedChatMessage = {
@@ -450,13 +692,19 @@ export const useAIStore = create<AIState>((set, get) => ({
     };
 
     activeController = new AbortController();
+    const now = Date.now();
     set((state) => ({
       messages: [...state.messages, userMessage, assistantMessage],
       streaming: true,
       error: null,
+      streamStartTimestamp: now,
+      lastTokenTimestamp: now,
       agentStatus: { type: "thinking", message: "Connecting..." },
       agentPlan: null,
       agentToolHistory: [],
+      pendingUserResponse: null,
+      pendingApproval: null,
+      pendingApprovals: [],
     }));
 
     try {
@@ -490,16 +738,20 @@ export const useAIStore = create<AIState>((set, get) => ({
           api_key_provider: get().apiKeyProvider,
           messages: requestMessages,
           attached_paths: combinedAttachedPaths,
+          attached_images: attachedImages,
           workspace,
           agent_mode: get().agentMode,
+          vision_model: get().visionModel,
         },
         (eventType, data: any) => {
           if (eventType === "tier_routing") {
             const tierVal = typeof data.tier === "number" ? data.tier : 0;
             const labelVal = data.label || (tierVal === 0 ? "Fast Answer" : (tierVal === 1 ? "Quick Task" : "Deep think"));
+            const reasonVal = data.reason || labelVal;
             set({
               currentTier: tierVal,
               currentTierLabel: labelVal,
+              currentTierReason: reasonVal,
             });
           } else if (eventType === "status") {
             const statusObj: AgentStatus = {
@@ -532,7 +784,7 @@ export const useAIStore = create<AIState>((set, get) => ({
               }
               return { agentStatus: statusObj, agentToolHistory: newHistory, pendingApproval: statusObj.type === "tool" ? null : state.pendingApproval, messages };
             });
-          } else if (eventType === "ask_user") {
+          } else if (eventType === "ask_user" || eventType === "question") {
             const askObj: PendingUserResponseState = {
               action_id: data.action_id,
               question: data.question || "Please select an option:",
@@ -554,13 +806,14 @@ export const useAIStore = create<AIState>((set, get) => ({
             });
           } else if (eventType === "token") {
             const tokenStr = typeof data === "string" ? data : (data.content || "");
+            const now = Date.now();
             set((state) => {
               const messages = [...state.messages];
               const last = messages[messages.length - 1];
               if (last && last.role === "assistant") {
                 messages[messages.length - 1] = { ...last, content: last.content + tokenStr };
               }
-              return { messages };
+              return { messages, lastTokenTimestamp: now };
             });
           } else if (eventType === "proposal") {
             window.dispatchEvent(new CustomEvent("code-os:proposal-created"));
@@ -616,9 +869,27 @@ export const useAIStore = create<AIState>((set, get) => ({
                 },
               };
             });
+          } else if (eventType === "checkpoint") {
+            const checkpointObj: CheckpointInfo = {
+              turn_number: data.turn_number || 1,
+              commit_hash: data.commit_hash || "",
+              touched_files: data.touched_files || [],
+            };
+            set((state) => {
+              const messages = [...state.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant") {
+                messages[messages.length - 1] = { ...last, checkpoint: checkpointObj };
+              }
+              return { messages };
+            });
+          } else if (eventType === "metrics") {
+            if (typeof data.tokens_used === "number") {
+              set({ currentTokensUsed: data.tokens_used });
+            }
           } else if (eventType === "error") {
             const errMsg = typeof data === "string" ? data : (data.message || "Agent error");
-            set({ error: errMsg, pendingApproval: null, pendingApprovals: [] });
+            set({ error: errMsg, pendingApproval: null, pendingApprovals: [], pendingUserResponse: null });
           } else if (eventType === "done") {
             set((state) => {
               const messages = [...state.messages];
@@ -634,6 +905,7 @@ export const useAIStore = create<AIState>((set, get) => ({
                 agentStatus: { type: "done", message: data.message || "Task completed" },
                 pendingApproval: null,
                 pendingApprovals: [],
+                pendingUserResponse: null,
                 messages,
               };
             });
@@ -649,7 +921,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       }
     } finally {
       activeController = null;
-      set({ streaming: false });
+      set({ streaming: false, pendingUserResponse: null, streamStartTimestamp: null, lastTokenTimestamp: null });
     }
   },
 

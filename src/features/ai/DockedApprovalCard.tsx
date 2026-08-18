@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   FileCode,
   ShieldAlert,
@@ -7,13 +7,14 @@ import {
   X,
   Clock,
   Layers,
+  ShieldCheck,
 } from "lucide-react";
 import type { PendingApprovalState } from "../../stores/aiStore";
 
 interface DockedApprovalCardProps {
   pendingApproval: PendingApprovalState;
   pendingApprovals?: PendingApprovalState[];
-  onApprove: (actionId: string) => void | Promise<void>;
+  onApprove: (actionId: string, alwaysAllow?: boolean, trustPattern?: string) => void | Promise<void>;
   onReject: (actionId: string) => void | Promise<void>;
 }
 
@@ -23,14 +24,27 @@ export function DockedApprovalCard({
   onApprove,
   onReject,
 }: DockedApprovalCardProps) {
+  const [alwaysAllow, setAlwaysAllow] = useState(false);
+  const [trustWildcard, setTrustWildcard] = useState(false);
+
   const isEdit = pendingApproval.action_type === "edit";
   const filePath = pendingApproval.path || pendingApproval.detail || "";
   const queueCount = pendingApprovals.length;
+  const cmd = pendingApproval.command || pendingApproval.detail || "";
+
+  const testRunnerMatch = !isEdit ? cmd.match(/^(pytest|python -m pytest|npm test|npm run test|vitest|npx vitest|cargo test)/i) : null;
+  const testRunnerPrefix = testRunnerMatch ? testRunnerMatch[0] : null;
 
   const handleOpenDiffInspector = () => {
     window.dispatchEvent(
       new CustomEvent("code-os:switch-top-view", { detail: "proposals" })
     );
+  };
+
+  const handleApprove = () => {
+    const isAlways = alwaysAllow || trustWildcard;
+    const pattern = trustWildcard && testRunnerPrefix ? `${testRunnerPrefix} *` : (isAlways ? cmd : undefined);
+    void onApprove(pendingApproval.action_id, isAlways, pattern);
   };
 
   return (
@@ -98,6 +112,14 @@ export function DockedApprovalCard({
             : "Command is not on the safe read-only allowlist.")}
       </p>
 
+      {/* Native Host Isolation Badge */}
+      {!isEdit && (
+        <div className="mb-2 px-2.5 py-1 rounded-md bg-amber-500/10 border border-amber-500/25 text-amber-300 text-[11px] flex items-center gap-1.5 font-medium">
+          <ShieldAlert size={13} className="text-amber-400 shrink-0" />
+          <span>⚠️ Running on host (no container isolation)</span>
+        </div>
+      )}
+
       {/* Preview Snippet */}
       {isEdit ? (
         pendingApproval.diff_summary && (
@@ -121,9 +143,47 @@ export function DockedApprovalCard({
           </div>
         )
       ) : (
-        <div className="mb-3 p-2 rounded-lg bg-black/60 border border-amber-500/30 font-mono text-xs text-amber-200 select-all break-all shadow-inner">
+        <div className="mb-2.5 p-2 rounded-lg bg-black/60 border border-amber-500/30 font-mono text-xs text-amber-200 select-all break-all shadow-inner">
           <span className="text-amber-400 font-bold mr-1.5">$</span>
-          {pendingApproval.command || pendingApproval.detail}
+          {cmd}
+        </div>
+      )}
+
+      {/* Approval Memory Options (Command approvals) */}
+      {!isEdit && (
+        <div className="mb-3 flex flex-col gap-1.5 px-1 py-1 text-[11px]">
+          <label className="flex items-center gap-2 text-on-surface-variant hover:text-on-surface cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={alwaysAllow}
+              onChange={(e) => {
+                setAlwaysAllow(e.target.checked);
+                if (e.target.checked) setTrustWildcard(false);
+              }}
+              className="rounded border-white/20 text-amber-500 focus:ring-amber-500/40 bg-black/40 cursor-pointer"
+            />
+            <span className="font-medium text-amber-200/90">
+              Always allow this exact command in this workspace
+            </span>
+          </label>
+
+          {testRunnerPrefix && (
+            <label className="flex items-center gap-2 text-on-surface-variant hover:text-on-surface cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={trustWildcard}
+                onChange={(e) => {
+                  setTrustWildcard(e.target.checked);
+                  if (e.target.checked) setAlwaysAllow(false);
+                }}
+                className="rounded border-white/20 text-amber-500 focus:ring-amber-500/40 bg-black/40 cursor-pointer"
+              />
+              <span className="flex items-center gap-1 font-medium text-amber-300">
+                <ShieldCheck size={12} className="text-amber-400" />
+                Trust this test runner with any arguments (<code className="font-mono text-[10.5px] bg-black/50 px-1 rounded text-cyan-300">{testRunnerPrefix} *</code>)
+              </span>
+            </label>
+          )}
         </div>
       )}
 
@@ -153,7 +213,7 @@ export function DockedApprovalCard({
           </button>
           <button
             type="button"
-            onClick={() => void onApprove(pendingApproval.action_id)}
+            onClick={handleApprove}
             className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-black font-bold text-xs shadow-md interactive-scale cursor-pointer ${
               isEdit
                 ? "bg-emerald-400 hover:bg-emerald-300 hover:shadow-emerald-500/20"
@@ -161,7 +221,7 @@ export function DockedApprovalCard({
             }`}
           >
             <Check size={13} strokeWidth={2.5} />
-            <span>{isEdit ? "Approve & Apply" : "Approve & Run"}</span>
+            <span>{isEdit ? "Approve & Apply" : (alwaysAllow || trustWildcard ? "Always Allow & Run" : "Approve & Run")}</span>
           </button>
         </div>
       </div>
