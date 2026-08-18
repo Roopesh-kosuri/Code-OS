@@ -39,3 +39,21 @@ All notable changes to CODE OS AI and Core Infrastructure are documented in this
   - `backend/app/features/ai/sessions/server_manager.py` (`ServerSessionManager`): Background server process manager, port-binding detector, HTTP dispatcher, and `atexit` orphan cleanup.
   - `backend/app/features/ai/indexing/code_intelligence.py` (`CodeIntelligence`): AST symbol indexing, definition locator, cross-file reference finder, style convention learning, dead-code detector, and secret scanner.
   - Re-exported all top-level symbols in `chat_harness.py` ensuring zero regressions across existing test suites and routes.
+
+### 7. Multi-Language Run Support & Toolchain Integration
+- **Feature**: Native "▶ Run" and "■ Stop" execution support across all major programming languages directly from the editor toolbar (`Ctrl+Shift+R` / `F5`).
+- **Language Detection & Toolchains**:
+  - Automatically identifies language from file extension: Python (`.py`), JavaScript (`.js`, `.mjs`), TypeScript (`.ts`, `.tsx`), C/C++ (`.c`, `.cpp`), Java (`.java`), Go (`.go`), Rust (`.rs`), and Shell/PowerShell (`.sh`, `.ps1`, `.bat`).
+  - Automatically verifies host toolchains (`python`, `node`, `tsx`, `g++`/`clang++`, `java`/`javac`, `go`, `rustc`/`cargo`).
+  - Emits clear, actionable installation guidance if a required toolchain is missing.
+- **Compilation & Execution Engine**:
+  - Integrated compilation pipeline for C/C++, Rust, and Java within temporary sandboxes.
+  - Active memory governor enforcing a 512MB RAM cap with instant process tree termination on violation.
+  - 60-second execution timeout ceiling.
+  - Real-time Server-Sent Events (SSE) streaming for stdout, stderr, compilation steps, and exit status.
+  - Instant process kill capability (`/api/terminal/run/kill`).
+- **User Interface**:
+  - Added Run/Stop action button with auto-save in [`src/features/editor/EditorWorkspace.tsx`](file:///d:/HTML/CODE%20OS/src/features/editor/EditorWorkspace.tsx).
+  - Added real-time monospace output terminal tab in [`src/features/terminal/TerminalPanel.tsx`](file:///d:/HTML/CODE%20OS/src/features/terminal/TerminalPanel.tsx).
+  - Added "Toolchains & Runtimes" status dashboard in [`src/components/settings/SettingsModal.tsx`](file:///d:/HTML/CODE%20OS/src/components/settings/SettingsModal.tsx).
+

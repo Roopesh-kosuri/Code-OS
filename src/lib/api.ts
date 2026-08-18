@@ -62,6 +62,8 @@ function url(path: string, query?: RequestOptions["query"]): string {
   return target.toString();
 }
 
+import { useBackendStore } from "../stores/backendStore";
+
 async function request<T>(path: string, options: RequestOptions = {}, isRetry = false): Promise<T> {
   const token = await _ensureToken();
 
@@ -74,10 +76,17 @@ async function request<T>(path: string, options: RequestOptions = {}, isRetry = 
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const response = await fetch(url(path, options.query), {
-    ...options,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url(path, options.query), {
+      ...options,
+      headers,
+    });
+    useBackendStore.getState().recordSuccess();
+  } catch (err) {
+    useBackendStore.getState().recordFailure(err);
+    throw err;
+  }
 
   if (!response.ok) {
     if (response.status === 401 && !isRetry) {
@@ -104,21 +113,24 @@ async function request<T>(path: string, options: RequestOptions = {}, isRetry = 
 }
 
 export const api = {
-  get: <T>(path: string, query?: RequestOptions["query"]) => request<T>(path, { query }),
-  post: <T>(path: string, body?: unknown, query?: RequestOptions["query"]) =>
+  get: <T>(path: string, query?: RequestOptions["query"], options?: RequestOptions) => request<T>(path, { ...options, query }),
+  post: <T>(path: string, body?: unknown, query?: RequestOptions["query"], options?: RequestOptions) =>
     request<T>(path, {
+      ...options,
       method: "POST",
       query,
       body: body === undefined ? undefined : JSON.stringify(body)
     }),
-  put: <T>(path: string, body?: unknown, query?: RequestOptions["query"]) =>
+  put: <T>(path: string, body?: unknown, query?: RequestOptions["query"], options?: RequestOptions) =>
     request<T>(path, {
+      ...options,
       method: "PUT",
       query,
       body: body === undefined ? undefined : JSON.stringify(body)
     }),
-  delete: <T>(path: string, query?: RequestOptions["query"]) =>
+  delete: <T>(path: string, query?: RequestOptions["query"], options?: RequestOptions) =>
     request<T>(path, {
+      ...options,
       method: "DELETE",
       query
     }),
@@ -228,4 +240,31 @@ export const api = {
       }
     }
   },
+  terminal: {
+    runFileStream: (
+      workspace: string,
+      filePath: string,
+      args: string[] = [],
+      onEvent: (eventType: string, data: any) => void,
+      signal?: AbortSignal
+    ) => {
+      return api.streamSSE("/api/terminal/run", { workspace, file_path: filePath, args }, onEvent, signal);
+    },
+    killRun: (runId: string) => {
+      return api.post<{ success: boolean; message: string; run_id: string }>("/api/terminal/run/kill", { run_id: runId });
+    },
+    getToolchains: () => {
+      return api.get<{ toolchains: Array<{
+        id: string;
+        name: string;
+        installed: boolean;
+        version: string | null;
+        command_path: string | null;
+        compile_command_path: string | null;
+        install_hint: string;
+        error_message: string | null;
+      }> }>("/api/terminal/toolchains");
+    },
+  },
 };
+

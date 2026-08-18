@@ -119,12 +119,20 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
           return next;
         });
       }
+      if (action === "view.openTerminal") {
+        setShowTerminal(true);
+        localStorage.setItem("code-os:layout-show-terminal", "true");
+      }
       if (action === "view.toggleAI") {
         setShowAIChat((v) => {
           const next = !v;
           localStorage.setItem("code-os:layout-show-ai-chat", String(next));
           return next;
         });
+      }
+      if (action.startsWith("view.switchTopView:")) {
+        const topView = action.substring("view.switchTopView:".length);
+        setActiveTopView(topView as any);
       }
       if (action.startsWith("view.switchUtility:")) {
         const util = action.substring("view.switchUtility:".length);
@@ -139,7 +147,11 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
     };
 
     window.addEventListener("code-os:switch-utility", listener);
-    return () => window.removeEventListener("code-os:switch-utility", listener);
+    window.addEventListener("code-os:menu-action", listener);
+    return () => {
+      window.removeEventListener("code-os:switch-utility", listener);
+      window.removeEventListener("code-os:menu-action", listener);
+    };
   }, []);
 
   const handleActivityClick = (sidebarId: string) => {

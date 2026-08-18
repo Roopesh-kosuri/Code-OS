@@ -16,10 +16,20 @@ import {
   Trash2,
   HelpCircle,
   ShieldAlert,
+  ShieldCheck,
+  Clock,
+  Plus,
+  Download,
+  Search,
+  History,
+  RefreshCw,
 } from "lucide-react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useAIStore } from "../../stores/aiStore";
 import { useEditorStore } from "../../stores/editorStore";
+import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useBackendStore } from "../../stores/backendStore";
+import { useRunStore } from "../../stores/runStore";
 import { api } from "../../lib/api";
 import { PROVIDER_PRESETS } from "../../lib/providerPresets";
 
@@ -27,7 +37,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Category = "general" | "providers" | "editor" | "terminal" | "git" | "agents" | "theme" | "security" | "about";
+type Category = "general" | "providers" | "editor" | "terminal" | "toolchains" | "git" | "agents" | "timeline" | "theme" | "security" | "about";
 
 interface ThemeSwatch {
   id: string;
@@ -72,6 +82,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [editorMinimap, setEditorMinimap] = useState(
     () => localStorage.getItem("code-os:editor.minimap") !== "false"
   );
+  const [editorInlineCompletion, setEditorInlineCompletion] = useState(
+    () => localStorage.getItem("code-os:editor.inlineCompletion") !== "false"
+  );
 
   // Terminal options (immediate auto-save)
   const [termShell, setTermShell] = useState(
@@ -80,6 +93,17 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [termFontSize, setTermFontSize] = useState(
     () => Number(localStorage.getItem("code-os:terminal.fontSize") ?? "12")
   );
+
+  const toolchains = useRunStore((s) => s.toolchains);
+  const isLoadingToolchains = useRunStore((s) => s.isLoadingToolchains);
+  const fetchToolchains = useRunStore((s) => s.fetchToolchains);
+
+  useEffect(() => {
+    if (activeCategory === "toolchains" || toolchains.length === 0) {
+      void fetchToolchains();
+    }
+  }, [activeCategory]);
+
 
   // General & System Prompts (immediate auto-save)
   const [systemPrompt, setSystemPrompt] = useState(
@@ -118,6 +142,79 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     setTimeout(() => setFeedback(null), 2500);
   };
 
+  const currentWorkspace = useWorkspaceStore((s) => s.currentWorkspace);
+  const freshness = useBackendStore((s) => s.freshness);
+  const checkFreshness = useBackendStore((s) => s.checkFreshness);
+  const [trustedCommands, setTrustedCommands] = useState<string[]>([]);
+  const [newTrustPattern, setNewTrustPattern] = useState("");
+
+  const refreshTrustedCommands = useCallback(async () => {
+    if (!currentWorkspace?.path) return;
+    try {
+      const res = await api.get<{ trusted_commands: string[] }>(
+        `/api/ai/chat-agent/trusted-commands?workspace=${encodeURIComponent(currentWorkspace.path)}`
+      );
+      setTrustedCommands(res.trusted_commands || []);
+    } catch {
+      setTrustedCommands([]);
+    }
+  }, [currentWorkspace?.path]);
+
+  const handleAddTrustedCommand = async () => {
+    const pat = newTrustPattern.trim();
+    if (!pat || !currentWorkspace?.path) return;
+    try {
+      await api.post(`/api/ai/chat-agent/trusted-commands`, {
+        workspace: currentWorkspace.path,
+        pattern: pat,
+      });
+      setNewTrustPattern("");
+      void refreshTrustedCommands();
+      showFeedback(`Trusted pattern added: ${pat}`);
+    } catch {
+      showFeedback("Failed to add trusted pattern");
+    }
+  };
+
+  const handleDeleteTrustedCommand = async (pattern: string) => {
+    if (!currentWorkspace?.path) return;
+    try {
+      await api.delete(
+        `/api/ai/chat-agent/trusted-commands?workspace=${encodeURIComponent(currentWorkspace.path)}&pattern=${encodeURIComponent(pattern)}`
+      );
+      setTrustedCommands((prev) => prev.filter((p) => p !== pattern));
+      showFeedback(`Revoked trust for: ${pattern}`);
+    } catch {
+      showFeedback("Failed to revoke trust");
+    }
+  };
+
+  const [timelineEntries, setTimelineEntries] = useState<any[]>([]);
+  const [timelineSearch, setTimelineSearch] = useState("");
+  const [timelineFilter, setTimelineFilter] = useState<"all" | "edits" | "commands" | "failures">("all");
+  const [timelineLoading, setTimelineLoading] = useState(false);
+
+  const fetchTimeline = useCallback(async () => {
+    if (!currentWorkspace?.path) return;
+    setTimelineLoading(true);
+    try {
+      const res = await api.get<{ entries: any[] }>(
+        `/api/ai/chat-agent/activity-log?workspace=${encodeURIComponent(currentWorkspace.path)}&search=${encodeURIComponent(timelineSearch)}&filter_type=${timelineFilter}`
+      );
+      setTimelineEntries(res.entries || []);
+    } catch {
+      setTimelineEntries([]);
+    } finally {
+      setTimelineLoading(false);
+    }
+  }, [currentWorkspace?.path, timelineSearch, timelineFilter]);
+
+  const handleExportActivityLog = () => {
+    if (!currentWorkspace?.path) return;
+    window.open(`/api/ai/chat-agent/activity-log/export?workspace=${encodeURIComponent(currentWorkspace.path)}`, "_blank");
+    showFeedback("Activity log exported");
+  };
+
   const refreshKeys = useCallback(async () => {
     try {
       const keys = await api.get<{ provider_id: string; configured: boolean }[]>("/api/settings/api-keys");
@@ -130,7 +227,20 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   useEffect(() => {
     void loadSettings();
     void refreshKeys();
-  }, [loadSettings, refreshKeys]);
+    void checkFreshness();
+  }, [loadSettings, refreshKeys, checkFreshness]);
+
+  useEffect(() => {
+    if (activeCategory === "security" || activeCategory === "agents") {
+      void refreshTrustedCommands();
+    }
+    if (activeCategory === "about" || activeCategory === "general") {
+      void checkFreshness();
+    }
+    if (activeCategory === "timeline") {
+      void fetchTimeline();
+    }
+  }, [activeCategory, refreshTrustedCommands, checkFreshness, fetchTimeline]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -159,13 +269,305 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     }
   };
 
+  const renderTrustedCommandsCard = () => (
+    <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-6 space-y-4 shadow-md">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
+          <ShieldCheck size={16} className="text-amber-400" />
+          <span>Approval Memory (Trusted Terminal Commands)</span>
+        </h3>
+        <span className="text-[11px] text-on-surface-variant font-mono bg-black/40 px-2 py-0.5 rounded border border-white/5">
+          {trustedCommands.length} trusted pattern{trustedCommands.length === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      <div className="text-xs text-on-surface-variant leading-relaxed space-y-1">
+        <p>
+          Commands matching these patterns bypass interactive approval cards in this workspace. All other non-allowlisted commands remain strictly fail-closed.
+        </p>
+        <div className="text-[11px] text-on-surface-variant/80 font-mono flex items-center gap-1.5 pt-0.5">
+          <span className="text-on-surface font-semibold font-sans">Active Workspace:</span>
+          <code className="text-cyan-300 bg-black/60 px-1.5 py-0.5 rounded border border-white/5 truncate max-w-md">
+            {currentWorkspace?.path || "(No workspace opened)"}
+          </code>
+        </div>
+      </div>
+
+      {/* Manual Pattern Add Bar */}
+      {currentWorkspace?.path && (
+        <div className="flex items-center gap-2 pt-1">
+          <div className="relative flex-1">
+            <span className="absolute left-2.5 top-2 text-amber-400 font-mono text-xs font-bold">$</span>
+            <input
+              type="text"
+              value={newTrustPattern}
+              onChange={(e) => setNewTrustPattern(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void handleAddTrustedCommand();
+              }}
+              placeholder="e.g. pytest * or npm test"
+              className="w-full bg-[#131318] border border-surface-container-high rounded-lg pl-7 pr-3 py-1.5 text-xs text-on-surface font-mono focus:border-amber-400 focus:outline-none placeholder:text-on-surface-variant/40"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={() => void handleAddTrustedCommand()}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 text-xs font-medium cursor-pointer transition-all hover:scale-105 active:scale-95 shrink-0"
+          >
+            <Plus size={13} />
+            <span>Trust Pattern</span>
+          </button>
+        </div>
+      )}
+
+      {/* List of active patterns */}
+      {trustedCommands.length === 0 ? (
+        <div className="p-4 rounded-lg bg-black/40 border border-white/5 text-center text-xs text-on-surface-variant space-y-1">
+          <p>No custom trusted commands configured for this workspace yet.</p>
+          <p className="text-[11px] text-on-surface-variant/60">
+            Tip: When Rony Agent requests command approval in chat, check <span className="text-amber-300 font-medium">"Always allow in this workspace"</span> or <span className="text-amber-300 font-medium">"pytest *"</span>, or add patterns above.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2 max-h-48 overflow-y-auto">
+          {trustedCommands.map((pat, pIdx) => (
+            <div
+              key={pIdx}
+              className="flex items-center justify-between p-2.5 rounded-lg bg-black/50 border border-white/10 font-mono text-xs text-amber-200 shadow-inner"
+            >
+              <div className="flex items-center gap-2 min-w-0 flex-1 truncate">
+                <span className="text-amber-400 font-bold">$</span>
+                <span className="truncate">{pat}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleDeleteTrustedCommand(pat)}
+                className="px-2.5 py-1 rounded bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-sans font-medium transition-colors cursor-pointer shrink-0 ml-2"
+                title="Revoke trust and require interactive approval next time"
+              >
+                Revoke
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderFreshnessCard = () => (
+    <div className="bg-[#1e1f24] rounded-xl p-6 border border-surface-container-high/40 space-y-3 shadow-md">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h3 className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
+          <Clock size={16} className="text-primary" />
+          <span>Backend Runtime &amp; Process Freshness</span>
+        </h3>
+        {freshness && (
+          <span
+            className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+              freshness.is_stale
+                ? "bg-amber-500/20 text-amber-300 border-amber-500/40 animate-pulse"
+                : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+            }`}
+          >
+            {freshness.is_stale ? "⚠️ STALE CODE (RESTART NEEDED)" : "✓ LIVE & FRESH"}
+          </span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs font-mono pt-1">
+        <div className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-1">
+          <span className="text-[10.5px] text-on-surface-variant uppercase tracking-wider block font-sans">Boot Timestamp</span>
+          <span className="text-white font-bold">{freshness?.boot_iso || "Connecting..."}</span>
+        </div>
+        <div className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-1">
+          <span className="text-[10.5px] text-on-surface-variant uppercase tracking-wider block font-sans">Process Uptime</span>
+          <span className="text-white font-bold">
+            {freshness ? `${Math.floor(freshness.uptime_seconds)}s (${(freshness.uptime_seconds / 60).toFixed(1)}m)` : "N/A"}
+          </span>
+        </div>
+      </div>
+
+      {freshness?.is_stale && freshness.changed_files?.length > 0 && (
+        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 space-y-1">
+          <span className="font-bold text-amber-300">Files modified on disk after process boot:</span>
+          <ul className="list-disc pl-4 text-[11px] font-mono text-amber-200/90 space-y-0.5">
+            {freshness.changed_files.map((cf, idx) => (
+              <li key={idx}>{cf}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderTimelineTab = () => (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="font-headline-md text-headline-md text-on-surface mb-1 font-bold">Agent Activity Timeline</h2>
+          <p className="font-ui-label-reg text-ui-label-reg text-on-surface-variant">
+            Full chronological audit trail of Rony Agent executions, proposals, self-critique audits, and regression tests.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void fetchTimeline()}
+            className="p-2 rounded-lg bg-surface-variant/40 hover:bg-surface-variant/70 text-on-surface transition-colors cursor-pointer"
+            title="Refresh Timeline"
+          >
+            <RefreshCw size={14} className={timelineLoading ? "animate-spin" : ""} />
+          </button>
+          <button
+            type="button"
+            onClick={handleExportActivityLog}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/30 text-xs font-semibold cursor-pointer transition-all hover:shadow-xs"
+          >
+            <Download size={13} />
+            <span>Export JSONL</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Filter and Search Bar */}
+      <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-4 space-y-3 shadow-md">
+        <div className="flex items-center gap-3 flex-wrap justify-between">
+          {/* Filter Pills */}
+          <div className="flex items-center gap-1.5 bg-black/40 p-1 rounded-lg border border-white/5">
+            {(
+              [
+                { id: "all", label: "All Events" },
+                { id: "edits", label: "Edits Only" },
+                { id: "commands", label: "Commands Only" },
+                { id: "failures", label: "Failures Only" },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setTimelineFilter(f.id)}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all cursor-pointer ${
+                  timelineFilter === f.id
+                    ? "bg-primary/20 text-primary border border-primary/30 font-semibold"
+                    : "text-on-surface-variant hover:text-on-surface hover:bg-white/5"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Search Bar */}
+          <div className="relative min-w-[200px] flex-1 max-w-xs">
+            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-on-surface-variant/60" />
+            <input
+              type="text"
+              value={timelineSearch}
+              onChange={(e) => setTimelineSearch(e.target.value)}
+              placeholder="Search target, details, type..."
+              className="w-full bg-[#131318] border border-surface-container-high rounded-lg pl-8 pr-7 py-1.5 text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:border-primary-container focus:outline-none"
+            />
+            {timelineSearch && (
+              <button
+                type="button"
+                onClick={() => setTimelineSearch("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-white"
+              >
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Timeline Entries List */}
+        {timelineLoading ? (
+          <div className="py-12 flex flex-col items-center justify-center text-xs text-on-surface-variant/60 gap-2">
+            <RefreshCw size={20} className="animate-spin text-primary" />
+            <span>Loading timeline events...</span>
+          </div>
+        ) : timelineEntries.length === 0 ? (
+          <div className="py-10 text-center text-xs text-on-surface-variant/60 space-y-1 bg-black/30 rounded-lg border border-white/5">
+            <p>No activity log entries found for this workspace.</p>
+            <p className="text-[11px] text-on-surface-variant/40">
+              Actions executed by Rony Agent (routing, proposals, commands, self-critique, regression guards) are automatically saved to <code className="text-primary font-mono">.code_os/activity_log.jsonl</code>.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2 max-h-[460px] overflow-y-auto pr-1 custom-scrollbar">
+            {timelineEntries.map((item, idx) => {
+              const actionColors: Record<string, string> = {
+                routing: "bg-sky-500/15 text-sky-300 border-sky-500/30",
+                edit_proposal: "bg-violet-500/15 text-violet-300 border-violet-500/30",
+                command_run: "bg-amber-500/15 text-amber-300 border-amber-500/30",
+                self_critique: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
+                regression_guard: "bg-rose-500/15 text-rose-300 border-rose-500/30",
+                session_done: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
+              };
+              const actionClass = actionColors[item.action_type] || "bg-white/10 text-on-surface border-white/10";
+              const isSuccess = item.outcome === "success" || item.outcome === "passed" || item.outcome === "approved";
+              const isWarning = item.outcome === "regression_detected" || item.outcome === "rejected";
+
+              return (
+                <div
+                  key={idx}
+                  className="p-3 rounded-lg bg-black/40 border border-white/5 hover:border-white/15 transition-all text-xs space-y-1.5"
+                >
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase font-bold border ${actionClass}`}>
+                        {item.action_type || "action"}
+                      </span>
+                      {typeof item.tier === "number" && (
+                        <span className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-[9px] text-on-surface-variant font-mono">
+                          T{item.tier}
+                        </span>
+                      )}
+                      <span className="font-mono text-white truncate max-w-sm font-semibold">
+                        {item.target || "N/A"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                          isSuccess
+                            ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                            : isWarning
+                            ? "bg-rose-500/15 text-rose-300 border-rose-500/30"
+                            : "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                        }`}
+                      >
+                        {item.outcome}
+                      </span>
+                      <span className="text-[10px] text-on-surface-variant/60 font-mono">
+                        {item.timestamp ? new Date(item.timestamp).toLocaleTimeString() : ""}
+                      </span>
+                    </div>
+                  </div>
+
+                  {item.details && (
+                    <div className="text-[11px] text-on-surface-variant/80 font-mono bg-black/50 p-2 rounded border border-white/5 whitespace-pre-wrap break-all">
+                      {item.details}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   const navCategories = [
     { id: "general", label: "General", icon: "tune" },
     { id: "providers", label: "Providers & Models", icon: "smart_toy" },
     { id: "editor", label: "Editor", icon: "edit_note" },
     { id: "terminal", label: "Terminal", icon: "terminal" },
+    { id: "toolchains", label: "Toolchains & Runtimes", icon: "code_blocks" },
     { id: "git", label: "Git & Source Control", icon: "account_tree" },
-    { id: "agents", label: "Agents & Duo", icon: "psychology" },
+    { id: "agents", label: "Agents & Approval Memory", icon: "psychology" },
+    { id: "timeline", label: "Activity Timeline", icon: "history" },
     { id: "theme", label: "Theme & Palette", icon: "palette" },
     { id: "security", label: "Security & Privacy", icon: "security" },
     { id: "about", label: "About", icon: "info" },
@@ -311,6 +713,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     </label>
                   </div>
                 </div>
+
+                {/* Backend Process Freshness Card */}
+                {renderFreshnessCard()}
               </div>
             )}
 
@@ -489,6 +894,32 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
                     </label>
                   </div>
+
+                  <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                    <div>
+                      <div className="font-ui-label-reg text-ui-label-reg text-on-surface flex items-center gap-1.5">
+                        <span>AI Inline Completion (Ghost Text)</span>
+                        <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-primary/20 text-primary border border-primary/30 font-mono">Tab</span>
+                      </div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                        Show AI ghost-text suggestions at cursor while typing. Tab accepts, Esc dismisses.
+                      </div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editorInlineCompletion}
+                        onChange={(e) => {
+                          setEditorInlineCompletion(e.target.checked);
+                          localStorage.setItem("code-os:editor.inlineCompletion", String(e.target.checked));
+                          void saveSetting("editor.inlineCompletionEnabled", String(e.target.checked));
+                          showFeedback(`AI inline completion ${e.target.checked ? "enabled" : "disabled"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
                 </div>
               </div>
             )}
@@ -531,6 +962,69 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       className="w-full bg-[#131318] border border-surface-container-high rounded-lg p-2.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none"
                     />
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Category: Toolchains & Runtimes ────────────────────────── */}
+            {activeCategory === "toolchains" && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-headline-md text-headline-md text-on-surface mb-1 font-bold">Language Toolchains &amp; Compilers</h2>
+                    <p className="font-ui-label-reg text-ui-label-reg text-on-surface-variant">Installed runtimes and compilers available for one-click file execution.</p>
+                  </div>
+                  <button
+                    onClick={() => void fetchToolchains()}
+                    disabled={isLoadingToolchains}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-container-high hover:bg-surface-bright text-xs text-on-surface transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw size={13} className={isLoadingToolchains ? "animate-spin" : ""} />
+                    <span>Refresh Toolchains</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {toolchains.map((tc) => (
+                    <div
+                      key={tc.id}
+                      className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-4 space-y-2.5 shadow-md flex flex-col justify-between"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-sm text-on-surface">{tc.name}</span>
+                          {tc.installed ? (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 text-[10.5px] font-mono border border-emerald-500/20">
+                              <Check size={11} /> Installed
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 text-[10.5px] font-mono border border-amber-500/20">
+                              <HelpCircle size={11} /> Not Found
+                            </span>
+                          )}
+                        </div>
+
+                        {tc.version && (
+                          <div className="text-[11px] font-mono text-cyan-400/90 truncate" title={tc.version}>
+                            {tc.version}
+                          </div>
+                        )}
+
+                        {tc.command_path && (
+                          <div className="text-[10px] font-mono text-on-surface-variant/60 truncate" title={tc.command_path}>
+                            Path: {tc.command_path}
+                          </div>
+                        )}
+
+                        {!tc.installed && (
+                          <div className="text-[11px] text-amber-300/80 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 mt-2 space-y-1 leading-relaxed">
+                            <div className="font-semibold text-[10px] uppercase tracking-wider text-amber-400">Installation Instructions</div>
+                            <div className="text-[10.5px]">{tc.install_hint || "Please install the toolchain and add it to system PATH."}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -656,8 +1150,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     </div>
                   </div>
                 </div>
+
+                {/* Trusted Workspace Commands (Approval Memory) */}
+                {renderTrustedCommandsCard()}
               </div>
             )}
+
+            {/* ── Category: Activity Timeline ──────────────────────────────── */}
+            {activeCategory === "timeline" && renderTimelineTab()}
 
             {/* ── Category: Theme ──────────────────────────────────────────── */}
             {activeCategory === "theme" && (
@@ -757,6 +1257,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   </div>
                 </div>
 
+                {/* Trusted Workspace Commands (Approval Memory) */}
+                {renderTrustedCommandsCard()}
+
                 {/* Onboarding Restart */}
                 <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/30 p-6 space-y-3 shadow-md">
                   <h3 className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
@@ -793,6 +1296,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     <p className="font-caption text-caption text-on-surface-variant">Version 0.2.0 • Google Stitch Design System</p>
                   </div>
                 </div>
+
+                {/* Backend Process Freshness & Boot Info */}
+                {renderFreshnessCard()}
 
                 <p className="text-xs text-on-surface-variant leading-relaxed bg-[#1e1f24] rounded-xl p-6 border border-surface-container-high/40">
                   CODE OS is a high-performance local AI development environment featuring autonomous DAG multi-agent pipelines, adversarial Duo feedback loops, multi-model SAST code verification, and hardware PTY integration.

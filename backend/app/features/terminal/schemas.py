@@ -27,3 +27,29 @@ class CommandResult(BaseModel):
     exit_code: int | None
     background: bool
     cwd: str
+
+
+class RunRequest(BaseModel):
+    workspace: str
+    file_path: str
+    args: list[str] | None = None
+
+
+class RunKillRequest(BaseModel):
+    run_id: str
+
+
+class ToolchainInfo(BaseModel):
+    id: str
+    name: str
+    installed: bool
+    version: str | None = None
+    command_path: str | None = None
+    compile_command_path: str | None = None
+    install_hint: str = ""
+    error_message: str | None = None
+
+
+class ToolchainsResponse(BaseModel):
+    toolchains: list[ToolchainInfo]
+

@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { IconButton } from "../../components/ui/IconButton";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useRunStore } from "../../stores/runStore";
 
 type TermSession = {
   id: string;
@@ -293,40 +294,126 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
   const sessionList = Array.from(sessions.values());
 
   const restrictedMode = useWorkspaceStore((state) => state.restrictedMode);
+  const [activeTab, setActiveTab] = useState<"terminal" | "output" | "problems">("terminal");
+  const runLogs = useRunStore((state) => state.logs);
+  const runStatus = useRunStore((state) => state.status);
+  const runLang = useRunStore((state) => state.detectedLanguage);
+  const runActiveFile = useRunStore((state) => state.activeFilePath);
+  const stopRun = useRunStore((state) => state.stopRun);
+  const clearLogs = useRunStore((state) => state.clearLogs);
+  const outputScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleShowOutput = () => {
+      setActiveTab("output");
+    };
+    window.addEventListener("code-os:show-run-output", handleShowOutput);
+    return () => window.removeEventListener("code-os:show-run-output", handleShowOutput);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === "output" && outputScrollRef.current) {
+      outputScrollRef.current.scrollTop = outputScrollRef.current.scrollHeight;
+    }
+  }, [runLogs, activeTab]);
 
   return (
     <section data-testid="terminal-panel" className="grid h-full min-h-0 grid-rows-[36px_minmax(0,1fr)] bg-surface-container/80 backdrop-blur-xl border-t border-outline-variant/30 glass-edge">
 
       <div className="flex justify-between items-center px-4 h-9 border-b border-outline-variant/20 bg-surface-container-low/50 shrink-0 select-none">
         <div className="flex items-center gap-4">
-          <button className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors">PROBLEMS</button>
-          <button className="font-label-caps text-label-caps text-on-surface-variant hover:text-on-surface transition-colors">OUTPUT</button>
-          <button className="font-label-caps text-label-caps text-primary-fixed-dim border-b border-primary-fixed-dim pb-0.5">TERMINAL</button>
+          <button
+            onClick={() => setActiveTab("problems")}
+            className={`font-label-caps text-label-caps transition-colors cursor-pointer ${
+              activeTab === "problems" ? "text-primary-fixed-dim border-b border-primary-fixed-dim pb-0.5" : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            PROBLEMS
+          </button>
+          <button
+            onClick={() => setActiveTab("output")}
+            className={`font-label-caps text-label-caps transition-colors cursor-pointer flex items-center gap-1.5 ${
+              activeTab === "output" ? "text-primary-fixed-dim border-b border-primary-fixed-dim pb-0.5" : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            <span>OUTPUT</span>
+            {runStatus === "running" || runStatus === "compiling" ? (
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+            ) : null}
+          </button>
+          <button
+            onClick={() => setActiveTab("terminal")}
+            className={`font-label-caps text-label-caps transition-colors cursor-pointer ${
+              activeTab === "terminal" ? "text-primary-fixed-dim border-b border-primary-fixed-dim pb-0.5" : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            TERMINAL
+          </button>
           
-          <div className="flex items-center gap-1 ml-2">
-            {sessionList.map((session, index) => (
-              <button
-                key={session.id}
-                className={`shrink-0 rounded px-2 py-0.5 font-label-caps text-label-caps transition-colors ${
-                  session.id === activeSessionId
-                    ? "bg-surface-container-high text-primary-fixed-dim"
-                    : "text-on-surface-variant/60 hover:bg-surface-bright/20 hover:text-on-surface"
-                }`}
-                onClick={() => handleSwitchTab(session)}
-              >
-                {session.name === "Terminal" ? `#${index + 1}` : session.name}
-              </button>
-            ))}
-          </div>
+          {activeTab === "terminal" && (
+            <div className="flex items-center gap-1 ml-2">
+              {sessionList.map((session, index) => (
+                <button
+                  key={session.id}
+                  className={`shrink-0 rounded px-2 py-0.5 font-label-caps text-label-caps transition-colors ${
+                    session.id === activeSessionId
+                      ? "bg-surface-container-high text-primary-fixed-dim"
+                      : "text-on-surface-variant/60 hover:bg-surface-bright/20 hover:text-on-surface"
+                  }`}
+                  onClick={() => handleSwitchTab(session)}
+                >
+                  {session.name === "Terminal" ? `#${index + 1}` : session.name}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {activeTab === "output" && runActiveFile && (
+            <div className="flex items-center gap-2 ml-2 text-[11px] font-mono text-on-surface-variant/70">
+              <span className="text-white/30">|</span>
+              <span className="text-cyan-400 font-medium truncate max-w-[200px]">
+                {runActiveFile.split(/[/\\]/).pop()}
+              </span>
+              {runLang && (
+                <span className="px-1.5 py-0.2 bg-white/5 rounded text-[10px] text-on-surface-variant">
+                  {runLang}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
-          <button className="text-on-surface-variant hover:text-on-surface" onClick={handleNew} title="New terminal">
-            <span className="material-symbols-outlined text-[16px]">add</span>
-          </button>
-          <button className="text-on-surface-variant hover:text-on-surface" onClick={handleKill} title="Kill terminal">
-            <span className="material-symbols-outlined text-[16px]">delete</span>
-          </button>
+          {activeTab === "output" ? (
+            <>
+              {runStatus === "running" || runStatus === "compiling" ? (
+                <button
+                  onClick={() => void stopRun()}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/20 text-red-400 hover:bg-red-500/30 text-[11px] font-mono transition-colors cursor-pointer"
+                  title="Stop running process"
+                >
+                  <Square size={11} className="fill-red-400" />
+                  <span>Stop</span>
+                </button>
+              ) : null}
+              <button
+                onClick={clearLogs}
+                className="text-on-surface-variant hover:text-on-surface text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-white/5 transition-colors cursor-pointer"
+                title="Clear Output"
+              >
+                Clear
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="text-on-surface-variant hover:text-on-surface" onClick={handleNew} title="New terminal">
+                <span className="material-symbols-outlined text-[16px]">add</span>
+              </button>
+              <button className="text-on-surface-variant hover:text-on-surface" onClick={handleKill} title="Kill terminal">
+                <span className="material-symbols-outlined text-[16px]">delete</span>
+              </button>
+            </>
+          )}
           {onClose && (
             <button className="text-on-surface-variant hover:text-on-surface ml-2" onClick={onClose} title="Collapse terminal">
               <span className="material-symbols-outlined text-[16px]">keyboard_arrow_down</span>
@@ -335,7 +422,7 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
         </div>
       </div>
       <div className="relative min-h-0 overflow-hidden" style={{ height: "100%" }}>
-        {restrictedMode && (
+        {restrictedMode && activeTab === "terminal" && (
           <div className="absolute inset-0 bg-black/70 backdrop-blur-sm z-30 flex flex-col items-center justify-center p-4 text-center select-none">
             <ShieldAlert size={28} className="text-amber-500 mb-2 animate-bounce" />
             <div className="text-xs font-bold text-white mb-1 uppercase tracking-wider">Terminal Execution Suspended</div>
@@ -344,7 +431,33 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
             </p>
           </div>
         )}
-        {!workspace ? (
+
+        {activeTab === "output" ? (
+          <div
+            ref={outputScrollRef}
+            className="h-full w-full p-3 font-mono text-[11.5px] leading-relaxed overflow-y-auto bg-[#0a0a0c] select-text no-scrollbar"
+          >
+            {runLogs.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-on-surface-variant/40 select-none">
+                <span className="material-symbols-outlined text-3xl mb-1">terminal</span>
+                <span>No program output. Click "▶ Run" on any source file to execute.</span>
+              </div>
+            ) : (
+              runLogs.map((log) => {
+                let colorClass = "text-slate-200";
+                if (log.type === "system") colorClass = "text-cyan-400";
+                else if (log.type === "compiling") colorClass = "text-amber-400";
+                else if (log.type === "stderr") colorClass = "text-red-400";
+
+                return (
+                  <div key={log.id} className={`whitespace-pre-wrap break-all ${colorClass}`}>
+                    {log.text}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        ) : !workspace ? (
           <div className="flex h-full flex-col items-center justify-center p-4 text-center space-y-2 bg-surface-dim select-none">
             <TermIcon size={22} className="text-on-surface-variant/60 dark:text-on-surface-variant/60 mb-1 animate-pulse" />
             <span className="text-xs text-on-surface-variant/60 dark:text-on-surface-variant/60">Open a workspace to start terminal session.</span>
@@ -358,4 +471,5 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
       </div>
     </section>
   );
+
 }
