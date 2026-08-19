@@ -136,6 +136,7 @@ try:
     _run_endpoint_test("/api/mcp/servers/filesystem/call", {"method": "tools/call", "params": {"name": "write_file"}}, 200, "TRUSTED MCP write_file (filesystem, allowed -> 200)")
 
 finally:
+
     print("\nShutting down server...")
     server_process.terminate()
     server_process.wait()
