@@ -1,5 +1,5 @@
-import { lazy, Suspense, useState } from "react";
-import { Columns2, Replace, Save, SaveAll, Search, X, FolderOpen, Loader2, Sparkles, ChevronRight, FileCode, Check, Play, Square } from "lucide-react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { Columns2, Replace, Save, SaveAll, Search, X, FolderOpen, Loader2, Sparkles, ChevronRight, FileCode, Check, Play, Square, Bug } from "lucide-react";
 import * as monaco from "monaco-editor";
 import Editor, { loader } from "@monaco-editor/react";
 
@@ -12,6 +12,10 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useRunStore } from "../../stores/runStore";
 import { registerInlineCompletionProvider, useInlineCompletionStore } from "./inlineCompletionProvider";
+import { installDebugDecorations } from "../../components/editor/MonacoPane";
+import { debugClient } from "../../components/debug/debugClient";
+import { DebugPanel } from "../../components/debug/DebugPanel";
+import { DebugToolbar } from "../../components/debug/DebugToolbar";
 
 function getLanguageFromPath(filePath: string | null): string {
   if (!filePath) return "plaintext";
@@ -114,6 +118,7 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
     setEditorInstance(editor);
     monaco.editor.setTheme("vs-stitch-dark");
     registerInlineCompletionProvider(monaco);
+    installDebugDecorations(editor, monaco, file.path);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI, () => {
       setShowInline(true);
     });
@@ -263,6 +268,9 @@ export function EditorWorkspace() {
   const runFile = useRunStore((state) => state.runFile);
   const stopRun = useRunStore((state) => state.stopRun);
   const isRunning = runStatus === "running" || runStatus === "compiling";
+  const [isDebugging, setIsDebugging] = useState(debugClient.snapshot().active);
+
+  useEffect(() => debugClient.subscribe((state) => setIsDebugging(state.active)), []);
 
   const handleRunOrStop = async () => {
     if (isRunning) {
@@ -275,10 +283,20 @@ export function EditorWorkspace() {
       await saveFile(activePath);
     }
 
-    const ws = activeWorkspaces[0]?.path || "";
+    const matchingWs = activeWorkspaces.find((w) => activePath.startsWith(w.path))?.path;
+    const ws = matchingWs || (activePath.includes("/") || activePath.includes("\\")
+      ? activePath.substring(0, Math.max(activePath.lastIndexOf("/"), activePath.lastIndexOf("\\")))
+      : activeWorkspaces[0]?.path || "");
+
     window.dispatchEvent(new CustomEvent("code-os:menu", { detail: "view.openTerminal" }));
     window.dispatchEvent(new CustomEvent("code-os:show-run-output"));
     await runFile(ws, activePath);
+  };
+
+  const handleDebug = async () => {
+    if (!activePath || !activeFile || getLanguageFromPath(activePath) !== "python") return;
+    if (activeFile.dirty) await saveFile(activePath);
+    await debugClient.start(activePath);
   };
 
   const replaceInCurrentFile = () => {
@@ -382,6 +400,18 @@ export function EditorWorkspace() {
           >
             <Search size={13} />
           </button>
+
+          <button
+            data-testid="editor-debug-btn"
+            title="Debug Python file"
+            onClick={() => void handleDebug()}
+            disabled={!activePath || getLanguageFromPath(activePath) !== "python" || isDebugging}
+            className="h-7 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-mono font-medium border border-amber-400/30 bg-amber-400/10 text-amber-300 disabled:opacity-30"
+          >
+            <Bug size={12} /><span className="text-[11px]">Debug</span>
+          </button>
+
+          {isDebugging && <DebugToolbar />}
 
           {showSearch && (
             <div className="flex items-center gap-1 bg-surface-container-high border border-outline-variant/30 rounded-lg px-2 h-7">
@@ -495,6 +525,8 @@ export function EditorWorkspace() {
         <MonacoPane filePath={activePath} />
         {splitPath ? <MonacoPane filePath={splitPath} /> : null}
       </div>
+
+      {isDebugging && <DebugPanel />}
 
       {/* ── Editor Status Bar ─────────────────────────────────────────────── */}
       <div className="h-6 min-h-[24px] bg-[#0e1014] border-t border-surface-variant/40 flex items-center justify-between px-3 font-mono text-[10.5px] text-on-surface-variant select-none shrink-0">

@@ -191,11 +191,21 @@ async def run_file_stream(
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
     try:
-        # 1. Path containment check
-        norm_ws = normalize_workspace(workspace)
-        full_path = ensure_within_workspace(str(norm_ws), file_path)
+        # 1. Path containment and resolution check
+        if os.path.isabs(file_path):
+            abs_fp = Path(file_path).resolve()
+            if not workspace or not str(abs_fp).startswith(str(Path(workspace).resolve())):
+                norm_ws = abs_fp.parent
+                full_path = abs_fp
+            else:
+                norm_ws = normalize_workspace(workspace)
+                full_path = ensure_within_workspace(str(norm_ws), file_path)
+        else:
+            norm_ws = normalize_workspace(workspace)
+            full_path = ensure_within_workspace(str(norm_ws), file_path)
+
         if not full_path.is_file():
-            yield sse("error", {"error": f"File '{file_path}' does not exist in workspace."})
+            yield sse("error", {"error": f"File '{file_path}' does not exist."})
             return
 
         # 2. Language Detection
@@ -273,6 +283,7 @@ async def run_file_stream(
             *exec_cmd,
             cwd=str(norm_ws),
             env=env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
