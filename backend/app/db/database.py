@@ -256,6 +256,17 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
     )
     # Dynamic schema migration for existing databases
     try:
+        cur = await _db.execute("PRAGMA table_info(workspaces)")
+        rows = await cur.fetchall()
+        cols = [r["name"] for r in rows]
+        if "is_active" not in cols:
+            await _db.execute("ALTER TABLE workspaces ADD COLUMN is_active INTEGER DEFAULT 0")
+        if "last_opened_at" not in cols:
+            await _db.execute("ALTER TABLE workspaces ADD COLUMN last_opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+    except Exception as exc:
+        logger.debug("Schema migration for workspaces: %s", exc)
+
+    try:
         cur = await _db.execute("PRAGMA table_info(agent_jobs)")
         rows = await cur.fetchall()
         cols = [r["name"] for r in rows]

@@ -20,7 +20,7 @@
     "npm": ">=10"
   },
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:backend\" \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev": "concurrently --kill-others-on-fail \"npm:dev:backend\" \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:backend": "node scripts/dev-backend.js",
     "dev:electron": "wait-on http://127.0.0.1:5176 && npm run build:electron && electron .",

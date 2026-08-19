@@ -162,7 +162,7 @@ async def create_thread(payload: ThreadCreateRequest) -> ChatThreadDto:
     if payload.workspace:
         ws_name = Path(payload.workspace).name or "Workspace"
         await db.execute(
-            "INSERT OR IGNORE INTO workspaces (path, name, is_active) VALUES (?, ?, 1)",
+            "INSERT OR IGNORE INTO workspaces (path, name) VALUES (?, ?)",
             (payload.workspace, ws_name),
         )
     await db.execute(

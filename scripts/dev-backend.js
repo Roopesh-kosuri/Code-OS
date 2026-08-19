@@ -1,4 +1,5 @@
 import { spawn, execSync } from "node:child_process";
+import path from "node:path";
 
 function getPythonVersion(cmd) {
   try {
@@ -46,13 +47,44 @@ function findPython() {
   process.exit(1);
 }
 
-import path from "node:path";
-
 const pythonCmd = findPython();
 const backendDir = path.resolve("backend");
-const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"];
-const proc = spawn(pythonCmd, args, { stdio: "inherit", cwd: backendDir, env: { ...process.env, PYTHONPATH: backendDir } });
+const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"];
 
-proc.on("exit", (code) => {
-  process.exit(code || 0);
+let shouldRestart = true;
+let currentProc = null;
+
+function startBackend() {
+  console.log("[dev:backend] Spawning Uvicorn backend supervisor...");
+  currentProc = spawn(pythonCmd, args, {
+    stdio: "inherit",
+    cwd: backendDir,
+    env: { ...process.env, PYTHONPATH: backendDir }
+  });
+
+  currentProc.on("exit", (code, signal) => {
+    console.warn(`[dev:backend] Process exited with code ${code}, signal ${signal}.`);
+    if (shouldRestart) {
+      console.log("[dev:backend] Restarting backend in 1000ms...");
+      setTimeout(startBackend, 1000);
+    }
+  });
+
+  currentProc.on("error", (err) => {
+    console.error("[dev:backend] Spawn error:", err);
+  });
+}
+
+process.on("SIGINT", () => {
+  shouldRestart = false;
+  if (currentProc) currentProc.kill("SIGINT");
+  process.exit(0);
 });
+
+process.on("SIGTERM", () => {
+  shouldRestart = false;
+  if (currentProc) currentProc.kill("SIGTERM");
+  process.exit(0);
+});
+
+startBackend();
