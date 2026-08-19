@@ -74,6 +74,72 @@ class BaseAgent(NewBaseAgent):
                     response = "".join(tokens).strip()
                     break
                 except Exception as exc:
+                    is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower() or "quota" in str(exc).lower()
+                    is_daily_limit = "tpd" in str(exc).lower() or "tokens per day" in str(exc).lower() or "daily" in str(exc).lower()
+                    effective_prov = (chat_req.api_key_provider or chat_req.provider or "groq").lower()
+
+                    # 1. Automatic Intra-Provider Failover: Groq 120b -> llama-3.3-70b-versatile
+                    if is_rate_limit and effective_prov == "groq" and "120b" in (chat_req.model or ""):
+                        alt_model = "llama-3.3-70b-versatile"
+                        logs.append(f"[FAILOVER] Groq model '{chat_req.model}' hit token limit. Automatically switching to '{alt_model}'...")
+                        await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+                        chat_req.model = alt_model
+                        if not self.provider_config:
+                            self.provider_config = {}
+                        self.provider_config["model"] = alt_model
+                        auto_retries = 0
+                        continue
+
+                    # 2. Automatic Cross-Provider Failover: Try other configured providers
+                    if is_rate_limit or is_daily_limit:
+                        try:
+                            from ..provider_health import provider_health_tracker
+                            from ...settings.service import get_api_key
+                            configured_keys = {
+                                "groq": await get_api_key("groq"),
+                                "gemini": await get_api_key("gemini"),
+                                "nvidia-nim": await get_api_key("nvidia-nim"),
+                                "openai": await get_api_key("openai"),
+                                "anthropic": await get_api_key("anthropic"),
+                                "deepseek": await get_api_key("deepseek"),
+                                "mistral": await get_api_key("mistral"),
+                            }
+                            fb = provider_health_tracker.find_fallback_provider(effective_prov, configured_keys)
+                            if fb:
+                                fb_prov, fb_model, fb_url = fb
+                                logs.append(f"[FAILOVER] Rate limit on [{effective_prov}] {chat_req.model}. Automatically falling back to [{fb_prov}] {fb_model}...")
+                                await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+                                _RECOVERY_URLS = {
+                                    "groq": "https://api.groq.com/openai/v1",
+                                    "openai": "https://api.openai.com/v1",
+                                    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+                                    "deepseek": "https://api.deepseek.com/v1",
+                                    "mistral": "https://api.mistral.ai/v1",
+                                    "openrouter": "https://openrouter.ai/api/v1",
+                                    "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+                                    "nvidia": "https://integrate.api.nvidia.com/v1",
+                                    "anthropic": "https://api.anthropic.com/v1",
+                                }
+                                new_base_url = fb_url
+                                new_provider = "openai-compatible" if fb_prov in _RECOVERY_URLS else fb_prov
+                                new_key_provider = fb_prov
+
+                                if not self.provider_config:
+                                    self.provider_config = {}
+                                self.provider_config["preset"] = new_key_provider
+                                self.provider_config["provider"] = new_provider
+                                self.provider_config["model"] = fb_model
+                                self.provider_config["api_key_provider"] = new_key_provider
+                                self.provider_config["base_url"] = new_base_url
+                                chat_req.base_url = new_base_url
+                                chat_req.provider = new_provider
+                                chat_req.model = fb_model
+                                chat_req.api_key_provider = new_key_provider
+                                auto_retries = 0
+                                continue
+                        except Exception as fb_lookup_err:
+                            logger.warning("Cross-provider fallback lookup failed: %s", fb_lookup_err)
+
                     logs.append(f"[ERROR] Legacy Agent [{self.role}] LLM call failed (auto-retry {auto_retries}/{MAX_AUTO_RETRIES}): {exc}")
                     if auto_retries >= MAX_AUTO_RETRIES:
                         decision_res = await self.handle_llm_failure(job_id, task_id, exc)
@@ -101,6 +167,7 @@ class BaseAgent(NewBaseAgent):
                     else:
                         auto_retries += 1
                         await asyncio.sleep(1.5 * auto_retries)
+
                         
             logs.append(f"Legacy Agent [{self.role}] completed reasoning.")
             

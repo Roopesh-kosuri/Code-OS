@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+import json
 from pathlib import Path
 from app.features.ai.service import extract_proposals_robust
 from app.features.ai.schemas import FileChange, EditProposalRequest
@@ -52,10 +53,36 @@ def test_extract_proposals_robust_formats():
 
 
 @pytest.mark.asyncio
-async def test_dag_writes_and_verifies_files_on_disk(tmp_path):
+async def test_dag_writes_and_verifies_files_on_disk(tmp_path, monkeypatch, temp_db):
     import uuid
     from app.features.ai.job_service import create_task
     from app.features.workspaces.service import open_workspace
+    from app.features.ai.agents.agent_factory import AgentFactory
+    from app.features.ai.agents.agent_interface import AgentOutput
+
+    class MockCodingAgent:
+        async def execute(self, job_id, task_id, task_title, context, workspace):
+            if "notewatch" in task_title.lower():
+                return AgentOutput(
+                    agent_role="Coding Agent",
+                    task_id=task_id,
+                    status="success",
+                    confidence=1.0,
+                    reasoning_summary="Created notewatch",
+                    proposals=[{"path": "notewatch.py", "original": "", "updated": "import sys\nprint('notewatch')\n"}]
+                )
+            else:
+                return AgentOutput(
+                    agent_role="Documentation Agent",
+                    task_id=task_id,
+                    status="success",
+                    confidence=1.0,
+                    reasoning_summary="Created README",
+                    proposals=[{"path": "README.md", "original": "", "updated": "# NoteWatch Docs\n"}]
+                )
+
+    monkeypatch.setattr(AgentFactory, "create_agent", lambda role, provider_config=None: MockCodingAgent())
+
     ws_dir = str(tmp_path / "test_dag_ws")
     Path(ws_dir).mkdir(parents=True, exist_ok=True)
     await open_workspace(ws_dir)
@@ -69,11 +96,11 @@ async def test_dag_writes_and_verifies_files_on_disk(tmp_path):
         user_request="Build notewatch CLI tool"
     )
 
-    await create_task(job_id, "task_coding_1", "Create notewatch.py CLI module", "Coding Agent", [], "30 mins")
-    await create_task(job_id, "task_docs_1", "Synchronize README.md documentation", "Documentation Agent", ["task_coding_1"], "15 mins")
+    await create_task("task_coding_1", job_id, "Create notewatch.py CLI module", "Coding Agent", [], "30 mins")
+    await create_task("task_docs_1", job_id, "Synchronize README.md documentation", "Documentation Agent", ["task_coding_1"], "15 mins")
 
-    engine = DAGEngine(job_id)
-    await engine.run()
+    engine = DAGEngine()
+    await engine._run_job(job_id)
 
     job_data = await get_job(job_id)
     assert job_data["status"] == "completed"
@@ -90,20 +117,56 @@ async def test_dag_writes_and_verifies_files_on_disk(tmp_path):
 
     # Verify DB files_modified matches
     files_modified = job_data["files_modified"]
-    assert "notewatch.py" in files_modified
-    assert "README.md" in files_modified
+    assert any("notewatch.py" in f for f in files_modified)
+    assert any("README.md" in f for f in files_modified)
 
     # Verify manifest tracking
-    manifest = await get_job_manifest(job_id)
-    assert "notewatch.py" in manifest.get("files", {})
-    assert "README.md" in manifest.get("files", {})
+    manifest_raw = await get_job_manifest(job_id)
+    manifest = json.loads(manifest_raw)
+    assert any("notewatch.py" in k for k in manifest)
+    assert any("README.md" in k for k in manifest)
 
 
 @pytest.mark.asyncio
-async def test_full_notewatch_dag_creates_all_artifacts_on_disk(tmp_path):
+async def test_full_notewatch_dag_creates_all_artifacts_on_disk(tmp_path, monkeypatch, temp_db):
     import uuid
     from app.features.ai.job_service import create_task
     from app.features.workspaces.service import open_workspace
+    from app.features.ai.agents.agent_factory import AgentFactory
+    from app.features.ai.agents.agent_interface import AgentOutput
+
+    class MockNwAgent:
+        async def execute(self, job_id, task_id, task_title, context, workspace):
+            if "implement" in task_title.lower() or "coding" in task_id:
+                return AgentOutput(
+                    agent_role="Coding Agent",
+                    task_id=task_id,
+                    status="success",
+                    confidence=1.0,
+                    reasoning_summary="Created notewatch.py",
+                    proposals=[{"path": "notewatch.py", "original": "", "updated": "import sys\n# notewatch implementation\n"}]
+                )
+            elif "readme" in task_title.lower() or "docs" in task_id:
+                return AgentOutput(
+                    agent_role="Documentation Agent",
+                    task_id=task_id,
+                    status="success",
+                    confidence=1.0,
+                    reasoning_summary="Created README.md",
+                    proposals=[{"path": "README.md", "original": "", "updated": "# NoteWatch CLI\n"}]
+                )
+            else:
+                return AgentOutput(
+                    agent_role="Testing Agent",
+                    task_id=task_id,
+                    status="success",
+                    confidence=1.0,
+                    reasoning_summary="Testing/Review completed",
+                    proposals=[]
+                )
+
+    monkeypatch.setattr(AgentFactory, "create_agent", lambda role, provider_config=None: MockNwAgent())
+
     ws_dir = str(tmp_path / "stresstest_ws")
     Path(ws_dir).mkdir(parents=True, exist_ok=True)
     await open_workspace(ws_dir)
@@ -122,13 +185,13 @@ async def test_full_notewatch_dag_creates_all_artifacts_on_disk(tmp_path):
         user_request=user_req
     )
 
-    await create_task(job_id, "task_coding_nw", f"Implement changes for '{user_req}'", "Coding Agent", [], "45 mins")
-    await create_task(job_id, "task_review_nw", "Perform static code review and quality checks", "Review Agent", ["task_coding_nw"], "20 mins")
-    await create_task(job_id, "task_testing_nw", "Generate validation unit tests for notewatch", "Testing Agent", ["task_coding_nw"], "30 mins")
-    await create_task(job_id, "task_docs_nw", "Synchronize project README.md documentation", "Documentation Agent", ["task_coding_nw"], "15 mins")
+    await create_task("task_coding_nw", job_id, f"Implement changes for '{user_req}'", "Coding Agent", [], "45 mins")
+    await create_task("task_review_nw", job_id, "Perform static code review and quality checks", "Review Agent", ["task_coding_nw"], "20 mins")
+    await create_task("task_testing_nw", job_id, "Generate validation unit tests for notewatch", "Testing Agent", ["task_coding_nw"], "30 mins")
+    await create_task("task_docs_nw", job_id, "Synchronize project README.md documentation", "Documentation Agent", ["task_coding_nw"], "15 mins")
 
-    engine = DAGEngine(job_id)
-    await engine.run()
+    engine = DAGEngine()
+    await engine._run_job(job_id)
 
     job_data = await get_job(job_id)
     assert job_data["status"] == "completed"

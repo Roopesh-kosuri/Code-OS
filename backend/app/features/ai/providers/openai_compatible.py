@@ -31,11 +31,13 @@ def _format_openai_error(exc: Exception, provider_id: str = "AI") -> str:
 class OpenAICompatibleProvider(AIProvider):
     id = "openai-compatible"
 
-    def __init__(self, base_url: str, api_key: str | None, timeout_seconds: float = 180.0, max_retries: int = 1) -> None:
+    def __init__(self, base_url: str, api_key: str | None, timeout_seconds: float = 180.0, max_retries: int = 1, provider_id: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.timeout_seconds = timeout_seconds
         self.max_retries = max(0, max_retries)
+        if provider_id:
+            self.id = provider_id
 
     @property
     def headers(self) -> dict[str, str]:
@@ -70,7 +72,7 @@ class OpenAICompatibleProvider(AIProvider):
         self,
         model: str,
         messages: list[ChatMessage],
-        temperature: float,
+        temperature: float = 0.2,
         tools: list[dict] | None = None,
         max_tokens: int | None = 16384,
     ) -> AsyncIterator[str]:
@@ -90,9 +92,9 @@ class OpenAICompatibleProvider(AIProvider):
             payload["tool_choice"] = "auto"
 
         emitted = False
-        max_attempts = max(self.max_retries + 1, 8)
-        # Per-chunk idle read timeout (not total request timeout) so long generations stay alive as tokens stream
-        idle_read_timeout = max(90.0, min(self.timeout_seconds, 180.0))
+        max_attempts = 2
+        # Per-chunk idle read timeout (35.0s) so hung/cold-starting endpoints fail-fast to recovery
+        idle_read_timeout = 35.0
 
         for attempt in range(max_attempts):
             try:
@@ -102,7 +104,7 @@ class OpenAICompatibleProvider(AIProvider):
                     write=30.0,
                     pool=30.0,
                 )
-                async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
+                async with httpx.AsyncClient(timeout=timeout) as client:
                     async with client.stream("POST", f"{self.base_url}/chat/completions", json=payload, headers=self.headers) as response:
                         status = response.status_code
 
@@ -151,16 +153,25 @@ class OpenAICompatibleProvider(AIProvider):
                                             parsed_delay = val
 
                                 if parsed_delay is not None:
-                                    backoff = min(60.0, max(2.5, parsed_delay + 1.0) * (1.2 ** attempt))
+                                    backoff = min(20.0, max(2.0, parsed_delay + 0.5) * (1.2 ** attempt))
                                     logger.warning("[RETRY] Rate limited (429 on %s). Server requested wait of %.1fs. Sleeping %.1fs (attempt %d/%d)...", self.id, parsed_delay, backoff, attempt + 1, max_attempts)
                                 else:
-                                    backoff = min(60.0, (2.0 ** attempt) * 2.0)
+                                    backoff = min(20.0, (2.0 ** attempt) * 2.0)
                                     logger.warning("[RETRY] Rate limited (429 on %s). Sleeping %.1fs (attempt %d/%d)...", self.id, backoff, attempt + 1, max_attempts)
 
                                 await asyncio.sleep(backoff)
                                 continue
                             else:
-                                raise RuntimeError(f"Rate limit exceeded (HTTP 429) after {max_attempts} attempts on provider '{self.id}'. Please wait a minute or switch models: {error_body[:160]}")
+                                clean_429 = error_body
+                                try:
+                                    parsed = json.loads(error_body)
+                                    if isinstance(parsed, list) and parsed:
+                                        parsed = parsed[0]
+                                    if isinstance(parsed, dict):
+                                        clean_429 = parsed.get("error", {}).get("message") or parsed.get("message") or error_body
+                                except Exception:
+                                    pass
+                                raise RuntimeError(f"Rate limit / quota exceeded (HTTP 429) on '{self.id}'. {clean_429}")
 
                         # ── Retryable server errors (502/503/504) ──
                         if status in self._RETRYABLE_STATUS:

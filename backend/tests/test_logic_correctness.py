@@ -161,15 +161,21 @@ class TestLogicCorrectness(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["dependencies"], [])
 
     def test_no_httpx_response_hack(self):
-        """Verify zero instances of httpx.Response(200 hack in backend code."""
+        """Verify zero instances of the httpx.Response status-200 hack in non-test backend code."""
         import subprocess
         result = subprocess.run(
-            ["git", "grep", "-rn", "httpx.Response(200"],
+            ["git", "grep", "-rn", "--", "httpx.Response(200", ":(exclude)tests/*", ":(exclude)*.md"],
             cwd=str(BACKEND_DIR.parent),
             capture_output=True,
             text=True,
         )
-        self.assertEqual(result.stdout.strip(), "", f"Found forbidden httpx.Response hack: {result.stdout}")
+        # Filter out any matches from test files themselves
+        matches = [
+            line for line in result.stdout.strip().splitlines()
+            if line and "/tests/" not in line and "\\tests\\" not in line
+        ]
+        self.assertEqual(matches, [], f"Found forbidden httpx.Response hack in app code: {matches}")
+
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Query, HTTPException
 
-from .schemas import BranchCreateRequest, BranchSwitchRequest, CommitHistoryItem, CommitRequest, DiffResponse, GitStatusResponse
+from .schemas import BranchCreateRequest, BranchSwitchRequest, CommitHistoryItem, CommitRequest, DiffResponse, GitHubAuthRequest, GitStatusResponse
+from .github_auth import validate_and_store_token
+from .github_service import commit_selected_files, push_current_branch, remotes
 from .service import commit, create_branch, diff, history, pull, push, status, switch_branch
 
 router = APIRouter()
@@ -28,7 +30,7 @@ async def git_diff(workspace: str = Query(...), path: str | None = Query(default
 @router.post("/commit")
 async def git_commit(payload: CommitRequest) -> dict[str, str]:
     await _ensure_trusted(payload.workspace)
-    return {"sha": commit(payload.workspace, payload.message, payload.files)}
+    return {"sha": commit_selected_files(payload.workspace, payload.message, payload.files)}
 
 
 
@@ -41,7 +43,18 @@ async def git_pull(workspace: str = Query(...)) -> dict[str, str]:
 @router.post("/push")
 async def git_push(workspace: str = Query(...)) -> dict[str, str]:
     await _ensure_trusted(workspace)
-    return {"output": push(workspace)}
+    return {"output": push_current_branch(workspace)}
+
+
+@router.get("/remotes")
+async def git_remotes(workspace: str = Query(...)) -> dict[str, list[dict[str, str]]]:
+    await _ensure_trusted(workspace)
+    return {"remotes": remotes(workspace)}
+
+
+@router.post("/auth")
+async def github_auth(payload: GitHubAuthRequest) -> dict[str, str]:
+    return await validate_and_store_token(payload.token)
 
 
 @router.post("/branch")

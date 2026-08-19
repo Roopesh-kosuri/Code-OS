@@ -8,11 +8,13 @@ from app.features.ai.agents.coder import CoderAgent
 @pytest.mark.asyncio
 async def test_bug_a_proposal_approval_clears_from_pending_list(async_client, tmp_path):
     ws_dir = str(tmp_path / "trusted_prop_ws")
+    Path(ws_dir).mkdir(parents=True, exist_ok=True)
     await set_workspace_trust(ws_dir, trusted=True)
 
     # Create a test file
     test_file = Path(ws_dir) / "app.py"
     test_file.write_text("print('hello')\n")
+
 
     # 1. Create a proposal
     req = EditProposalRequest(
@@ -49,12 +51,14 @@ async def test_bug_a_proposal_approval_clears_from_pending_list(async_client, tm
 @pytest.mark.asyncio
 async def test_bug_b_editing_existing_file_twice_in_a_row(tmp_path):
     ws_dir = str(tmp_path / "trusted_edit_ws")
+    Path(ws_dir).mkdir(parents=True, exist_ok=True)
     await set_workspace_trust(ws_dir, trusted=True)
 
     # 1. Create an existing file with initial content (> 150 lines)
     existing_file = Path(ws_dir) / "calculator.py"
     lines = [f"def func_{i}(): return {i}" for i in range(150)]
     existing_file.write_text("\n".join(lines) + "\n")
+
 
     coder = CoderAgent()
 

@@ -19,6 +19,7 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { api } from "../../lib/api";
+import { useBackendStore } from "../../stores/backendStore";
 
 type SystemMetrics = {
   cpu_usage_percent: number;
@@ -75,6 +76,7 @@ export function PerformanceDashboard() {
   const [error, setError] = useState<string | null>(null);
 
   const fetchAll = async () => {
+    if (useBackendStore.getState().status !== "connected") return;
     try {
       const [metricsData, pluginsData, mcpData] = await Promise.allSettled([
         api.get<DiagnosticsData>("/api/diagnostics/metrics"),

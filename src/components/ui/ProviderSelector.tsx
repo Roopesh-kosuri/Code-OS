@@ -20,6 +20,7 @@ import {
   X,
   Plus,
   Trash2,
+  Eye,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -30,11 +31,13 @@ import {
 import {
   isReasoningModel,
   PRESET_MODELS,
+  VISION_MODELS,
   getUserCustomModels,
   saveUserCustomModel,
   deleteUserCustomModel,
   type CuratedModel,
 } from "../../lib/models";
+import { useAIStore } from "../../stores/aiStore";
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -250,6 +253,9 @@ export function ProviderSelector({
   const [userCustomList, setUserCustomList] = useState<string[]>(() =>
     getUserCustomModels(value.preset)
   );
+  const [isVisionDropdownOpen, setIsVisionDropdownOpen] = useState(false);
+  const visionModel = useAIStore((s) => s.visionModel);
+  const setVisionModel = useAIStore((s) => s.setVisionModel);
 
   const [nimSelfHosted, setNimSelfHosted] = useState(
     value.preset === "nvidia-nim" &&
@@ -259,6 +265,7 @@ export function ProviderSelector({
 
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const modelDropdownRef = useRef<HTMLDivElement | null>(null);
+  const visionDropdownRef = useRef<HTMLDivElement | null>(null);
 
   const preset: ProviderPreset | undefined = getPreset(value.preset);
   const activeTheme = PRESET_THEMES[value.preset] || DEFAULT_THEME;
@@ -285,6 +292,12 @@ export function ProviderSelector({
         !modelDropdownRef.current.contains(e.target as Node)
       ) {
         setIsModelDropdownOpen(false);
+      }
+      if (
+        visionDropdownRef.current &&
+        !visionDropdownRef.current.contains(e.target as Node)
+      ) {
+        setIsVisionDropdownOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClickOutside);
@@ -849,6 +862,80 @@ export function ProviderSelector({
             <span>Reasoning Model active</span>
           </div>
         )}
+      </div>
+
+      {/* ── Dedicated Vision QA Model Selector (Rony Agent Vision) ────────── */}
+      <div className="relative z-10" ref={visionDropdownRef}>
+        <div className="flex items-center justify-between mb-0.5 text-[9.5px]">
+          <span className="font-semibold text-on-surface-variant flex items-center gap-1">
+            <Eye size={10} className="text-primary" />
+            <span>Vision QA Model (Sub-call)</span>
+          </span>
+          <span className="text-[8.5px] px-1 py-0.2 rounded font-mono bg-primary/10 text-primary border border-primary/20">
+            Dedicated VLM
+          </span>
+        </div>
+
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              setIsVisionDropdownOpen(!isVisionDropdownOpen);
+              setIsOpen(false);
+              setIsModelDropdownOpen(false);
+            }}
+            className="w-full px-2.5 py-1.5 rounded-lg bg-[#16181f]/80 hover:bg-[#1c1e28] border border-white/10 hover:border-white/20 text-left flex items-center justify-between transition-all cursor-pointer text-xs text-on-surface shadow-sm group"
+          >
+            <div className="flex items-center gap-1.5 truncate min-w-0 flex-1">
+              <Eye size={12} className="text-primary shrink-0 group-hover:scale-105 transition-transform" />
+              <span className="font-mono font-bold truncate text-[11px] text-on-surface">
+                {visionModel || (VISION_MODELS[value.preset] || VISION_MODELS.groq)[0]?.id || "Select vision model..."}
+              </span>
+            </div>
+            <ChevronDown
+              size={12}
+              className={`text-on-surface-variant shrink-0 ml-1 transition-transform duration-200 ${
+                isVisionDropdownOpen ? "rotate-180 text-primary" : "group-hover:text-on-surface"
+              }`}
+            />
+          </button>
+
+          {isVisionDropdownOpen && (
+            <div className="absolute left-0 right-0 top-full mt-1 bg-[#12141c] border border-white/15 rounded-xl shadow-2xl overflow-hidden z-50 backdrop-blur-xl animate-fade-in">
+              <div className="p-1.5 space-y-0.5 max-h-[160px] overflow-y-auto">
+                {(VISION_MODELS[value.preset] || VISION_MODELS.groq).map((vm) => {
+                  const isSel = (visionModel || (VISION_MODELS[value.preset] || VISION_MODELS.groq)[0]?.id) === vm.id;
+                  return (
+                    <button
+                      key={vm.id}
+                      type="button"
+                      onClick={() => {
+                        setVisionModel(vm.id);
+                        setIsVisionDropdownOpen(false);
+                      }}
+                      className={`w-full px-2 py-1.5 rounded-lg text-left flex items-center justify-between gap-1.5 transition-all text-xs cursor-pointer ${
+                        isSel ? "bg-primary/20 text-primary font-bold" : "text-on-surface hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="flex flex-col min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-semibold truncate text-on-surface">{vm.name}</span>
+                          {vm.tag && (
+                            <span className={`text-[7.5px] px-1 py-px rounded font-mono border ${getModelBadgeStyle(vm.tag)}`}>
+                              {vm.tag}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[9.5px] font-mono text-on-surface-variant/70 truncate">{vm.id}</span>
+                      </div>
+                      {isSel && <Check size={12} className="text-primary shrink-0" strokeWidth={2.5} />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* ── Ollama Local URL ──────────────────────────────────────────────── */}

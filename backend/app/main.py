@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
     logger.info("backend stopped")
 
 
-app = FastAPI(title="CODE OS Backend", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="CODE OS Backend", version="2.4.0", lifespan=lifespan)
 
 
 async def request_id_middleware(request: Request, call_next):

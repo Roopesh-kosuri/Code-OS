@@ -215,13 +215,25 @@ export function AIChatPanel() {
   const deleteThread = useAIStore((s) => s.deleteThread);
   const setPreset = useAIStore((s) => s.setPreset);
   const setModel = useAIStore((s) => s.setModel);
+  const apiKeyProvider = useAIStore((s) => s.apiKeyProvider);
+  const tokenUsage = useAIStore((s) => s.tokenUsage);
+  const providerHealth = useAIStore((s) => s.providerHealth);
+  const fetchTokenUsage = useAIStore((s) => s.fetchTokenUsage);
+  const fetchProviderHealth = useAIStore((s) => s.fetchProviderHealth);
 
   const workspace = useWorkspaceStore((s) => s.currentWorkspace);
 
   useEffect(() => {
     void loadThreads(workspace?.path);
     void checkInterruptedState(workspace?.path);
-  }, [workspace?.path, loadThreads, checkInterruptedState]);
+    void fetchTokenUsage();
+    void fetchProviderHealth();
+    const interval = setInterval(() => {
+      void fetchTokenUsage();
+      void fetchProviderHealth();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [workspace?.path, loadThreads, checkInterruptedState, fetchTokenUsage, fetchProviderHealth]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -834,6 +846,13 @@ export function AIChatPanel() {
                   <div className="text-xs text-primary/70 flex items-center gap-1.5 py-1">
                     <Loader2 size={13} className="animate-spin text-primary" />
                     <span className="shimmer-text">Generating response...</span>
+                  </div>
+                ) : message.agentStatus?.type === "error" ? (
+                  <div className="text-xs text-rose-400/90 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2.5 space-y-1">
+                    <div className="font-semibold flex items-center gap-1.5 text-rose-300">
+                      <AlertTriangle size={14} />
+                      <span>{message.agentStatus.message || "Provider Error"}</span>
+                    </div>
                   </div>
                 ) : null}
 

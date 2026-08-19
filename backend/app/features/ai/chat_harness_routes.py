@@ -12,7 +12,7 @@ import logging
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -130,9 +130,6 @@ async def chat_agent_stream(payload: ChatAgentStreamRequest) -> StreamingRespons
     Runs adaptive tiered execution (Tier 0 Fast Answer, Tier 1 Quick Task, Tier 2 Deep Task)
     with tool execution, budgeted RAG, DAG planning, and verification.
     """
-    from app.core.rate_limiter import rate_limiter
-    rate_limiter.check("chat_agent_stream", max_requests=30, window_seconds=60.0)
-    
     from .chat_harness import run_chat_agent, ChatAgentRequest
     
     agent_request = ChatAgentRequest(
@@ -487,5 +484,102 @@ async def get_rate_limit_status(workspace: str = "") -> dict:
     from ...core.rate_limiter import rate_limiter
     key = workspace or "default_user"
     return rate_limiter.get_token_status(key)
+
+
+@router.get("/token-usage")
+async def get_token_usage(provider: str | None = None) -> dict:
+    """Get current day token usage per provider and against the daily 200k limit."""
+    from ...core.rate_limiter import rate_limiter
+    return rate_limiter.get_daily_provider_status(provider)
+
+
+@router.get("/provider-health")
+async def get_provider_health(provider: str | None = None) -> dict:
+    """Get health status, failure rates in last hour, and circuit breaker states for providers."""
+    from .provider_health import provider_health_tracker
+    if provider:
+        return provider_health_tracker.get_health(provider)
+    return provider_health_tracker.get_all_health()
+
+
+@router.get("/validate-model")
+async def validate_model(provider: str = Query(...), model: str = Query(...), base_url: str | None = Query(default=None)) -> dict:
+    """Validate whether a model name is valid for a given provider."""
+    from .model_catalog_service import model_catalog_service
+    is_valid, err_msg, models = await model_catalog_service.validate_model_for_provider(provider, model, base_url)
+    return {
+        "valid": is_valid,
+        "message": err_msg,
+        "available_models": models[:12],
+    }
+
+
+@router.post("/token-usage/reset")
+@router.post("/chat-agent/reset-rate-limits")
+async def reset_token_usage_endpoint() -> dict:
+    """Reset all token usage counters, sliding window rates, and circuit breakers to 0."""
+    from ...core.rate_limiter import rate_limiter
+    from .provider_health import provider_health_tracker
+    rate_limiter.reset()
+    provider_health_tracker.reset_all()
+    return {
+        "status": "ok",
+        "message": "Token usage and provider health trackers reset to 0.",
+        "usage": rate_limiter.get_daily_provider_status(),
+    }
+
+
+class DirectProviderCallRequest(BaseModel):
+    provider: str = "groq"
+    model: str = ""
+    message: str = "hello"
+
+
+@router.post("/test-provider-call")
+@router.post("/chat")
+async def test_direct_provider_call(payload: DirectProviderCallRequest) -> dict:
+    """Direct provider call bypassing complex agent reasoning and rate limits."""
+    from .service import provider_for
+    from .chat_harness import ChatAgentRequest
+    from .provider_health import DEFAULT_PROVIDER_MODELS, DEFAULT_PROVIDER_URLS
+    
+    prov = payload.provider.lower()
+    model = payload.model or DEFAULT_PROVIDER_MODELS.get(prov, "openai/gpt-oss-120b" if prov == "groq" else "meta/llama-3.1-70b-instruct")
+    base_url = DEFAULT_PROVIDER_URLS.get(prov)
+    
+    from .schemas import ChatMessage
+    chat_msgs = [ChatMessage(role="user", content=payload.message)]
+    
+    req = ChatAgentRequest(
+        provider="openai-compatible" if prov in ("groq", "gemini", "nvidia-nim", "openai", "deepseek", "mistral", "openrouter") else prov,
+        model=model,
+        base_url=base_url,
+        api_key_provider=prov,
+        messages=[{"role": "user", "content": payload.message}],
+        is_agent_mode=False,
+    )
+    try:
+        provider_instance = await provider_for(req)
+        chunks = []
+        async for chunk in provider_instance.stream_chat(
+            model=req.model,
+            messages=chat_msgs,
+            temperature=0.2,
+        ):
+            chunks.append(chunk)
+        response_text = "".join(chunks)
+        return {
+            "success": True,
+            "provider": prov,
+            "model": model,
+            "response": response_text,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "provider": prov,
+            "model": model,
+            "error": str(exc),
+        }
 
 

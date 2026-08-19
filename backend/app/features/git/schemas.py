@@ -1,10 +1,17 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CommitRequest(BaseModel):
     workspace: str
     message: str
-    files: list[str] | None = None
+    # Optional at transport level so trust validation still runs before a
+    # restricted workspace request is rejected; empty selections are rejected
+    # by the manual commit service.
+    files: list[str] = Field(default_factory=list)
+
+
+class GitHubAuthRequest(BaseModel):
+    token: str
 
 
 

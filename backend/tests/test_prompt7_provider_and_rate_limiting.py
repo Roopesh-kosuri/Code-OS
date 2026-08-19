@@ -101,17 +101,19 @@ class TestPrompt7ProviderAndRateLimiting(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("".join(tokens), "First Second")
 
     def test_rate_limiting_thresholds(self):
-        """Verify rate limiter allows requests up to limit and raises HTTP 429 when threshold exceeded."""
+        """Rate limiter is now tracking-only — allows requests even past the limit, never raises HTTP 429."""
         limiter = SimpleRateLimiter()
 
-        # 5 requests per 10 seconds limit
+        # 5 requests per 10 seconds limit — all succeed
         for i in range(5):
-            limiter.check("test_route", max_requests=5, window_seconds=10.0)
+            result = limiter.check("test_route", max_requests=5, window_seconds=10.0)
+            self.assertTrue(result["allowed"])
 
-        # 6th request must raise HTTP 429
-        with self.assertRaises(HTTPException) as ctx:
-            limiter.check("test_route", max_requests=5, window_seconds=10.0)
-        self.assertEqual(ctx.exception.status_code, 429)
+        # 6th request: still allowed (non-blocking), remaining stays at 0
+        result = limiter.check("test_route", max_requests=5, window_seconds=10.0)
+        self.assertTrue(result["allowed"])
+        self.assertEqual(result["remaining"], 0)
+        self.assertEqual(result["limit"], 5)
 
     def test_provider_catalog_metadata(self):
         """Verify metadata catalog retrieves model capabilities and pricing."""

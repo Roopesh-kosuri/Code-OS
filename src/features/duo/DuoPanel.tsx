@@ -17,6 +17,13 @@ import {
   X,
   Eye,
   Sparkles,
+  Terminal,
+  Bot,
+  Flame,
+  Globe,
+  Layers,
+  Server,
+  Cpu,
 } from "lucide-react";
 import { ProviderSelector, type ProviderConfig } from "../../components/ui/ProviderSelector";
 import { PROVIDER_PRESETS } from "../../lib/providerPresets";
@@ -24,6 +31,102 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useAIStore } from "../../stores/aiStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { api } from "../../lib/api";
+import { CustomSelect, type CustomSelectOption } from "../../components/ui/CustomSelect";
+
+const PROVIDER_OPTIONS: CustomSelectOption[] = [
+  {
+    value: "auto",
+    label: "Auto Routing (default)",
+    icon: Sparkles,
+    iconColor: "text-purple-400",
+    badge: "Auto",
+    badgeColor: "bg-purple-500/15 text-purple-300 border border-purple-500/30",
+    description: "Intelligently routes requests",
+  },
+  {
+    value: "ollama",
+    label: "Ollama (local)",
+    icon: Terminal,
+    iconColor: "text-emerald-400",
+    badge: "Local",
+    badgeColor: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30",
+    description: "Offline local models",
+  },
+  {
+    value: "openai",
+    label: "OpenAI",
+    icon: Zap,
+    iconColor: "text-emerald-400",
+    badge: "Cloud",
+    description: "GPT-4o & reasoning",
+  },
+  {
+    value: "anthropic",
+    label: "Anthropic (Claude)",
+    icon: Bot,
+    iconColor: "text-amber-400",
+    badge: "Cloud",
+    description: "Claude 3.5 & 3.7",
+  },
+  {
+    value: "gemini",
+    label: "Google Gemini",
+    icon: Sparkles,
+    iconColor: "text-blue-400",
+    badge: "Free Tier",
+    description: "1M token context",
+  },
+  {
+    value: "groq",
+    label: "Groq",
+    icon: Flame,
+    iconColor: "text-orange-400",
+    badge: "Fast LPU",
+    badgeColor: "bg-orange-500/15 text-orange-300 border border-orange-500/30",
+    description: "Ultra-fast open weights",
+  },
+  {
+    value: "deepseek",
+    label: "DeepSeek",
+    icon: Globe,
+    iconColor: "text-cyan-400",
+    badge: "Reasoning",
+    description: "V3 & R1 Chain-of-Thought",
+  },
+  {
+    value: "mistral",
+    label: "Mistral AI",
+    icon: Layers,
+    iconColor: "text-rose-400",
+    badge: "Cloud",
+    description: "Codestral & Mistral Large",
+  },
+  {
+    value: "openrouter",
+    label: "OpenRouter",
+    icon: Globe,
+    iconColor: "text-indigo-400",
+    badge: "Aggregator",
+    description: "100+ multi-provider models",
+  },
+  {
+    value: "nvidia-nim",
+    label: "NVIDIA NIM",
+    icon: Cpu,
+    iconColor: "text-green-400",
+    badge: "GPU Cloud",
+    badgeColor: "bg-green-500/15 text-green-300 border border-green-500/30",
+    description: "Llama 3.1, MiniMax, DeepSeek",
+  },
+  {
+    value: "custom",
+    label: "Custom endpoint",
+    icon: Server,
+    iconColor: "text-slate-400",
+    badge: "Custom",
+    description: "OpenAI-compatible HTTP API",
+  },
+];
 
 interface ModelConfig {
   provider: "ollama" | "openai" | "anthropic" | "groq" | "deepseek" | "mistral" | "openrouter" | "nvidia" | "gemini" | string;
@@ -328,24 +431,17 @@ export function DuoPanel({ compact = false }: { compact?: boolean }) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
               <div>
                 <label className="text-[11px] text-on-surface-variant font-medium block mb-1">Provider</label>
-                <select
+                <CustomSelect
                   value={recoveryProvider}
-                  onChange={(e) => {
-                    const nextP = e.target.value;
+                  options={PROVIDER_OPTIONS}
+                  onChange={(nextP) => {
                     setRecoveryProvider(nextP);
                     const preset = PROVIDER_PRESETS.find((p) => p.id === nextP);
                     if (preset?.model_example) {
                       setRecoveryModel(preset.model_example);
                     }
                   }}
-                  className="w-full bg-surface-variant/40 border border-outline/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:border-primary"
-                >
-                  {PROVIDER_PRESETS.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label} {p.group === "api" ? "(Cloud API)" : "(Local)"}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               <div>
@@ -354,8 +450,8 @@ export function DuoPanel({ compact = false }: { compact?: boolean }) {
                   type="text"
                   value={recoveryModel}
                   onChange={(e) => setRecoveryModel(e.target.value)}
-                  placeholder="e.g. llama-3.3-70b-versatile, gpt-4o"
-                  className="w-full bg-surface-variant/40 border border-outline/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:border-primary font-mono"
+                  placeholder="e.g. minimaxai/minimax-m3, meta/llama-3.1-70b-instruct"
+                  className="w-full bg-[#131315] border border-surface-variant rounded-lg px-2.5 py-2 text-xs text-on-surface focus:outline-none focus:border-primary font-mono"
                 />
               </div>
             </div>
@@ -367,31 +463,31 @@ export function DuoPanel({ compact = false }: { compact?: boolean }) {
                 <>
                   <button
                     type="button"
-                    onClick={() => setRecoveryModel("llama-3.3-70b-versatile")}
-                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "llama-3.3-70b-versatile" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
-                  >
-                    llama-3.3-70b-versatile (Recommended)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRecoveryModel("llama-3.1-8b-instant")}
-                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "llama-3.1-8b-instant" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
-                  >
-                    llama-3.1-8b-instant (Fast / High Quota)
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setRecoveryModel("openai/gpt-oss-120b")}
                     className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "openai/gpt-oss-120b" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
                   >
-                    openai/gpt-oss-120b
+                    openai/gpt-oss-120b (Recommended)
                   </button>
                   <button
                     type="button"
                     onClick={() => setRecoveryModel("openai/gpt-oss-20b")}
                     className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "openai/gpt-oss-20b" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
                   >
-                    openai/gpt-oss-20b
+                    openai/gpt-oss-20b (Fast)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("qwen/qwen3.6-27b")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "qwen/qwen3.6-27b" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    qwen/qwen3.6-27b (Reasoning)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("groq/compound-mini")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "groq/compound-mini" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    groq/compound-mini (Fast Agent)
                   </button>
                 </>
               )}
@@ -428,6 +524,45 @@ export function DuoPanel({ compact = false }: { compact?: boolean }) {
                     className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "gemini-2.5-pro" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
                   >
                     gemini-2.5-pro
+                  </button>
+                </>
+              )}
+              {recoveryProvider === "nvidia-nim" && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("minimaxai/minimax-m3")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "minimaxai/minimax-m3" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    minimax-m3 (Coding)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("minimaxai/minimax-01")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "minimaxai/minimax-01" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    minimax-01 (Flagship)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("meta/llama-3.1-70b-instruct")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "meta/llama-3.1-70b-instruct" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    llama-3.1-70b (Recommended)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("meta/llama-3.1-8b-instruct")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "meta/llama-3.1-8b-instruct" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    llama-3.1-8b (Fast)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecoveryModel("deepseek-ai/deepseek-r1")}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "deepseek-ai/deepseek-r1" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
+                  >
+                    deepseek-r1 (Reasoning)
                   </button>
                 </>
               )}

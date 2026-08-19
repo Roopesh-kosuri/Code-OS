@@ -51,3 +51,9 @@ class WriteRequest(BaseModel):
     workspace: str
     path: str
     content: str
+
+
+class RevealRequest(BaseModel):
+    workspace: str
+    path: str
+

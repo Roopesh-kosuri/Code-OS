@@ -21,13 +21,115 @@ import {
   Zap,
   Loader2,
   Sparkles,
+  Bot,
+  Flame,
+  Globe,
+  Server,
+  Cpu,
 } from "lucide-react";
 
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useAIStore } from "../../stores/aiStore";
+import { useBackendStore } from "../../stores/backendStore";
 import { api } from "../../lib/api";
 import { PROVIDER_PRESETS } from "../../lib/providerPresets";
+import { CustomSelect, type CustomSelectOption } from "../../components/ui/CustomSelect";
+
+const PROVIDER_OPTIONS: CustomSelectOption[] = [
+  {
+    value: "auto",
+    label: "Auto Routing (default)",
+    icon: Sparkles,
+    iconColor: "text-purple-400",
+    badge: "Auto",
+    badgeColor: "bg-purple-500/15 text-purple-300 border border-purple-500/30",
+    description: "Intelligently routes requests",
+  },
+  {
+    value: "ollama",
+    label: "Ollama (local)",
+    icon: Terminal,
+    iconColor: "text-emerald-400",
+    badge: "Local",
+    badgeColor: "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30",
+    description: "Offline local models",
+  },
+  {
+    value: "openai",
+    label: "OpenAI",
+    icon: Zap,
+    iconColor: "text-emerald-400",
+    badge: "Cloud",
+    description: "GPT-4o & reasoning",
+  },
+  {
+    value: "anthropic",
+    label: "Anthropic (Claude)",
+    icon: Bot,
+    iconColor: "text-amber-400",
+    badge: "Cloud",
+    description: "Claude 3.5 & 3.7",
+  },
+  {
+    value: "gemini",
+    label: "Google Gemini",
+    icon: Sparkles,
+    iconColor: "text-blue-400",
+    badge: "Free Tier",
+    description: "1M token context",
+  },
+  {
+    value: "groq",
+    label: "Groq",
+    icon: Flame,
+    iconColor: "text-orange-400",
+    badge: "Fast LPU",
+    badgeColor: "bg-orange-500/15 text-orange-300 border border-orange-500/30",
+    description: "Ultra-fast open weights",
+  },
+  {
+    value: "deepseek",
+    label: "DeepSeek",
+    icon: Globe,
+    iconColor: "text-cyan-400",
+    badge: "Reasoning",
+    description: "V3 & R1 Chain-of-Thought",
+  },
+  {
+    value: "mistral",
+    label: "Mistral AI",
+    icon: Layers,
+    iconColor: "text-rose-400",
+    badge: "Cloud",
+    description: "Codestral & Mistral Large",
+  },
+  {
+    value: "openrouter",
+    label: "OpenRouter",
+    icon: Globe,
+    iconColor: "text-indigo-400",
+    badge: "Aggregator",
+    description: "100+ multi-provider models",
+  },
+  {
+    value: "nvidia-nim",
+    label: "NVIDIA NIM",
+    icon: Cpu,
+    iconColor: "text-green-400",
+    badge: "GPU Cloud",
+    badgeColor: "bg-green-500/15 text-green-300 border border-green-500/30",
+    description: "Llama 3.1, MiniMax, DeepSeek",
+  },
+  {
+    value: "custom",
+    label: "Custom endpoint",
+    icon: Server,
+    iconColor: "text-slate-400",
+    badge: "Custom",
+    description: "OpenAI-compatible HTTP API",
+  },
+];
 
 interface AgentTask {
   id: string;
@@ -85,13 +187,6 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
-  // Sync models
-  useEffect(() => {
-    if (globalModel && !selectedModel) {
-      setSelectedModel(globalModel);
-    }
-  }, [globalModel, selectedModel]);
-
   // Timer
   useEffect(() => {
     let interval: any;
@@ -117,7 +212,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
   // Fetch active job status & tasks
   // Fetch active job status & tasks
   const fetchActiveJob = async () => {
-    if (!workspace) return;
+    if (!workspace || useBackendStore.getState().status !== "connected") return;
     try {
       if (activeJob?.id) {
         const data = await api.get<AgentJob>(`/api/agents/jobs/${activeJob.id}`);
@@ -171,9 +266,13 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
       ? `${instruction.trim()} --quick`
       : instruction.trim();
 
+    const presetObj = PROVIDER_PRESETS.find((p) => p.id === selectedProvider);
     const providerConfig = {
       preset: selectedProvider,
+      provider: presetObj?.provider || "openai-compatible",
       model: selectedModel,
+      base_url: presetObj?.base_url || undefined,
+      api_key_provider: presetObj?.api_key_provider || selectedProvider,
     };
 
     try {
@@ -396,32 +495,34 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="font-caption text-caption text-on-surface-variant mb-1.5 block">Provider</label>
-                <select
+                <CustomSelect
                   value={selectedProvider}
-                  onChange={(e) => {
-                    const nextProvider = e.target.value;
+                  options={PROVIDER_OPTIONS}
+                  disabled={isRunning}
+                  onChange={(nextProvider) => {
                     setSelectedProvider(nextProvider);
                     const preset = PROVIDER_PRESETS.find((p) => p.id === nextProvider);
                     if (preset && preset.model_example) {
                       setSelectedModel(preset.model_example);
+                      useAIStore.getState().setPreset(nextProvider, preset.base_url, preset.model_example);
+                    } else {
+                      useAIStore.getState().setPreset(nextProvider);
                     }
                   }}
-                  disabled={isRunning}
-                  className="custom-select w-full bg-[#131315] border border-surface-variant rounded-lg px-3 py-2 text-xs text-on-surface focus:border-primary-container focus:outline-none disabled:opacity-50"
-                >
-                  {PROVIDER_PRESETS.map((p) => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-                </select>
+                />
               </div>
               <div>
                 <label className="font-caption text-caption text-on-surface-variant mb-1.5 block">Model</label>
                 <input
                   type="text"
                   value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedModel(val);
+                    useAIStore.getState().setModel(val);
+                  }}
                   disabled={isRunning}
-                  placeholder="e.g. gpt-4o, claude-3-5-sonnet, llama3"
+                  placeholder="e.g. minimaxai/minimax-m3, meta/llama-3.1-70b-instruct"
                   className="w-full bg-[#131315] border border-surface-variant rounded-lg px-3 py-2 text-xs text-on-surface focus:border-primary-container focus:outline-none font-mono disabled:opacity-50"
                 />
               </div>
@@ -431,23 +532,20 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
             {(() => {
               const MODEL_SUGGESTIONS: Record<string, { id: string; label: string; tag?: string }[]> = {
                 groq: [
-                  { id: "llama-3.3-70b-versatile", label: "llama-3.3-70b", tag: "Recommended" },
-                  { id: "llama-3.1-8b-instant", label: "llama-3.1-8b", tag: "Fast" },
-                  { id: "openai/gpt-oss-120b", label: "gpt-oss-120b" },
-                  { id: "openai/gpt-oss-20b", label: "gpt-oss-20b" },
-                  { id: "gemma2-9b-it", label: "gemma2-9b" },
-                  { id: "mixtral-8x7b-32768", label: "mixtral-8x7b" },
-                  { id: "deepseek-r1-distill-llama-70b", label: "deepseek-r1-70b" },
+                  { id: "openai/gpt-oss-120b", label: "gpt-oss-120b", tag: "Recommended" },
+                  { id: "openai/gpt-oss-20b", label: "gpt-oss-20b", tag: "Fast" },
+                  { id: "qwen/qwen3.6-27b", label: "qwen-3.6-27b", tag: "Reasoning" },
+                  { id: "groq/compound-mini", label: "compound-mini", tag: "Fast Agent" },
+                  { id: "groq/compound", label: "compound" },
                 ],
                 "nvidia-nim": [
-                  { id: "z-ai/glm-5.2", label: "z-ai/glm-5.2" },
-                  { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b", tag: "Recommended" },
+                  { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Coding" },
+                  { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
+                  { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b", tag: "Recommended" },
                   { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
-                  { id: "nvidia/llama-3.1-nemotron-70b-instruct", label: "nemotron-70b" },
-                  { id: "deepseek-ai/deepseek-coder-6.7b-instruct", label: "deepseek-coder-6.7b" },
-                  { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1" },
+                  { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
+                  { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
                   { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
-                  { id: "google/gemma-2-27b-it", label: "gemma-2-27b" },
                 ],
                 openrouter: [
                   { id: "google/gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },
@@ -674,24 +772,17 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                       <div>
                         <label className="text-[11px] text-on-surface-variant font-medium block mb-1">Provider</label>
-                        <select
+                        <CustomSelect
                           value={recoveryProvider}
-                          onChange={(e) => {
-                            const nextP = e.target.value;
+                          options={PROVIDER_OPTIONS}
+                          onChange={(nextP) => {
                             setRecoveryProvider(nextP);
                             const preset = PROVIDER_PRESETS.find((p) => p.id === nextP);
                             if (preset?.model_example) {
                               setRecoveryModel(preset.model_example);
                             }
                           }}
-                          className="w-full bg-surface-variant/40 border border-outline/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:border-primary"
-                        >
-                          {PROVIDER_PRESETS.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.label} {p.group === "api" ? "(Cloud API)" : "(Local)"}
-                            </option>
-                          ))}
-                        </select>
+                        />
                       </div>
 
                       <div>
@@ -700,8 +791,8 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                           type="text"
                           value={recoveryModel}
                           onChange={(e) => setRecoveryModel(e.target.value)}
-                          placeholder="e.g. llama-3.3-70b-versatile, gpt-4o"
-                          className="w-full bg-surface-variant/40 border border-outline/40 rounded-lg px-2.5 py-1.5 text-xs text-on-surface focus:outline-none focus:border-primary font-mono"
+                          placeholder="e.g. minimaxai/minimax-m3, meta/llama-3.1-70b-instruct"
+                          className="w-full bg-[#131315] border border-surface-variant rounded-lg px-2.5 py-2 text-xs text-on-surface focus:outline-none focus:border-primary font-mono"
                         />
                       </div>
                     </div>
@@ -710,23 +801,22 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                     {(() => {
                       const MODEL_SUGGESTIONS: Record<string, { id: string; label: string; tag?: string }[]> = {
                         groq: [
-                          { id: "llama-3.3-70b-versatile", label: "llama-3.3-70b", tag: "Recommended" },
-                          { id: "llama-3.1-8b-instant", label: "llama-3.1-8b", tag: "Fast" },
-                          { id: "openai/gpt-oss-120b", label: "gpt-oss-120b" },
-                          { id: "openai/gpt-oss-20b", label: "gpt-oss-20b" },
-                          { id: "gemma2-9b-it", label: "gemma2-9b" },
+                          { id: "openai/gpt-oss-120b", label: "gpt-oss-120b", tag: "Recommended" },
+                          { id: "openai/gpt-oss-20b", label: "gpt-oss-20b", tag: "Fast" },
+                          { id: "llama-3.3-70b-versatile", label: "llama-3.3-70b" },
+                          { id: "llama-3.1-8b-instant", label: "llama-3.1-8b" },
+                          { id: "deepseek-r1-distill-llama-70b", label: "deepseek-r1-70b", tag: "Reasoning" },
                           { id: "mixtral-8x7b-32768", label: "mixtral-8x7b" },
-                          { id: "deepseek-r1-distill-llama-70b", label: "deepseek-r1-70b" },
+                          { id: "gemma2-9b-it", label: "gemma2-9b" },
                         ],
                         "nvidia-nim": [
-                          { id: "z-ai/glm-5.2", label: "z-ai/glm-5.2" },
-                          { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b", tag: "Recommended" },
+                          { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Coding" },
+                          { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
+                          { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b", tag: "Recommended" },
                           { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
-                          { id: "nvidia/llama-3.1-nemotron-70b-instruct", label: "nemotron-70b" },
-                          { id: "deepseek-ai/deepseek-coder-6.7b-instruct", label: "deepseek-coder-6.7b" },
-                          { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1" },
+                          { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
+                          { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
                           { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
-                          { id: "google/gemma-2-27b-it", label: "gemma-2-27b" },
                         ],
                         openrouter: [
                           { id: "google/gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },

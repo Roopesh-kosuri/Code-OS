@@ -46,6 +46,9 @@ from ..search.semantic_service import semantic_search
 from .artifact_auditor import audit_generated_artifact, ArtifactAuditReport
 from .vision_service import capture_screenshot, analyze_image_with_vlm, resolve_default_vision_model
 from ..terminal.service import _build_safe_environment
+from ...core.rate_limiter import rate_limiter
+from .model_catalog_service import model_catalog_service
+from .provider_health import provider_health_tracker
 
 # Reuse tool implementations from agent_tools (READ-ONLY import)
 from .agents.agent_tools import (
@@ -766,13 +769,17 @@ def _sse_proposal(proposal_id: str, path: str, **kwargs) -> str:
     return _sse_event("proposal", payload)
 
 
-def _sse_command_result(command: str, output: str, exit_code: int = 0, success: bool = True) -> str:
-    return _sse_event("command_result", {
+def _sse_command_result(command: str, output: str, exit_code: int = 0, success: bool = True, reason: str = "", **kwargs) -> str:
+    payload = {
         "command": command,
         "output": output,
         "exit_code": exit_code,
         "success": success,
-    })
+    }
+    if reason:
+        payload["reason"] = reason
+    payload.update(kwargs)
+    return _sse_event("command_result", payload)
 
 
 def _sse_metrics(iterations: int, tools_executed: int, duration_ms: float, tier: int = 0, tokens_used: int = 0) -> str:
@@ -2323,7 +2330,9 @@ Rules:
 3. **Surgical Precision**: Make minimal targeted edits matching existing style. Never rewrite whole files.
 4. **Project Memory**: When the user states a preference or convention ("use stdlib only", "surgical edits", "ask before running tests"), save it via `memory_write`.
 5. **Targeted Test Execution**: Use `list_tests` and `run_single_test` to list test node IDs and run the specific failing test during development rather than running the entire suite.
-6. **Self-Verification**: Your final answer must confirm whether disk verification passed ('✓ change verified on disk').
+6. **Path Quoting & Implicit Directory Creation**: ALWAYS wrap all path arguments in double quotes in terminal commands (e.g. `mkdir "my folder name"`). File-creation tools (`edit_file` with original="") automatically create parent directories on disk — a failed `mkdir` is never blocking; create `"my folder/File.java"` directly.
+7. **Auto-Recovery & Task Continuation (Never Ask to Retry)**: If a command or tool fails (approval timeout, exit code, unquoted path), NEVER ask "Would you like me to try again?" or "Shall I retry?". Immediately adapt and execute a corrected approach (wrap paths in quotes, use alternative tools, or create files directly with parent paths). One step failing never aborts the whole task — adapt, continue, and report honestly at the end.
+8. **Self-Verification**: Your final answer must confirm whether disk verification passed ('✓ change verified on disk').
 Output [DONE] when finished.
 """
 
@@ -2346,8 +2355,10 @@ You have direct, sandboxed access to the workspace through tools.
 7. **Targeted Test Execution**: Use `list_tests` to discover test node IDs and `run_single_test(node_id)` to run specific tests rather than running the entire test suite.
 8. **Verify with Evidence & Post-Edit Verification**: Run tests or commands to verify results. If tests fail, read the assertion traceback and repair the code based on real evidence. Your final answer must confirm whether disk verification passed ('✓ change verified on disk').
 9. **Project Memory**: When the user states a preference or convention ("use stdlib only", "surgical edits", "ask before running tests"), save it via `memory_write`.
-10. **Chunked Large File Generation**: For large files exceeding ~300–400 lines (or 1000+ lines), you MUST split generation across multiple tool calls: call `edit_file` (with original="") for the first chunk (skeleton/head/styles), then call `append_file` for subsequent chunks (body sections, interactive JS, footers) until complete.
-11. **Permanent Generation Quality Standards**:
+10. **Path Quoting & Implicit Directory Creation**: ALWAYS wrap every path and directory argument in double quotes when running commands (e.g. `mkdir "nigropo puzzle game"` or `dir "folder name"`). Never leave paths with spaces unquoted. Remember: file-creation tools (`edit_file` with original="") automatically create parent directories on disk. A failed or timed-out `mkdir` is NEVER blocking — you can create `"nigropo puzzle game/NigropoPuzzleGame.java"` directly and the folder will be created.
+11. **Auto-Recovery & Task Continuation (Never Ask to Retry)**: If a command or tool fails (approval timeout, exit code, unquoted path), NEVER ask "Would you like me to try again?" or "Shall I retry?". Immediately adapt and execute a corrected approach (wrap paths in quotes, use alternative tools, or create files directly with parent paths). One step failing never aborts the whole task — adapt, continue, and report honestly at the end. The only allowed user questions are real architectural/product decisions via `ask_user`.
+12. **Chunked Large File Generation**: For large files exceeding ~300–400 lines (or 1000+ lines), you MUST split generation across multiple tool calls: call `edit_file` (with original="") for the first chunk (skeleton/head/styles), then call `append_file` for subsequent chunks (body sections, interactive JS, footers) until complete.
+13. **Permanent Generation Quality Standards**:
     - No Padding / Filler comments or placeholders.
     - Professional Iconography (SVG icons, no emojis as UI icons).
     - Mobile transform-based parallax (no `background-attachment: fixed`).
@@ -2356,11 +2367,11 @@ You have direct, sandboxed access to the workspace through tools.
     - Full Responsiveness across mobile and desktop.
     - Support `prefers-reduced-motion` in all CSS transitions/animations.
     - Identity Consistency matching user context.
-12. **Post-Generation Structural Self-Audit**:
+14. **Post-Generation Structural Self-Audit**:
     Before completing file generation tasks with `[DONE]`, self-audit tag balance, anchor wiring, JS selectors, and provide an honest non-empty non-comment line count.
-13. **Visual Self-Inspection (`take_screenshot`)**:
+15. **Visual Self-Inspection (`take_screenshot`)**:
     When creating or modifying HTML/CSS/JS websites, you can SEE what you generated by calling `take_screenshot` (with `mode: "preview"`, `target: "path/to/page.html"`, and a specific `question` about layout, navigation, alignment, or styling). You can also inspect the CODE OS UI via `mode: "app_window"`. Use this visual feedback to identify and repair defects before finishing.
-14. **Spec Adherence & Directory Strictness**:
+16. **Spec Adherence & Directory Strictness**:
     When the user asks to build a project, CLI, tool, or files inside a specified directory (e.g. 'mini_notes/'), you MUST create all files, test files, and README inside that exact folder path. NEVER relocate, omit the folder name, or flatten paths for convenience.
 
 Rules: Up to {max_tools} tools per turn, maximum {max_iterations} total turns. Output [DONE] when finished.
@@ -2633,9 +2644,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
     workspace = request.workspace
 
     if not workspace:
-        yield _sse_error("No workspace root provided.")
-        yield _sse_done(False, "No workspace root provided.")
-        return
+        workspace = "."
 
     try:
         user_messages = [m for m in request.messages if m.get("role") == "user"]
@@ -2760,6 +2769,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             else:
                 messages.append(ChatMessage(role=m["role"], content=m["content"]))
 
+        effective_prov_key = request.api_key_provider or ("nvidia-nim" if request.provider == "nvidia-nim" else request.provider)
+        if effective_prov_key == "openai-compatible" and request.provider in ("groq", "gemini", "nvidia-nim", "openai", "anthropic", "deepseek", "mistral"):
+            effective_prov_key = request.provider
+
         chat_request = ChatRequest(
             provider=request.provider,
             model=request.model,
@@ -2785,12 +2798,14 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         consecutive_failures = 0
         consecutive_tool_failures: dict[str, int] = {}
         skipped_items: list[str] = []
+        attempted_providers: set[str] = {effective_prov_key}
         prev_response_prefix: str = ""
         tools_executed_last_turn: int = 0
         intent_retried = False
         truncation_retries = 0
         idle_timeout_retries = 0
         zero_tools_retries = 0
+        retry_prompt_injected_count = 0
         audit_retried = False
         read_dedup_cache: dict[tuple[str, int, int], tuple[float, int, int]] = {}
 
@@ -2875,20 +2890,59 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     return
             except Exception as exc:
                 logger.error("chat_harness: stream_chat error (iteration %d): %s", iteration, exc)
+                is_429 = "429" in str(exc) or "rate limit" in str(exc).lower() or "quota" in str(exc).lower()
+                is_404 = "404" in str(exc) or "not exist" in str(exc).lower() or "not found" in str(exc).lower()
+                provider_health_tracker.record_outcome(effective_prov_key, success=False, error_msg=str(exc), is_429=is_429, is_404=is_404)
+
+                # Attempt automatic fallback on 404, 429, or server outage
+                attempted_providers.add(effective_prov_key)
+                configured_keys = {
+                    "groq": await get_api_key("groq"),
+                    "gemini": await get_api_key("gemini"),
+                    "nvidia-nim": await get_api_key("nvidia-nim"),
+                    "openai": await get_api_key("openai"),
+                    "anthropic": await get_api_key("anthropic"),
+                    "deepseek": await get_api_key("deepseek"),
+                    "mistral": await get_api_key("mistral"),
+                }
+                fallback = provider_health_tracker.find_fallback_provider(attempted_providers, configured_keys)
+                if fallback and (is_429 or is_404 or "server error" in str(exc).lower() or "502" in str(exc) or "503" in str(exc) or "504" in str(exc)):
+                    fb_prov, fb_model, fb_url = fallback
+                    attempted_providers.add(fb_prov)
+                    reason_label = "429 Rate Limit" if is_429 else ("404 Unknown Model" if is_404 else "Server Error")
+                    yield _sse_status("thinking", f"Provider '{effective_prov_key}' failed ({reason_label}). Automatically falling back to {fb_prov} ({fb_model})...")
+                    chat_request.provider = fb_prov
+                    chat_request.model = fb_model
+                    chat_request.base_url = fb_url
+                    chat_request.api_key_provider = fb_prov
+                    effective_prov_key = fb_prov
+                    try:
+                        provider = await provider_for(chat_request)
+                        # Do not consume iteration count on provider switch
+                        continue
+                    except Exception as fb_err:
+                        logger.error("Fallback provider initialization error: %s", fb_err)
+
                 yield _sse_error(f"AI provider request error: {exc}")
                 consecutive_failures += 1
 
-                if consecutive_failures >= MAX_RETRY_BEFORE_ESCALATE:
-                    yield _sse_error(f"Execution stopped after {consecutive_failures} provider errors: {exc}")
-                    yield _sse_done(False, f"Stopped: AI provider error ({exc}). Please check your API key/rate limits or switch models in the dropdown.")
+                if tier == 0 or consecutive_failures >= MAX_RETRY_BEFORE_ESCALATE:
+                    yield _sse_error(f"AI provider error: {exc}")
+                    yield _sse_done(False, f"AI provider error ({exc}). Please check your API key/rate limits or switch models in the dropdown.")
                     return
 
                 messages.append(ChatMessage(role="assistant", content=f"[Error: AI provider call failed: {exc}]"))
                 iteration += 1
                 continue
 
+
             response_text = "".join(full_response)
             messages.append(ChatMessage(role="assistant", content=response_text))
+
+            # Record success and daily token usage
+            provider_health_tracker.record_outcome(effective_prov_key, success=True)
+            turn_tokens = max(1, len(response_text) // 4)
+            rate_limiter.record_provider_tokens(effective_prov_key, turn_tokens)
 
             tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
             _save_interrupted_state(
@@ -2920,13 +2974,66 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 yield _sse_done(True, "Answer streamed successfully.")
                 return
 
-            # ── Response Repetition Breaker ──────────────────────────────────
+            # ── Zero-Tool Permission, Retry & Give-Up Interceptor & Repetition Breaker ────
             has_tools = _has_tool_calls_extended(response_text)
             curr_prefix = re.sub(r"\s+", " ", response_text[:200]).strip().lower()
+            clean_resp_lower = response_text.strip().lower()
+
+            is_retry_or_permission_question = bool(re.search(
+                r"(?:would you like|shall i|should i|do you want me to|would you want me to|can i|may i|could i)\s+(?:me to\s+)?(?:try|create|do that|run|list|check|inspect|proceed|attempt|fix|re-run|look)\b",
+                clean_resp_lower,
+            )) or bool(re.search(
+                r"(?:try again|retry|proceed|do that)\s*\?\s*$",
+                clean_resp_lower,
+            ))
+
+            is_environmental_inquiry = bool(re.search(
+                r"(?:could you please confirm|could you confirm|please provide more details|confirm if there are any specific restrictions|sufficient permissions|restrictions on directory creation)\b",
+                clean_resp_lower,
+            )) and not has_tools
+
+            is_give_up_statement = bool(re.search(
+                r"(?:unable to create|cannot proceed|can\'t proceed|prevent(?:s|ed)? me from creating|cannot create the|unable to proceed|fail(?:ed)? to create the folder|problem with the environment|fundamental issue with directory creation)\b",
+                clean_resp_lower,
+            )) and not staged_changes and not has_tools
+
+            should_intercept_stall = (is_retry_or_permission_question or is_environmental_inquiry or is_give_up_statement)
+
+            # Auto-recovery interceptor: if agent asks permission, asks diagnostic questions, or prematurely gives up with 0 tool calls
+            if not has_tools and should_intercept_stall and retry_prompt_injected_count < 2:
+                retry_prompt_injected_count += 1
+                logger.info("chat_harness: intercepting zero-tool stall/permission/give-up and injecting auto-recovery directive (count=%d)", retry_prompt_injected_count)
+                yield _sse_status("thinking", "Instructing agent to bypass directory creation and execute tools directly...")
+                messages.append(ChatMessage(
+                    role="user",
+                    content=(
+                        "Do not ask for permission, diagnostics, or abort. As the autonomous agent, execute your tools directly. "
+                        "Remember: File-creation tools (`edit_file` with original=\"\") automatically create all parent directories on disk — a failed or timed-out `mkdir` is never blocking. "
+                        "Execute the corrected approach now by staging the required files directly with their relative paths (e.g. `edit_file(path=\"nigropo puzzle game/NigropoPuzzleGame.java\", original=\"\", updated=\"...\")`) or calling tools directly."
+                    )
+                ))
+                iteration += 1
+                continue
+
             if prev_response_prefix and tools_executed_last_turn == 0 and not has_tools and not _response_is_done(response_text):
                 is_exact_prefix = (len(curr_prefix) >= 30 and curr_prefix[:80] == prev_response_prefix[:80])
                 similarity = difflib.SequenceMatcher(None, curr_prefix, prev_response_prefix).ratio() if curr_prefix and prev_response_prefix else 0.0
                 if is_exact_prefix or similarity > 0.85:
+                    if should_intercept_stall and retry_prompt_injected_count < 2:
+                        retry_prompt_injected_count += 1
+                        logger.info("chat_harness: intercepting repeated stall/permission/give-up and injecting auto-recovery directive (count=%d)", retry_prompt_injected_count)
+                        yield _sse_status("thinking", "Instructing agent to bypass directory creation and execute tools directly...")
+                        messages.append(ChatMessage(
+                            role="user",
+                            content=(
+                                "Do not ask for permission, diagnostics, or abort. As the autonomous agent, execute your tools directly. "
+                                "Remember: File-creation tools (`edit_file` with original=\"\") automatically create all parent directories on disk — a failed or timed-out `mkdir` is never blocking. "
+                                "Execute the corrected approach now by staging the required files directly with their relative paths (e.g. `edit_file(path=\"nigropo puzzle game/NigropoPuzzleGame.java\", original=\"\", updated=\"...\")`) or calling tools directly."
+                            )
+                        ))
+                        iteration += 1
+                        continue
+
                     logger.warning("chat_harness: detected response repetition loop (similarity=%.2f)", similarity)
                     yield _sse_error("Execution stopped: Agent is repeating near-identical responses without taking action.")
                     yield _sse_done(False, "Stopped: Detected repeated near-identical response loop.")
@@ -3246,7 +3353,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             policy_err = "Command blocked by security policy: potential code injection detected."
                             logger.warning("chat_harness: Malicious command rejected by security policy: %s", cmd)
                             yield _sse_status("tool_skipped", policy_err, tool="run_command", command=cmd)
-                            yield _sse_command_result(cmd, policy_err, exit_code=1, success=False)
+                            yield _sse_command_result(cmd, policy_err, exit_code=1, success=False, reason="security_policy_blocked")
                             _append_activity_log(workspace, {
                                 "action_type": "security_policy_blocked",
                                 "target": cmd,
@@ -3259,27 +3366,46 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 tool_name="run_command",
                                 success=False,
                                 output="",
-                                error=policy_err,
+                                error=json.dumps({
+                                    "reason": "security_policy_blocked",
+                                    "detail": policy_err,
+                                    "command": cmd,
+                                }),
+                                failure_reason="security_policy_blocked",
+                                failure_detail=policy_err,
                             )
                         elif require_sandbox:
                             # User or tool requested strict container sandbox execution (fail-closed)
                             try:
                                 yield _sse_status("tool", f"[Container Sandbox] Running command: {cmd}", tool="run_command", command=cmd, sandboxed=True)
                                 result = await _execute_command_sandboxed(workspace, cmd)
+                                if not result.success:
+                                    yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
                             except SandboxUnavailableError as exc:
                                 logger.error("chat_harness: Sandbox unavailable: %s", exc)
                                 yield _sse_error(str(exc))
+                                yield _sse_command_result(cmd, str(exc), exit_code=1, success=False, reason="sandbox_unavailable")
                                 result = ToolResult(
                                     tool_name="run_command",
                                     success=False,
                                     output="",
-                                    error=f"SandboxUnavailableError: {exc}",
+                                    error=json.dumps({
+                                        "reason": "sandbox_unavailable",
+                                        "detail": str(exc),
+                                        "command": cmd,
+                                    }),
+                                    failure_reason="sandbox_unavailable",
+                                    failure_detail=str(exc),
                                 )
                         elif _is_command_trusted(workspace, cmd):
                             yield _sse_status("tool", f"[Trusted] Running command: {cmd}", tool="run_command", command=cmd, trusted=True)
                             result = await _execute_command_async(workspace, cmd)
+                            if not result.success:
+                                yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
                         elif _is_command_safe(cmd, workspace):
                             result = await _execute_command_async(workspace, cmd)
+                            if not result.success:
+                                yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
                         else:
                             action_id = str(uuid.uuid4())
                             is_native_fallback = not caps.get("docker_available")
@@ -3309,15 +3435,86 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             yield _sse_status("approval_required", f"Approval needed to run: {cmd}", command=cmd)
 
                             try:
-                                await asyncio.wait_for(pending.event.wait(), timeout=APPROVAL_TIMEOUT_SECONDS)
+                                await asyncio.wait_for(pending.event.wait(), timeout=COMMAND_APPROVAL_TIMEOUT_SECONDS)
                                 if pending.approved:
                                     yield _sse_status("tool", f"Approved: Running {cmd} on host...", tool="run_command", command=cmd)
                                     result = await _execute_command_async(workspace, cmd)
+                                    if not result.success:
+                                        yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
                                 else:
+                                    denied_msg = f"Command '{cmd}' was rejected by user."
                                     yield _sse_status("tool", f"Denied: Execution of {cmd} was rejected by user.", tool="run_command")
-                                    result = ToolResult(tool_name="run_command", success=False, output="", error=f"Command '{cmd}' was rejected by user.")
+                                    yield _sse_command_result(cmd, denied_msg, exit_code=1, success=False, reason="user_denied")
+                                    result = ToolResult(
+                                        tool_name="run_command",
+                                        success=False,
+                                        output="",
+                                        error=json.dumps({"reason": "user_denied", "detail": denied_msg, "command": cmd}),
+                                        failure_reason="user_denied",
+                                        failure_detail=denied_msg,
+                                    )
                             except asyncio.TimeoutError:
-                                result = ToolResult(tool_name="run_command", success=False, output="", error=f"Command '{cmd}' approval timed out.")
+                                # Approval-timeout re-issue once with specific reminder
+                                _pending_approvals.pop(action_id, None)
+                                yield _sse_status("approval_required", "Waiting on your approval — click Approve/Deny on the card above the input.", command=cmd)
+
+                                action_id2 = str(uuid.uuid4())
+                                pending2 = PendingApproval(
+                                    action_id=action_id2,
+                                    action_type="command",
+                                    detail=cmd,
+                                    reason=reason_text,
+                                    workspace=workspace,
+                                    command=cmd,
+                                    is_native_fallback=is_native_fallback,
+                                )
+                                _pending_approvals[action_id2] = pending2
+                                yield _sse_approval_request(
+                                    action_id=action_id2,
+                                    action_type="command",
+                                    detail=cmd,
+                                    reason=pending2.reason,
+                                    command=cmd,
+                                    is_native_fallback=is_native_fallback,
+                                )
+
+                                try:
+                                    await asyncio.wait_for(pending2.event.wait(), timeout=COMMAND_APPROVAL_TIMEOUT_SECONDS)
+                                    if pending2.approved:
+                                        yield _sse_status("tool", f"Approved: Running {cmd} on host...", tool="run_command", command=cmd)
+                                        result = await _execute_command_async(workspace, cmd)
+                                        if not result.success:
+                                            yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
+                                    else:
+                                        denied_msg = f"Command '{cmd}' was rejected by user."
+                                        yield _sse_status("tool", f"Denied: Execution of {cmd} was rejected by user.", tool="run_command")
+                                        yield _sse_command_result(cmd, denied_msg, exit_code=1, success=False, reason="user_denied")
+                                        result = ToolResult(
+                                            tool_name="run_command",
+                                            success=False,
+                                            output="",
+                                            error=json.dumps({"reason": "user_denied", "detail": denied_msg, "command": cmd}),
+                                            failure_reason="user_denied",
+                                            failure_detail=denied_msg,
+                                        )
+                                except asyncio.TimeoutError:
+                                    app_timeout_msg = f"Approval card timed out after {int(COMMAND_APPROVAL_TIMEOUT_SECONDS)}s — command NOT executed."
+                                    yield _sse_status("tool_error", app_timeout_msg, tool="run_command", command=cmd, reason="approval_timeout")
+                                    yield _sse_command_result(cmd, app_timeout_msg, exit_code=1, success=False, reason="approval_timeout")
+                                    result = ToolResult(
+                                        tool_name="run_command",
+                                        success=False,
+                                        output="",
+                                        error=json.dumps({
+                                            "reason": "approval_timeout",
+                                            "detail": app_timeout_msg,
+                                            "command": cmd,
+                                        }),
+                                        failure_reason="approval_timeout",
+                                        failure_detail=app_timeout_msg,
+                                    )
+                                finally:
+                                    _pending_approvals.pop(action_id2, None)
                             finally:
                                 _pending_approvals.pop(action_id, None)
 
@@ -3399,11 +3596,24 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     yield _sse_done(True, "All tasks completed and verified successfully.")
                     return
 
+                has_any_error = any("ERROR:" in tr for tr in tool_results_list)
+                error_recovery_note = (
+                    "\n\n[RECOVERY DIRECTIVE]\n"
+                    "One or more tool calls encountered an error. Remember:\n"
+                    "1. One step failing NEVER aborts the overall task. Adapt and continue with the next step.\n"
+                    "2. If `mkdir` or a folder command failed/timed out, DO NOT keep retrying `mkdir` with different names. "
+                    "File-creation tools (`edit_file` with original=\"\") automatically create all parent directories on disk — "
+                    "stage the file directly with its subfolder path (e.g. `edit_file(path=\"folder/File.java\", original=\"\", updated=\"...\")`) and the directory will be created.\n"
+                    "3. If a command failed due to unquoted spaces, wrap all path arguments in double quotes.\n"
+                    "4. Do NOT ask 'Shall I try again?' — immediately emit the tool call for the corrected approach."
+                    if has_any_error else ""
+                )
+
                 messages.append(ChatMessage(
                     role="user",
                     content=(
-                        f"Tool observation results:\n\n{tool_results_text}\n\n"
-                        "Inspect the results above and directly answer the user's question with your findings in plain language. If all tasks or checks are complete, summarize the outcome and output [DONE]."
+                        f"Tool observation results:\n\n{tool_results_text}{error_recovery_note}\n\n"
+                        "Inspect the results above and directly answer the user's question or continue executing the next required step. If all tasks or checks are complete, summarize the outcome and output [DONE]."
                     )
                 ))
                 iteration += 1
@@ -3514,8 +3724,17 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             iteration += 1
 
         # Cap reached — honest partial report
+        if tier == 0:
+            duration_ms = (time.time() - start_time) * 1000.0
+            tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+            _clear_interrupted_state(workspace)
+            yield _sse_metrics(1, total_tools_executed, duration_ms, tier=0, tokens_used=tokens_used)
+            yield _sse_done(False, "Fast answer could not be generated. Please try again or switch model in the dropdown.")
+            return
+
         async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
             yield event
+
         duration_ms = (time.time() - start_time) * 1000.0
         tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
         _clear_interrupted_state(workspace)

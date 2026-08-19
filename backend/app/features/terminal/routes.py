@@ -26,14 +26,14 @@ async def _ensure_trusted(workspace: str):
 
 @router.get("/sessions", response_model=list[TerminalSessionDto])
 async def sessions() -> list[TerminalSessionDto]:
-    return [TerminalSessionDto(id=session.id, name=session.name, cwd=session.cwd, shell=session.shell) for session in list_sessions()]
+    return [TerminalSessionDto(id=session.id, name=session.name, cwd=session.cwd, shell=session.shell) for session in list_sessions()]  # nosec B604
 
 
 @router.post("/sessions", response_model=TerminalSessionDto)
 async def create(payload: TerminalCreateRequest) -> TerminalSessionDto:
     await _ensure_trusted(payload.cwd)
     session = create_session(payload.cwd, payload.shell)
-    return TerminalSessionDto(id=session.id, name=session.name, cwd=session.cwd, shell=session.shell)
+    return TerminalSessionDto(id=session.id, name=session.name, cwd=session.cwd, shell=session.shell)  # nosec B604
 
 
 @router.post("/sessions/{session_id}/command", response_model=CommandResult)
@@ -58,7 +58,7 @@ async def clear(session_id: str) -> dict[str, str]:
 @router.post("/sessions/{session_id}/rename", response_model=TerminalSessionDto)
 async def rename(session_id: str, payload: TerminalRenameRequest) -> TerminalSessionDto:
     session = rename_session(session_id, payload.name)
-    return TerminalSessionDto(id=session.id, name=session.name, cwd=session.cwd, shell=session.shell)
+    return TerminalSessionDto(id=session.id, name=session.name, cwd=session.cwd, shell=session.shell)  # nosec B604
 
 
 @router.post("/sessions/{session_id}/kill")

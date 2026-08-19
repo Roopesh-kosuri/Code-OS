@@ -66,14 +66,18 @@ class TestProviderSuite(unittest.IsolatedAsyncioTestCase):
                 tokens.append(token)
             self.assertEqual("".join(tokens), "ok done")
 
-    def test_rate_limiter_throws_429(self):
+    def test_rate_limiter_never_blocks(self):
+        """Rate limiter is now tracking-only: check() always returns, never raises 429."""
         limiter = SimpleRateLimiter()
-        for _ in range(3):
-            limiter.check("key", 3, 60.0)
+        # Even well past the limit, all calls should succeed
+        for i in range(10):
+            result = limiter.check("key", 3, 60.0)
+            self.assertTrue(result["allowed"])
+            self.assertEqual(result["limit"], 3)
+        # remaining floors at 0 after limit is exceeded
+        result = limiter.check("key", 3, 60.0)
+        self.assertEqual(result["remaining"], 0)
 
-        with self.assertRaises(HTTPException) as ctx:
-            limiter.check("key", 3, 60.0)
-        self.assertEqual(ctx.exception.status_code, 429)
 
 
 if __name__ == "__main__":

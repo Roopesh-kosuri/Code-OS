@@ -39,10 +39,24 @@ async def temp_db():
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = f.name
 
+    from app.db import database
+    if database._db is not None:
+        try:
+            await database._db.close()
+        except Exception:
+            pass
+        database._db = None
+
     try:
         await init_db(db_path)
         yield db_path
     finally:
+        if database._db is not None:
+            try:
+                await database._db.close()
+            except Exception:
+                pass
+            database._db = None
         if os.path.exists(db_path):
             try:
                 os.remove(db_path)

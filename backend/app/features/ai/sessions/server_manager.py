@@ -178,7 +178,7 @@ def _server_session_request(
     req = urllib.request.Request(url, data=req_data, headers=req_headers, method=method.upper())
     start_req = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310
             dur = (time.perf_counter() - start_req) * 1000.0
             raw_body = resp.read().decode("utf-8", errors="replace")
             status_code = resp.status

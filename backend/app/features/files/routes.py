@@ -8,6 +8,7 @@ from .schemas import (
     FileReadResponse,
     MoveRequest,
     RenameRequest,
+    RevealRequest,
     TreeResponse,
     WriteRequest,
 )
@@ -19,6 +20,7 @@ from .service import (
     move_entry,
     read_file,
     rename_entry,
+    reveal_entry,
     write_file,
 )
 
@@ -89,4 +91,12 @@ async def write(payload: WriteRequest) -> dict[str, str]:
     await _ensure_trusted(payload.workspace)
     write_file(payload.workspace, payload.path, payload.content)
     return {"status": "written"}
+
+
+@router.post("/reveal")
+async def reveal(payload: RevealRequest) -> dict[str, str]:
+    await _ensure_trusted(payload.workspace)
+    reveal_entry(payload.workspace, payload.path)
+    return {"status": "revealed"}
+
 

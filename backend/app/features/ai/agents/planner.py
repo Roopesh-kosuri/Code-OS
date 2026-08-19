@@ -91,34 +91,79 @@ class PlannerAgent:
             ]
         )
         
-        try:
-            provider = await provider_for(chat_req)
-            # Use non-streaming completion for structured plan parsing
-            tokens = []
-            async for token in provider.stream_chat(chat_req.model, chat_req.messages, temperature=0.1):
-                tokens.append(token)
-            
-            response = "".join(tokens).strip()
-            # Extract JSON from response (handles surrounding prose or markdown fences)
-            import re
-            json_match = re.search(r'\{[\s\S]*\}', response)
-            if json_match:
-                data = json.loads(json_match.group())
-            else:
-                data = json.loads(response)
-            
-            tasks = data.get("tasks", [])
-            if tasks:
-                return tasks
-            raise ValueError("No tasks found in planner output")
-            
-        except Exception as exc:
-            logger.error("PlannerAgent failed to generate plan: %s. Using default fallback template.", exc)
-            logger.warning("PLANNER FALLBACK ACTIVE: The planner could not decompose the user request into specific tasks. "
-                          "A generic 4-task template is being used instead. The agent may not address the specific requirements.")
-            return self._fallback_plan(user_request)
+        for attempt in range(2):
+            try:
+                provider = await provider_for(chat_req)
+                # Use non-streaming completion for structured plan parsing with a 25s timeout
+                async def _collect_tokens():
+                    tokens = []
+                    async for token in provider.stream_chat(chat_req.model, chat_req.messages, temperature=0.1):
+                        tokens.append(token)
+                    return "".join(tokens).strip()
+
+                import asyncio
+                response = await asyncio.wait_for(_collect_tokens(), timeout=25.0)
+                
+                # Extract JSON from response (handles surrounding prose or markdown fences)
+                import re
+                json_match = re.search(r'\{[\s\S]*\}', response)
+                if json_match:
+                    data = json.loads(json_match.group())
+                else:
+                    data = json.loads(response)
+                
+                tasks = data.get("tasks", [])
+                if tasks:
+                    return tasks
+                raise ValueError("No tasks found in planner output")
+                
+            except Exception as exc:
+                is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower() or "quota" in str(exc).lower()
+                effective_prov = (chat_req.api_key_provider or chat_req.provider or "groq").lower()
+
+                if is_rate_limit and attempt == 0 and effective_prov == "groq" and "120b" in (chat_req.model or ""):
+                    chat_req.model = "llama-3.3-70b-versatile"
+                    continue
+
+                if is_rate_limit and attempt == 0:
+                    try:
+                        from ..provider_health import provider_health_tracker
+                        from ...settings.service import get_api_key
+                        configured_keys = {
+                            "groq": await get_api_key("groq"),
+                            "gemini": await get_api_key("gemini"),
+                            "nvidia-nim": await get_api_key("nvidia-nim"),
+                            "openai": await get_api_key("openai"),
+                            "anthropic": await get_api_key("anthropic"),
+                            "deepseek": await get_api_key("deepseek"),
+                            "mistral": await get_api_key("mistral"),
+                        }
+                        fb = provider_health_tracker.find_fallback_provider(effective_prov, configured_keys)
+                        if fb:
+                            fb_prov, fb_model, fb_url = fb
+                            _RECOVERY_URLS = {
+                                "groq": "https://api.groq.com/openai/v1",
+                                "openai": "https://api.openai.com/v1",
+                                "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+                                "deepseek": "https://api.deepseek.com/v1",
+                                "mistral": "https://api.mistral.ai/v1",
+                                "openrouter": "https://openrouter.ai/api/v1",
+                                "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+                                "nvidia": "https://integrate.api.nvidia.com/v1",
+                                "anthropic": "https://api.anthropic.com/v1",
+                            }
+                            chat_req.base_url = fb_url
+                            chat_req.provider = "openai-compatible" if fb_prov in _RECOVERY_URLS else fb_prov
+                            chat_req.model = fb_model
+                            chat_req.api_key_provider = fb_prov
+                            continue
+                    except Exception:
+                        pass
+                logger.error("PlannerAgent failed to generate plan: %s. Using default fallback template.", exc)
+                return self._fallback_plan(user_request)
 
     def _fallback_plan(self, user_request: str) -> list[dict]:
+
         """Intelligent heuristic fallback task graph when LLM planning fails.
         Decomposes complex requests into modular subtasks (CLI subcommands, bulleted features).
         """

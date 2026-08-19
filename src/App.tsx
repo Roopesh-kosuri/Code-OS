@@ -1,63 +1,72 @@
 import { useEffect, useState } from "react";
 
 import { AppShell } from "./components/layout/AppShell";
-import { OnboardingWizard } from "./components/workspace/OnboardingWizard";
 import { useAIStore } from "./stores/aiStore";
 import { useEditorStore } from "./stores/editorStore";
 import { useIndexStore } from "./stores/indexStore";
 import { useSettingsStore } from "./stores/settingsStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 
-type BackendStatus = { running: boolean; error: string | null } | null;
+import { useBackendStore } from "./stores/backendStore";
 
-function useBackendStatus(): BackendStatus {
-  const [status, setStatus] = useState<BackendStatus>(null);
+function BackendStatusBanner() {
+  const status = useBackendStore((s) => s.status);
+  const nextRetryInSeconds = useBackendStore((s) => s.nextRetryInSeconds);
+  const retryNow = useBackendStore((s) => s.retryNow);
 
-  useEffect(() => {
-    if (!window.codeOS?.getBackendStatus) return;
-    const check = async () => {
-      try {
-        const s = await window.codeOS?.getBackendStatus?.();
-        if (s) setStatus(s);
-      } catch { /* ignore */ }
-    };
-    void check();
-    const interval = setInterval(check, 3000);
-    return () => clearInterval(interval);
-  }, []);
-
-  return status;
-}
-
-function BackendStatusBanner({ status }: { status: BackendStatus }) {
-  if (!status || (status.running && !status.error)) return null;
-
-  const isPythonMissing = !!(
-    status.error?.toLowerCase().includes("python") ||
-    status.error?.toLowerCase().includes("not found")
-  );
+  if (status === "connected") return null;
 
   return (
-    <div className="bg-amber-950/80 border-b border-amber-500/30 text-amber-200 px-4 py-2 text-xs flex items-center justify-between z-[9999] relative">
+    <div className="bg-[#1c1014] border-b border-rose-500/40 text-rose-200 px-4 py-2 text-xs flex items-center justify-between z-[9999] relative shadow-md backdrop-blur-md">
       <div className="flex items-center gap-2">
-        <span className="font-semibold text-amber-400">⚠️ Backend Alert:</span>
-        <span>{status.error || "Connecting to Python backend..."}</span>
+        <span className="inline-block w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+        <span className="font-semibold text-rose-300">Backend not running:</span>
+        <span className="text-on-surface-variant">
+          Please start it with <code className="bg-black/60 px-1.5 py-0.5 rounded text-cyan-300 font-mono text-[11px]">npm run dev</code> or <code className="bg-black/60 px-1.5 py-0.5 rounded text-cyan-300 font-mono text-[11px]">python -m uvicorn app.main:app --port 8000</code>
+        </span>
       </div>
       <div className="flex items-center gap-3">
-        {isPythonMissing ? (
-          <button
-            className="text-cyan-400 hover:text-cyan-300 underline text-[11px] font-semibold bg-transparent border-none cursor-pointer"
-            onClick={() => {
-              if (window.codeOS?.openExternal) {
-                void window.codeOS.openExternal("https://python.org/downloads");
-              }
-            }}
-          >
-            Install Python 3.11+ →
-          </button>
-        ) : (
-          <span className="text-[11px] opacity-75">Python 3.11+ required</span>
+        {nextRetryInSeconds > 0 && (
+          <span className="text-[11px] text-rose-300/80 font-mono">
+            Retrying in {nextRetryInSeconds}s...
+          </span>
         )}
+        <button
+          type="button"
+          onClick={() => void retryNow()}
+          className="px-2.5 py-1 rounded-md bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-xs font-medium cursor-pointer transition-all hover:scale-105 active:scale-95"
+        >
+          Retry now
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BackendFreshnessBanner() {
+  const freshness = useBackendStore((s) => s.freshness);
+  const status = useBackendStore((s) => s.status);
+  const [dismissed, setDismissed] = useState(false);
+
+  if (status !== "connected" || !freshness?.is_stale || dismissed) return null;
+
+  return (
+    <div className="bg-[#241705] border-b border-amber-500/50 text-amber-200 px-4 py-2 text-xs flex items-center justify-between z-[9998] relative shadow-md backdrop-blur-md">
+      <div className="flex items-center gap-2">
+        <span className="inline-block w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        <span className="font-semibold text-amber-300">Backend is running old code — restart to apply fixes.</span>
+        <span className="text-amber-200/80 font-mono text-[11px]">
+          (Modified on disk: {freshness.changed_files.slice(0, 3).join(", ")}{freshness.changed_files.length > 3 ? ` +${freshness.changed_files.length - 3} more` : ""})
+        </span>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setDismissed(true)}
+          className="px-2.5 py-0.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 text-xs font-medium cursor-pointer transition-all"
+        >
+          Dismiss
+        </button>
       </div>
     </div>
   );
@@ -69,13 +78,8 @@ export function App() {
   const refreshTree = useWorkspaceStore((state) => state.refreshTree);
   const theme = useSettingsStore((state) => state.settings.theme);
 
-  const backendStatus = useBackendStatus();
-  // backendDown = we have received a definitive "not running" status
-  const backendDown = backendStatus !== null && !backendStatus.running;
-
-  const [onboardingComplete, setOnboardingComplete] = useState(() => {
-    return localStorage.getItem("code-os:onboarding-complete") === "true";
-  });
+  const backendStatus = useBackendStore((s) => s.status);
+  const backendDown = backendStatus === "disconnected";
 
   useEffect(() => {
     void restoreLastWorkspace();
@@ -90,6 +94,14 @@ export function App() {
     });
     // Load editor settings from backend
     void useEditorStore.getState().loadEditorSettings();
+  }, []);
+
+  useEffect(() => {
+    void useBackendStore.getState().checkHealth();
+    const interval = setInterval(() => {
+      void useBackendStore.getState().checkFreshness();
+    }, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -137,8 +149,16 @@ export function App() {
     }
     void useEditorStore.getState().restoreTabs();
     void useIndexStore.getState().refresh();
-    const timer = window.setInterval(() => void refreshTree(), 10000);
-    const indexTimer = window.setInterval(() => void useIndexStore.getState().refresh(), 10000);
+    const timer = window.setInterval(() => {
+      if (useBackendStore.getState().status === "connected") {
+        void refreshTree();
+      }
+    }, 10000);
+    const indexTimer = window.setInterval(() => {
+      if (useBackendStore.getState().status === "connected") {
+        void useIndexStore.getState().refresh();
+      }
+    }, 10000);
 
     return () => {
       window.clearInterval(timer);
@@ -184,11 +204,9 @@ export function App() {
 
   return (
     <>
-      <BackendStatusBanner status={backendStatus} />
+      <BackendStatusBanner />
+      <BackendFreshnessBanner />
       <AppShell backendDown={backendDown} />
-      {!onboardingComplete && (
-        <OnboardingWizard onClose={() => setOnboardingComplete(true)} />
-      )}
     </>
   );
 }

@@ -3,24 +3,46 @@ node_modules/
 dist/
 dist-electron/
 dist-release/
+release/
+backend-build/
+backend-dist/
+build/*
+!build/icon.png
+!build/icon.ico
+scratch/
+
 
 # Python Virtual Environments & Caches
 .venv/
 venv/
+ENV/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .pytest_cache/
 .mypy_cache/
+.coverage
+htmlcov/
 *.egg-info/
 
 # System & IDE Configs
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 .idea/
 .vscode/
+*.swp
+*.swo
 
 # Secrets, Tokens & Database Files
 .env
 .env.*
+!.env.example
 session.token
 secret.key
 *.db
@@ -29,8 +51,13 @@ secret.key
 *.sqlite3-wal
 *.sqlite3-shm
 .code-os/
+.code_os/
 
-# Workspaces & Logs
+# Test Artifacts & Logs
 /project-workspace/
 scratch_test_workspace/
+test_simulation_ws/
+stresstest_ws/
+scratch_test_preview.html
+scratch_preview_captured.jpg
 *.log

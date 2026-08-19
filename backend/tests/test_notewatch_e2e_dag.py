@@ -22,19 +22,20 @@ async def test_coder_agent_notewatch_prompt_no_unbound_local(tmp_path):
                 yield ""
         mock_instance.stream_chat = mock_stream
         
-        output = await agent.execute(
-            job_id="test_notewatch_job",
-            task_id="test_notewatch_task",
-            title="Implement changes for notewatch CLI tool",
-            context="Build a Python CLI tool called notewatch with watch, query, stats subcommands",
-            workspace=ws_dir
-        )
-        
-        assert output is not None
-        assert output.status == "failure"
-        assert output.structured_data is not None
-        assert output.structured_data.get("agent_type") == "coder"
-        assert "failed to generate" in output.reasoning_summary.lower() or "empty response" in output.reasoning_summary.lower() or "could not determine target files" in output.reasoning_summary.lower() or "parser could not extract" in output.reasoning_summary.lower()
+        with patch.object(agent, "handle_llm_failure", return_value={"action": "cancel"}):
+            output = await agent.execute(
+                job_id="test_notewatch_job",
+                task_id="test_notewatch_task",
+                title="Implement changes for notewatch CLI tool",
+                context="Build a Python CLI tool called notewatch with watch, query, stats subcommands",
+                workspace=ws_dir
+            )
+            
+            assert output is not None
+            assert output.status == "failure"
+            assert output.structured_data is not None
+            assert output.structured_data.get("agent_type") == "coder"
+            assert "failed to generate" in output.reasoning_summary.lower() or "empty response" in output.reasoning_summary.lower() or "could not determine target files" in output.reasoning_summary.lower() or "parser could not extract" in output.reasoning_summary.lower()
 
 
 @pytest.mark.asyncio
@@ -117,9 +118,10 @@ async def test_groq_model_normalization_resilience():
     from app.features.ai.service import provider_for
     from app.features.ai.schemas import ChatRequest
     
-    # Request with "llama3" (an ollama name) to Groq should normalize to llama-3.3-70b-versatile
-    req = ChatRequest(provider="groq", model="llama3", messages=[])
-    provider = await provider_for(req)
-    assert provider is not None
-    assert req.model == "llama-3.3-70b-versatile"
+    with patch("app.features.ai.service.get_api_key", return_value="dummy_key"), \
+         patch("app.features.ai.service.list_settings", return_value={}):
+        req = ChatRequest(provider="groq", model="llama3", messages=[])
+        provider = await provider_for(req)
+        assert provider is not None
+        assert req.model == "llama-3.3-70b-versatile"
 

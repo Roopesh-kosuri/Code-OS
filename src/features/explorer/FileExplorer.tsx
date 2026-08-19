@@ -1,9 +1,10 @@
-import { ChevronRight, Copy, File, Folder, FolderOpen, FolderPlus, MoreHorizontal, Plus, RefreshCw, Trash2, X } from "lucide-react";
+import { ChevronRight, Copy, FileCode, Folder, FolderOpen, FolderPlus, MoreHorizontal, Plus, RefreshCw, Trash2, X, FilePlus } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../../lib/api";
 import { useEditorStore } from "../../stores/editorStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import type { FileNode } from "../../types/api";
+import { FileIcon } from "../../components/ui/FileIcon";
 
 type ContextState = {
   node: FileNode;
@@ -47,19 +48,14 @@ function TreeNode({
   const isEditing = node.path === editingPath;
   const isActive = node.path === activePath;
 
-  const isPy = node.name.endsWith(".py");
-  const isHtml = node.name.endsWith(".html");
-  const isCss = node.name.endsWith(".css");
-  const isJs = node.name.endsWith(".js") || node.name.endsWith(".ts") || node.name.endsWith(".tsx");
-
   return (
     <div>
       <div
         role="treeitem"
         data-testid="file-tree-item"
-        className={`group flex h-6.5 items-center gap-1.5 px-2 font-code-sm text-code-sm cursor-pointer transition-all ${
+        className={`group flex h-7 items-center gap-1.5 px-2 font-code-sm text-code-sm cursor-pointer transition-all ${
           isActive
-            ? "bg-primary/5 text-primary border-r-2 border-primary font-semibold"
+            ? "bg-primary/10 text-primary border-r-2 border-primary font-semibold"
             : "text-on-surface-variant hover:bg-surface-variant/40 hover:text-on-surface"
         }`}
         style={{ paddingLeft: 8 + depth * 12 }}
@@ -82,30 +78,14 @@ function TreeNode({
         }}
       >
         {isDirectory ? (
-          <span className="material-symbols-outlined text-[16px] text-on-surface-variant/60 shrink-0">
+          <span className="material-symbols-outlined text-[15px] text-on-surface-variant/60 shrink-0">
             {isExpanded ? "keyboard_arrow_down" : "keyboard_arrow_right"}
           </span>
         ) : (
-          <span className="w-[16px] shrink-0" />
+          <span className="w-[15px] shrink-0" />
         )}
 
-        {isDirectory ? (
-          <span className="material-symbols-outlined text-[16px] text-tertiary shrink-0" style={{ fontVariationSettings: "'FILL' 1" }}>
-            folder
-          </span>
-        ) : (
-          <span className={`material-symbols-outlined text-[15px] shrink-0 ${
-            isPy || isJs
-              ? "text-primary"
-              : isHtml
-                ? "text-error"
-                : isCss
-                  ? "text-secondary"
-                  : "text-on-surface-variant"
-          }`}>
-            {isPy || isJs ? "data_object" : isHtml ? "html" : isCss ? "style" : "description"}
-          </span>
-        )}
+        <FileIcon filename={node.name} isDirectory={isDirectory} isOpen={isExpanded} size={16} />
 
         {isEditing ? (
           <input
@@ -119,7 +99,7 @@ function TreeNode({
           />
         ) : (
           <span
-            className="min-w-0 flex-1 truncate font-mono text-[11px]"
+            className="min-w-0 flex-1 truncate font-mono text-[11px] ml-0.5"
             onDoubleClick={(e) => {
               e.stopPropagation();
               onStartRename(node.path, node.name);
@@ -230,10 +210,16 @@ export function FileExplorer() {
     if (!activeWs) return;
     try {
       if (action === "new-file" || action === "new-folder") {
-        const name = prompt(action === "new-file" ? "File name" : "Folder name");
+        const name = prompt(action === "new-file" ? "Enter file name (e.g. main.cpp, app.py, index.html):" : "Enter folder name:");
         if (!name) return;
         const parent = node.type === "directory" ? node.path : node.path.replace(/[\\/][^\\/]+$/, "");
-        await api.post("/api/files/create", { workspace: activeWs.path, path: joinPath(parent, name), type: action === "new-file" ? "file" : "directory" });
+        const targetPath = joinPath(parent, name);
+        await api.post("/api/files/create", { workspace: activeWs.path, path: targetPath, type: action === "new-file" ? "file" : "directory" });
+        setExpanded((prev) => new Set([...prev, parent, ...(action === "new-folder" ? [targetPath] : [])]));
+        await refreshTree();
+        if (action === "new-file") {
+          void useEditorStore.getState().openFile(targetPath);
+        }
       }
       if (action === "rename") {
         setEditingPath(node.path);
@@ -241,19 +227,31 @@ export function FileExplorer() {
         setContext(null);
         return;
       }
-      if (action === "delete" && confirm(`Delete ${node.name}?`)) {
-        await api.post("/api/files/delete", { workspace: activeWs.path, path: node.path });
+      if (action === "delete") {
+        if (confirm(`Are you sure you want to delete ${node.name}?`)) {
+          await api.post("/api/files/delete", { workspace: activeWs.path, path: node.path });
+          useEditorStore.getState().closeFile(node.path);
+          await refreshTree();
+        }
       }
       if (action === "duplicate") {
         await api.post("/api/files/duplicate", { workspace: activeWs.path, path: node.path });
+        await refreshTree();
       }
       if (action === "reveal") {
-        await window.codeOS?.revealInSystemExplorer(node.path);
+        if (window.codeOS?.revealInSystemExplorer) {
+          await window.codeOS.revealInSystemExplorer(node.path);
+        } else {
+          await api.post("/api/files/reveal", { workspace: activeWs.path, path: node.path });
+        }
       }
       if (action === "copy-path") {
-        await (window.codeOS?.copyText(node.path) ?? navigator.clipboard.writeText(node.path));
+        try {
+          await navigator.clipboard.writeText(node.path);
+        } catch {
+          window.codeOS?.copyText(node.path);
+        }
       }
-      await refreshTree();
     } catch (error) {
       alert(error instanceof Error ? error.message : "Explorer action failed");
     } finally {
@@ -286,41 +284,41 @@ export function FileExplorer() {
     >
       {/* ── Explorer Header ──────────────────────────────────────────────── */}
       <div className="px-3 py-2 border-b border-surface-variant flex justify-between items-center bg-surface-container/50 shrink-0">
-        <h2 className="font-ui-label-bold text-ui-label-bold text-on-surface uppercase tracking-wider text-[11px]">
+        <h2 className="font-ui-label-bold text-ui-label-bold text-on-surface uppercase tracking-wider text-[11px] truncate">
           {workspace?.name ?? "WORKSPACE"}
         </h2>
-        <div className="flex gap-2 text-on-surface-variant">
-          <span
+        <div className="flex items-center gap-1.5 text-on-surface-variant">
+          <button
             onClick={() => {
               if (activeWorkspaces.length > 0) {
                 const root = fileTrees[activeWorkspaces[0].path];
                 if (root) void runAction("new-file", root);
               }
             }}
-            className="material-symbols-outlined text-[16px] hover:text-primary cursor-pointer transition-colors"
+            className="p-1 hover:text-primary hover:bg-white/5 rounded transition-colors cursor-pointer"
             title="New File"
           >
-            note_add
-          </span>
-          <span
+            <FilePlus size={14} />
+          </button>
+          <button
             onClick={() => {
               if (activeWorkspaces.length > 0) {
                 const root = fileTrees[activeWorkspaces[0].path];
                 if (root) void runAction("new-folder", root);
               }
             }}
-            className="material-symbols-outlined text-[16px] hover:text-primary cursor-pointer transition-colors"
+            className="p-1 hover:text-primary hover:bg-white/5 rounded transition-colors cursor-pointer"
             title="New Folder"
           >
-            create_new_folder
-          </span>
-          <span
+            <FolderPlus size={14} />
+          </button>
+          <button
             onClick={() => void refreshTree()}
-            className="material-symbols-outlined text-[16px] hover:text-primary cursor-pointer transition-colors"
+            className="p-1 hover:text-primary hover:bg-white/5 rounded transition-colors cursor-pointer"
             title="Refresh Explorer"
           >
-            refresh
-          </span>
+            <RefreshCw size={13} />
+          </button>
         </div>
       </div>
 
@@ -339,7 +337,7 @@ export function FileExplorer() {
                       e.stopPropagation();
                       closeWorkspace(ws.path);
                     }}
-                    className="text-on-surface-variant hover:text-on-surface"
+                    className="text-on-surface-variant hover:text-on-surface p-0.5 rounded hover:bg-white/10"
                     title="Remove folder from workspace"
                   >
                     <X size={11} />

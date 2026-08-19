@@ -140,11 +140,33 @@ def detect_language(file_path: str | Path) -> LanguageSpec | None:
 
 
 def _find_executable(candidates: list[str]) -> str | None:
-    """Find the first existing executable name in system PATH."""
+    """Find the first existing executable in system PATH, JAVA_HOME, or common JDK paths."""
     for cmd in candidates:
         found = shutil.which(cmd)
         if found:
-            return cmd
+            return found
+        # Check JAVA_HOME for java/javac
+        if cmd in ("javac", "java", "javac.exe", "java.exe"):
+            java_home = os.environ.get("JAVA_HOME")
+            if java_home:
+                exe_name = cmd if cmd.endswith(".exe") or os.name != "nt" else f"{cmd}.exe"
+                candidate = Path(java_home) / "bin" / exe_name
+                if candidate.is_file():
+                    return str(candidate)
+            # Check standard Windows JDK directories
+            if os.name == "nt":
+                import glob
+                exe_name = cmd if cmd.endswith(".exe") else f"{cmd}.exe"
+                for pattern in (
+                    r"C:\Program Files\Java\jdk*\bin",
+                    r"C:\Program Files\Eclipse Adoptium\jdk*\bin",
+                    r"C:\Program Files\Microsoft\jdk*\bin",
+                    r"C:\Program Files\Amazon Corretto\jdk*\bin",
+                ):
+                    for bin_dir in glob.glob(pattern):
+                        candidate = Path(bin_dir) / exe_name
+                        if candidate.is_file():
+                            return str(candidate)
     return None
 
 
@@ -185,7 +207,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 id="python",
                 name=spec.name,
                 installed=True,
-                version=ver or "Python (detected)",
+                version=ver or "Python 3 (detected)",
                 command_path=shutil.which(exe),
                 install_hint=spec.install_hint,
             )
@@ -220,7 +242,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
     if lang_id == "typescript":
         # Check runners: tsx, ts-node, bun, deno, or node with npx fallback
         exe = _find_executable(["tsx", "ts-node", "bun", "deno"])
-        node_exe = _find_executable(["node", "npx"])
+        node_exe = _find_executable(["node", "nodejs"])
         if exe:
             ver = _get_version_output(exe, "--version")
             return ToolchainStatus(
@@ -258,7 +280,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 id="cpp",
                 name=spec.name,
                 installed=True,
-                version=f"{comp} ({ver})" if ver else f"{comp} compiler",
+                version=f"{comp} ({ver})" if ver else f"{comp} (detected)",
                 command_path=shutil.which(comp),
                 compile_command_path=shutil.which(comp),
                 install_hint=spec.install_hint,
@@ -272,25 +294,33 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
         )
 
     if lang_id == "java":
-        java_exe = _find_executable(["java"])
         javac_exe = _find_executable(["javac"])
-        if java_exe:
-            ver = _get_version_output(java_exe, "-version")
+        java_exe = _find_executable(["java"])
+        if javac_exe and java_exe:
+            ver = _get_version_output(javac_exe, "-version") or _get_version_output(java_exe, "-version")
             return ToolchainStatus(
                 id="java",
                 name=spec.name,
                 installed=True,
-                version=ver or "Java runtime",
-                command_path=shutil.which(java_exe),
-                compile_command_path=shutil.which(javac_exe) if javac_exe else None,
+                version=ver or "JDK (detected)",
+                command_path=java_exe,
+                compile_command_path=javac_exe,
                 install_hint=spec.install_hint,
+            )
+        if not javac_exe:
+            return ToolchainStatus(
+                id="java",
+                name=spec.name,
+                installed=False,
+                install_hint=spec.install_hint,
+                error_message="Java compiler (javac) not found. Install JDK 11+ (or JDK 17+) or set JAVA_HOME.",
             )
         return ToolchainStatus(
             id="java",
             name=spec.name,
             installed=False,
             install_hint=spec.install_hint,
-            error_message="Java Development Kit (JDK) not found. Please install JDK 17+.",
+            error_message="Java runtime (java) not found. Please install JDK 17+ or set JAVA_HOME.",
         )
 
     if lang_id == "go":

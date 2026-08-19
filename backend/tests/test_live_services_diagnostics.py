@@ -14,7 +14,7 @@ def test_chat_stream():
         "base_url": "http://127.0.0.1:11434",
         "messages": [{"role": "user", "content": "Say hello in one word."}],
         "attached_paths": [],
-        "workspace": "D:/HTML/trusted_workspace"
+        "workspace": "./test_workspace"
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
@@ -31,7 +31,7 @@ def test_duo_session():
     print("\n--- 2. Testing Duo Session Creation ---")
     url = f"{API}/api/duo/sessions"
     payload = {
-        "workspace": "D:/HTML/trusted_workspace",
+        "workspace": "./test_workspace",
         "task_description": "Add a documentation comment to index.html",
         "generator": {
             "provider": "ollama",
@@ -60,7 +60,7 @@ def test_agent_plan():
     print("\n--- 3. Testing Agent Console Plan & Job ---")
     url = f"{API}/api/agents/plan"
     payload = {
-        "workspace": "D:/HTML/trusted_workspace",
+        "workspace": "./test_workspace",
         "user_request": "Refactor test helper function"
     }
     data = json.dumps(payload).encode("utf-8")

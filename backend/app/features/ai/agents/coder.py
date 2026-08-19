@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # ── Budget and Retry Limits ──────────────────────────────────────────────────
 MAX_LLM_CALLS_PER_TASK = 25  # Safety cap: prevents a single task from silently exhausting rate-limit window
-MAX_INSTRUMENTED_RETRIES = 2  # Auto-retries before escalating to user via handle_llm_failure
+MAX_INSTRUMENTED_RETRIES = 1  # Auto-retries before escalating to user via handle_llm_failure
 
 class BudgetExhaustedError(RuntimeError):
     """Raised when a task exceeds its per-task LLM call budget."""
@@ -217,8 +217,8 @@ class CoderAgent(BaseAgent):
         query_start = time.perf_counter()
         db = await get_db()
         sym_rows = await db.execute_fetchall(
-          f"SELECT name, kind, line, signature FROM repo_symbols WHERE workspace = ? AND path = ? ORDER BY line LIMIT {max_symbols}",
-          (str(root), str(candidate)),
+          "SELECT name, kind, line, signature FROM repo_symbols WHERE workspace = ? AND path = ? ORDER BY line LIMIT ?",
+          (str(root), str(candidate), int(max_symbols)),
         )
         for row in sym_rows:
           sig = f" — {row['signature']}" if row["signature"] else ""
@@ -234,8 +234,8 @@ class CoderAgent(BaseAgent):
         query_start = time.perf_counter()
         db = await get_db()
         edge_rows = await db.execute_fetchall(
-          f"SELECT module, target_path FROM repo_import_edges WHERE workspace = ? AND source_path = ? LIMIT {max_imports}",
-          (str(root), str(candidate)),
+          "SELECT module, target_path FROM repo_import_edges WHERE workspace = ? AND source_path = ? LIMIT ?",
+          (str(root), str(candidate), int(max_imports)),
         )
         for row in edge_rows:
           target = row["target_path"] or "(external)"
@@ -385,7 +385,8 @@ class CoderAgent(BaseAgent):
             except BudgetExhaustedError:
                 raise  # Never retry budget exhaustion
             except Exception as exc:
-                is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower()
+                is_rate_limit = "429" in str(exc) or "rate limit" in str(exc).lower() or "quota" in str(exc).lower()
+                is_daily_limit = "tpd" in str(exc).lower() or "tokens per day" in str(exc).lower() or "daily" in str(exc).lower()
                 parsed_delay = None
                 if is_rate_limit:
                     match = re.search(r'try again in\s*([\d.]+)\s*(s|sec|seconds|ms|m)?', str(exc), re.IGNORECASE)
@@ -394,7 +395,73 @@ class CoderAgent(BaseAgent):
                         unit = (match.group(2) or 's').lower()
                         parsed_delay = (val / 1000.0) if unit == 'ms' else ((val * 60.0) if unit == 'm' else val)
 
-                max_retries_for_call = 4 if is_rate_limit else MAX_INSTRUMENTED_RETRIES
+                # Canonical base URLs for all cloud providers
+                _RECOVERY_URLS = {
+                    "groq": "https://api.groq.com/openai/v1",
+                    "openai": "https://api.openai.com/v1",
+                    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+                    "deepseek": "https://api.deepseek.com/v1",
+                    "mistral": "https://api.mistral.ai/v1",
+                    "openrouter": "https://openrouter.ai/api/v1",
+                    "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+                    "nvidia": "https://integrate.api.nvidia.com/v1",
+                    "anthropic": "https://api.anthropic.com/v1",
+                }
+
+                effective_prov = (req.api_key_provider or req.provider or "groq").lower()
+
+                # 1. Automatic Intra-Provider Failover: If Groq hit 429 on gpt-oss-120b, try llama-3.3-70b-versatile or llama-3.1-8b-instant
+                if is_rate_limit and effective_prov == "groq" and "120b" in (req.model or ""):
+                    alt_model = "llama-3.3-70b-versatile"
+                    logs.append(f"[FAILOVER] Groq model '{req.model}' hit token limit. Automatically switching to '{alt_model}'...")
+                    await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+                    req.model = alt_model
+                    if not self.provider_config:
+                        self.provider_config = {}
+                    self.provider_config["model"] = alt_model
+                    auto_retries = 0
+                    continue
+
+                # 2. Automatic Cross-Provider Failover: Try other configured providers (Gemini, NVIDIA NIM, OpenAI, Anthropic, Ollama)
+                if is_rate_limit or is_daily_limit:
+                    try:
+                        from ..provider_health import provider_health_tracker
+                        from ...settings.service import get_api_key
+                        configured_keys = {
+                            "groq": await get_api_key("groq"),
+                            "gemini": await get_api_key("gemini"),
+                            "nvidia-nim": await get_api_key("nvidia-nim"),
+                            "openai": await get_api_key("openai"),
+                            "anthropic": await get_api_key("anthropic"),
+                            "deepseek": await get_api_key("deepseek"),
+                            "mistral": await get_api_key("mistral"),
+                        }
+                        fb = provider_health_tracker.find_fallback_provider(effective_prov, configured_keys)
+                        if fb:
+                            fb_prov, fb_model, fb_url = fb
+                            logs.append(f"[FAILOVER] Rate limit on [{effective_prov}] {req.model}. Automatically falling back to [{fb_prov}] {fb_model}...")
+                            await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+                            new_base_url = fb_url
+                            new_provider = "openai-compatible" if fb_prov in _RECOVERY_URLS else fb_prov
+                            new_key_provider = fb_prov
+
+                            if not self.provider_config:
+                                self.provider_config = {}
+                            self.provider_config["preset"] = new_key_provider
+                            self.provider_config["provider"] = new_provider
+                            self.provider_config["model"] = fb_model
+                            self.provider_config["api_key_provider"] = new_key_provider
+                            self.provider_config["base_url"] = new_base_url
+                            req.base_url = new_base_url
+                            req.provider = new_provider
+                            req.model = fb_model
+                            req.api_key_provider = new_key_provider
+                            auto_retries = 0
+                            continue
+                    except Exception as fb_lookup_err:
+                        logger.warning("Cross-provider fallback lookup failed: %s", fb_lookup_err)
+
+                max_retries_for_call = 1 if (is_daily_limit or (parsed_delay and parsed_delay > 15.0)) else MAX_INSTRUMENTED_RETRIES
                 logs.append(f"[ERROR] LLM call failed during {phase_name} (auto-retry {auto_retries}/{max_retries_for_call}): {exc}")
                 await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
@@ -413,19 +480,6 @@ class CoderAgent(BaseAgent):
                         new_model = decision_res.get("model") or "llama-3.3-70b-versatile"
                         new_key_provider = decision_res.get("api_key_provider") or new_provider
                         new_base_url = decision_res.get("base_url")
-
-                        # Canonical base URLs for all cloud providers
-                        _RECOVERY_URLS = {
-                            "groq": "https://api.groq.com/openai/v1",
-                            "openai": "https://api.openai.com/v1",
-                            "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
-                            "deepseek": "https://api.deepseek.com/v1",
-                            "mistral": "https://api.mistral.ai/v1",
-                            "openrouter": "https://openrouter.ai/api/v1",
-                            "nvidia-nim": "https://integrate.api.nvidia.com/v1",
-                            "nvidia": "https://integrate.api.nvidia.com/v1",
-                            "anthropic": "https://api.anthropic.com/v1",
-                        }
 
                         # Normalize all named providers to openai-compatible wire protocol
                         if new_provider in _RECOVERY_URLS or new_key_provider in _RECOVERY_URLS:
@@ -451,15 +505,11 @@ class CoderAgent(BaseAgent):
                         raise exc
                 else:
                     auto_retries += 1
-                    if parsed_delay is not None:
-                        backoff = min(60.0, max(3.0, parsed_delay + 1.5))
-                    elif is_rate_limit:
-                        backoff = min(30.0, 5.0 * auto_retries)
-                    else:
-                        backoff = 1.5 * auto_retries
+                    backoff = min(5.0, 1.5 * auto_retries)
                     logs.append(f"[RETRY] Auto-retrying {phase_name} in {backoff:.1f}s (attempt {auto_retries}/{max_retries_for_call})...")
                     await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
                     await asyncio.sleep(backoff)
+
 
     # ── Phase 1: Planning ─────────────────────────────────────────────────────
     plan_start = time.time()
@@ -569,7 +619,8 @@ class CoderAgent(BaseAgent):
           status="failure",
           confidence=0.0,
           reasoning_summary="Clarification request cancelled by user.",
-          logs=logs
+          logs=logs,
+          structured_data=structured_data
         )
 
 
@@ -984,8 +1035,10 @@ class CoderAgent(BaseAgent):
               status="failure",
               confidence=0.1,
               reasoning_summary=f"LLM call failed during code generation: {exc}",
-              logs=logs
+              logs=logs,
+              structured_data=structured_data
             )
+
 
       # ── Phase 3: Self-Review Loop ─────────────────────────────────────────────
       review_start = time.time()

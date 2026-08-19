@@ -53,7 +53,7 @@ All notable changes to CODE OS AI and Core Infrastructure are documented in this
   - Real-time Server-Sent Events (SSE) streaming for stdout, stderr, compilation steps, and exit status.
   - Instant process kill capability (`/api/terminal/run/kill`).
 - **User Interface**:
-  - Added Run/Stop action button with auto-save in [`src/features/editor/EditorWorkspace.tsx`](file:///d:/HTML/CODE%20OS/src/features/editor/EditorWorkspace.tsx).
-  - Added real-time monospace output terminal tab in [`src/features/terminal/TerminalPanel.tsx`](file:///d:/HTML/CODE%20OS/src/features/terminal/TerminalPanel.tsx).
-  - Added "Toolchains & Runtimes" status dashboard in [`src/components/settings/SettingsModal.tsx`](file:///d:/HTML/CODE%20OS/src/components/settings/SettingsModal.tsx).
+  - Added Run/Stop action button with auto-save in [`src/features/editor/EditorWorkspace.tsx`](src/features/editor/EditorWorkspace.tsx).
+  - Added real-time monospace output terminal tab in [`src/features/terminal/TerminalPanel.tsx`](src/features/terminal/TerminalPanel.tsx).
+  - Added "Toolchains & Runtimes" status dashboard in [`src/components/settings/SettingsModal.tsx`](src/components/settings/SettingsModal.tsx).
 

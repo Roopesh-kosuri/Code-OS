@@ -4,10 +4,12 @@ import path from "node:path";
 const isDev = !app.isPackaged;
 import { execFileSync } from "node:child_process";
 import { BackendProcess } from "./services/backendProcess.js";
+import { CaptureService } from "./services/captureService.js";
 import * as pty from "node-pty";
 
 const backend = new BackendProcess();
 let mainWindow: BrowserWindow | null = null;
+const captureService = new CaptureService(() => mainWindow, 5178);
 
 function resolveAssetPath(fileName: string): string {
   if (isDev) {
@@ -50,75 +52,47 @@ function sendMenuAction(action: string): void {
 }
 
 function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: "File",
-      submenu: [
-        { label: "Open Folder", accelerator: "CmdOrCtrl+O", click: () => sendMenuAction("file.openFolder") },
-        { label: "Save", accelerator: "CmdOrCtrl+S", click: () => sendMenuAction("file.save") },
-        { label: "Save All", accelerator: "CmdOrCtrl+Shift+S", click: () => sendMenuAction("file.saveAll") },
-        { label: "Close Workspace", accelerator: "CmdOrCtrl+K", click: () => sendMenuAction("file.closeWorkspace") },
-        { type: "separator" },
-        { label: "Exit", role: "quit" }
-      ]
-    },
-    {
-      label: "Edit",
-      submenu: [
-        { label: "Undo", accelerator: "CmdOrCtrl+Z", role: "undo" },
-        { label: "Redo", accelerator: "CmdOrCtrl+Y", role: "redo" },
-        { type: "separator" },
-        { label: "Copy", accelerator: "CmdOrCtrl+C", role: "copy" },
-        { label: "Paste", accelerator: "CmdOrCtrl+V", role: "paste" },
-        { type: "separator" },
-        { label: "Find", accelerator: "CmdOrCtrl+F", click: () => sendMenuAction("edit.find") },
-        { label: "Replace", accelerator: "CmdOrCtrl+H", click: () => sendMenuAction("edit.replace") }
-      ]
-    },
-    {
-      label: "View",
-      submenu: [
-        { label: "Toggle Explorer", accelerator: "CmdOrCtrl+B", click: () => sendMenuAction("view.toggleExplorer") },
-        { label: "Toggle Terminal", accelerator: "Ctrl+`", click: () => sendMenuAction("view.toggleTerminal") },
-        { label: "Toggle AI", accelerator: "CmdOrCtrl+Shift+A", click: () => sendMenuAction("view.toggleAI") },
-        { type: "separator" },
-        { role: "toggleDevTools" },
-        { role: "reload" }
-      ]
-    },
-    {
-      label: "Help",
-      submenu: [
-        {
-          label: "About CODE OS",
-          click: () => {
-            const options = {
-              type: "info",
-              title: "About CODE OS",
-              message: "CODE OS",
-              detail: "Local-first AI development workspace. Phase 1.5."
-            } as const;
-            if (mainWindow) {
-              void dialog.showMessageBox(mainWindow, options);
-            } else {
-              void dialog.showMessageBox(options);
-            }
-          }
-        }
-      ]
-    }
-  ];
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  Menu.setApplicationMenu(null);
 }
 
+// ── Window Controls IPC ─────────────────────────────────────────────
+ipcMain.handle("window:minimize", () => {
+  mainWindow?.minimize();
+});
+
+ipcMain.handle("window:maximize", () => {
+  if (mainWindow) {
+    if (mainWindow.isMaximized()) {
+      mainWindow.unmaximize();
+    } else {
+      mainWindow.maximize();
+    }
+  }
+});
+
+ipcMain.handle("window:close", () => {
+  mainWindow?.close();
+});
+
+ipcMain.handle("window:is-maximized", () => {
+  return mainWindow?.isMaximized() ?? false;
+});
+
 async function createWindow(): Promise<void> {
+  const iconPath = process.platform === "win32"
+    ? path.join(__dirname, "../build/icon.ico")
+    : path.join(__dirname, "../build/icon.png");
+
   mainWindow = new BrowserWindow({
     width: 1500,
     height: 950,
     minWidth: 1080,
     minHeight: 720,
     title: "CODE OS",
-    icon: resolveAssetPath("codeos-app-icon.png"),
+    frame: false,
+    titleBarStyle: "hidden",
+    autoHideMenuBar: true,
+    icon: iconPath,
     backgroundColor: "#101215",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -127,6 +101,8 @@ async function createWindow(): Promise<void> {
       sandbox: false
     }
   });
+  mainWindow.setMenuBarVisibility(false);
+
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -381,8 +357,17 @@ ipcMain.handle("backend:getStatus", () => {
   };
 });
 
+ipcMain.handle("vision:capture", async (_event, req) => {
+  return await captureService.handleCapture(req);
+});
+
 app.whenReady().then(async () => {
   await backend.start();
+  try {
+    await captureService.start();
+  } catch (err) {
+    console.warn("[app] Capture service failed to start:", err);
+  }
   // Bundled PyInstaller binary needs ~15-20s on first cold start (self-extraction).
   // Dev mode system Python is fast, so use a shorter timeout there.
   const tokenWaitMs = isDev ? 6_000 : 35_000;
@@ -411,6 +396,7 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   backend.stop();
+  captureService.stop();
   // Kill all terminal sessions
   for (const session of terminalSessions.values()) {
     try {

@@ -46,6 +46,8 @@ class ToolResult:
     success: bool
     output: str
     error: str = ""
+    failure_reason: str = ""
+    failure_detail: str = ""
 
 
 def _clean_rel_path(path_str: str) -> str:

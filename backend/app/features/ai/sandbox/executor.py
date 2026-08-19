@@ -10,6 +10,7 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -187,14 +188,12 @@ async def _execute_command_async(
 
         limit_hit = False
         limit_msg = ""
-
         try:
             done, pending = await asyncio.wait(
                 [communicate_task, gov_task],
                 timeout=timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-
             if gov_task in done:
                 limit_hit, limit_msg = gov_task.result()
                 if limit_hit:
@@ -210,7 +209,9 @@ async def _execute_command_async(
                         tool_name="run_command",
                         success=False,
                         output="",
-                        error=limit_msg,
+                        error=json.dumps({"reason": "governor_kill", "detail": limit_msg, "command": command}),
+                        failure_reason="governor_kill",
+                        failure_detail=limit_msg,
                     )
 
             if communicate_task in done:
@@ -219,15 +220,31 @@ async def _execute_command_async(
                 for t in pending:
                     t.cancel()
                 try:
-                    proc.kill()
-                    await proc.wait()
+                    import psutil
+                    p = psutil.Process(proc.pid)
+                    for child in p.children(recursive=True):
+                        try:
+                            child.kill()
+                        except Exception:
+                            pass
+                    p.kill()
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
                 except Exception:
                     pass
+                exec_detail = f"Command ran {int(timeout)}s and was killed."
                 return ToolResult(
                     tool_name="run_command",
                     success=False,
                     output="",
-                    error=f"Command timed out after {int(timeout)} seconds: {command}",
+                    error=json.dumps({"reason": "execution_timeout", "detail": exec_detail, "command": command}),
+                    failure_reason="execution_timeout",
+                    failure_detail=exec_detail,
                 )
         finally:
             if not gov_task.done():
@@ -243,19 +260,58 @@ async def _execute_command_async(
         dur_ms = (time.time() - start_t) * 1000.0
         monitor.record_metric("command_execution", dur_ms)
 
+        if proc.returncode == 0:
+            return ToolResult(
+                tool_name="run_command",
+                success=True,
+                output=f"=== COMMAND: {command} [{status_str}] ===\n{raw_output.strip() or '(no output)'}",
+                error="",
+            )
+
+        lower_out = raw_output.lower()
+        is_not_found = (
+            proc.returncode in (127, 9009)
+            or "is not recognized as an internal or external command" in lower_out
+            or "commandnotfoundexception" in lower_out
+            or "cannot find the path" in lower_out
+            or "no such file or directory" in lower_out
+        )
+        fail_reason = "not_found" if is_not_found else "exit_code"
+        fail_detail = (
+            f"Command not found: {command}"
+            if is_not_found
+            else f"Process exited with code {proc.returncode}"
+        )
         return ToolResult(
             tool_name="run_command",
-            success=proc.returncode == 0,
+            success=False,
             output=f"=== COMMAND: {command} [{status_str}] ===\n{raw_output.strip() or '(no output)'}",
-            error="" if proc.returncode == 0 else f"Process exited with code {proc.returncode}",
+            error=json.dumps({
+                "reason": fail_reason,
+                "detail": fail_detail,
+                "exit_code": proc.returncode,
+                "command": command,
+                "output": raw_output.strip()[:500],
+            }),
+            failure_reason=fail_reason,
+            failure_detail=fail_detail,
         )
     except Exception as exc:
         monitor.capture_exception(exc, context={"workspace": workspace, "command": command})
+        is_fnf = isinstance(exc, FileNotFoundError)
+        exc_reason = "not_found" if is_fnf else "exit_code"
+        exc_detail = f"Execution error: {exc}"
         return ToolResult(
             tool_name="run_command",
             success=False,
             output="",
-            error=f"Execution error: {exc}",
+            error=json.dumps({
+                "reason": exc_reason,
+                "detail": exc_detail,
+                "command": command,
+            }),
+            failure_reason=exc_reason,
+            failure_detail=exc_detail,
         )
 
 
@@ -263,37 +319,30 @@ async def _execute_command_sandboxed(
     workspace: str,
     command: str,
     network: str = "none",
-    memory_limit: str = "512m",
-    cpus: float = 1.0,
-    pids_limit: int = 100,
+    image: str = "python:3.11-alpine",
 ) -> ToolResult:
-    """
-    Execute command inside an ephemeral, non-root, resource-capped Docker container.
-    Raises SandboxUnavailableError (fail-closed) if container runtime is unavailable.
-    """
-    caps = _detect_container_runtime()
-    if not caps.get("docker_available"):
-        raise SandboxUnavailableError(
-            "Container runtime (Docker) not available. Cannot execute command in sandbox. "
-            "Install Docker or run on host with explicit confirmation."
-        )
+    """Execute a command inside an isolated, disposable Docker container."""
+    from ....core.paths import normalize_workspace
+    norm_ws = normalize_workspace(workspace)
+    ws_str = str(norm_ws.resolve())
+
+    docker_args = [
+        "docker", "run", "--rm",
+        "-i",
+        f"--network={network}",
+        "-m", "512m",
+        "--cpus", "1.0",
+        "--pids-limit", "64",
+        "--security-opt", "no-new-privileges",
+        "-v", f"{ws_str}:/workspace:rw",
+        "-w", "/workspace",
+        image,
+        "sh", "-c", command,
+    ]
 
     try:
-        norm_ws = normalize_workspace(workspace)
-        docker_cmd = [
-            "docker", "run", "--rm",
-            "-v", f"{str(norm_ws)}:/workspace",
-            "-w", "/workspace",
-            "--memory", memory_limit,
-            f"--cpus={cpus}",
-            f"--pids-limit={pids_limit}",
-            "--network", network,
-            "python:3.11-alpine",
-            "sh", "-c", command,
-        ]
-
         proc = await asyncio.create_subprocess_exec(
-            *docker_cmd,
+            *docker_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -306,29 +355,64 @@ async def _execute_command_sandboxed(
                 await proc.wait()
             except Exception:
                 pass
+            exec_detail = "Command ran 35s and was killed."
             return ToolResult(
                 tool_name="run_command",
                 success=False,
                 output="",
-                error=f"Sandboxed container command timed out after 35s: {command}",
+                error=json.dumps({
+                    "reason": "execution_timeout",
+                    "detail": exec_detail,
+                    "command": command,
+                }),
+                failure_reason="execution_timeout",
+                failure_detail=exec_detail,
             )
 
         raw_output = (stdout.decode("utf-8", errors="replace") or "") + \
                      ("\n" + stderr.decode("utf-8", errors="replace") if stderr else "")
         status_str = "SUCCESS" if proc.returncode == 0 else f"EXIT {proc.returncode}"
 
+        if proc.returncode == 0:
+            return ToolResult(
+                tool_name="run_command",
+                success=True,
+                output=f"=== CONTAINER SANDBOX (docker) [{status_str}] ===\n{raw_output.strip() or '(no output)'}",
+                error="",
+            )
+
+        lower_out = raw_output.lower()
+        is_not_found = proc.returncode in (127, 9009) or "not found" in lower_out
+        fail_reason = "not_found" if is_not_found else "exit_code"
+        fail_detail = f"Container process exited with code {proc.returncode}"
         return ToolResult(
             tool_name="run_command",
-            success=proc.returncode == 0,
+            success=False,
             output=f"=== CONTAINER SANDBOX (docker) [{status_str}] ===\n{raw_output.strip() or '(no output)'}",
-            error="" if proc.returncode == 0 else f"Container exited with code {proc.returncode}",
+            error=json.dumps({
+                "reason": fail_reason,
+                "detail": fail_detail,
+                "exit_code": proc.returncode,
+                "command": command,
+                "output": raw_output.strip()[:500],
+            }),
+            failure_reason=fail_reason,
+            failure_detail=fail_detail,
         )
     except Exception as exc:
+        exc_reason = "not_found" if isinstance(exc, FileNotFoundError) else "exit_code"
+        exc_detail = f"Container execution error: {exc}"
         return ToolResult(
             tool_name="run_command",
             success=False,
             output="",
-            error=f"Container execution error: {exc}",
+            error=json.dumps({
+                "reason": exc_reason,
+                "detail": exc_detail,
+                "command": command,
+            }),
+            failure_reason=exc_reason,
+            failure_detail=exc_detail,
         )
 
 

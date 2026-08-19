@@ -57,6 +57,15 @@ const api = {
     ipcRenderer.invoke("session:getToken"),
   getBackendStatus: (): Promise<{ running: boolean; error: string | null; token: string | null }> =>
     ipcRenderer.invoke("backend:getStatus"),
+  visionCapture: (req: { mode?: "preview" | "app_window"; target?: string; workspace?: string; width?: number; height?: number }): Promise<{ success: boolean; image_base64?: string; format?: string; error?: string }> =>
+    ipcRenderer.invoke("vision:capture", req),
+  windowControls: {
+    minimize: () => ipcRenderer.invoke("window:minimize"),
+    maximize: () => ipcRenderer.invoke("window:maximize"),
+    close: () => ipcRenderer.invoke("window:close"),
+    isMaximized: () => ipcRenderer.invoke("window:is-maximized") as Promise<boolean>,
+  },
 };
+
 
 contextBridge.exposeInMainWorld("codeOS", api);

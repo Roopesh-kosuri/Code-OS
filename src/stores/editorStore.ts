@@ -22,6 +22,10 @@ type EditorState = {
   setEditorSetting: (setting: { fontSize?: number; tabSize?: number }) => void;
   loadEditorSettings: () => Promise<void>;
   toggleSplit: (filePath: string | null) => void;
+  cursorPosition: { line: number; col: number };
+  markerStats: { errors: number; warnings: number };
+  setCursorPosition: (pos: { line: number; col: number }) => void;
+  setMarkerStats: (stats: { errors: number; warnings: number }) => void;
 };
 
 function filename(filePath: string): string {
@@ -35,6 +39,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   autoSave: localStorage.getItem("code-os:auto-save") !== "false",
   fontSize: Number(localStorage.getItem("code-os:font-size") ?? "14"),
   tabSize: Number(localStorage.getItem("code-os:tab-size") ?? "2"),
+  cursorPosition: { line: 1, col: 1 },
+  markerStats: { errors: 0, warnings: 0 },
+  setCursorPosition: (pos) => set({ cursorPosition: pos }),
+  setMarkerStats: (stats) => set({ markerStats: stats }),
   openFile: async (filePath) => {
     console.info("[editor.open] requested", filePath);
     useWorkspaceStore.getState().selectWorkspaceForPath(filePath);

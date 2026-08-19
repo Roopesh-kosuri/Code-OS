@@ -24,11 +24,14 @@ class DualCoderModelConfig(BaseModel):
     api_key_provider: Optional[str] = None
 
 class DualCoderRequest(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
     workspace: str
     task_description: str
     model_a: DualCoderModelConfig
     model_b: DualCoderModelConfig
     target_file: Optional[str] = None
+
 
 async def _run_single_attempt(
     attempt_label: str,

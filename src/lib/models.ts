@@ -11,17 +11,16 @@ export interface CuratedModel {
 
 export const PRESET_MODELS: Record<string, CuratedModel[]> = {
   "nvidia-nim": [
-    { id: "meta/llama-3.3-70b-instruct", name: "Llama 3.3 70B Instruct", tag: "Recommended", description: "Top coding & agent performance" },
-    { id: "z-ai/glm-5.2", name: "GLM 5.2", tag: "Flagship", description: "High-capability reasoning & code synthesis" },
+    { id: "minimaxai/minimax-m3", name: "MiniMax M3", tag: "Coding", description: "High-speed intelligent coding model hosted on NVIDIA NIM" },
+    { id: "minimaxai/minimax-01", name: "MiniMax 01", tag: "Flagship", description: "Flagship MiniMax 4M context reasoning model on NVIDIA NIM" },
+    { id: "meta/llama-3.1-70b-instruct", name: "Llama 3.1 70B", tag: "Recommended", description: "Fast, reliable 70B coding & agent model on NVIDIA NIM" },
+    { id: "meta/llama-3.1-8b-instruct", name: "Llama 3.1 8B", tag: "Fast", description: "Sub-second ultra-fast generation on NVIDIA NIM" },
+    { id: "meta/llama-3.3-70b-instruct", name: "Llama 3.3 70B", tag: "Flagship", description: "Top coding & agent performance on NVIDIA NIM" },
     { id: "deepseek-ai/deepseek-r1", name: "DeepSeek R1", tag: "Reasoning", description: "Full chain-of-thought math & code reasoning" },
     { id: "deepseek-ai/deepseek-v3", name: "DeepSeek V3", tag: "Coding", description: "671B MoE architecture for software engineering" },
     { id: "nvidia/llama-3.1-nemotron-70b-instruct", name: "Llama 3.1 Nemotron 70B", tag: "Flagship", description: "NVIDIA-aligned high accuracy assistant" },
-    { id: "mistralai/codestral-22b-instruct-v0.1", name: "Codestral 22B", tag: "Coding", description: "Specialized 80+ programming language model" },
-    { id: "mistralai/mistral-large-2407", name: "Mistral Large 2407", tag: "Flagship", description: "128k context reasoning & multi-lingual code" },
+    { id: "mistralai/mistral-large-2-instruct", name: "Mistral Large 2", tag: "Flagship", description: "128k context reasoning & multi-lingual code" },
     { id: "qwen/qwen2.5-coder-32b-instruct", name: "Qwen 2.5 Coder 32B", tag: "Coding", description: "State-of-the-art open code generation" },
-    { id: "meta/llama-3.1-8b-instruct", name: "Llama 3.1 8B Instruct", tag: "Fast", description: "Fast lightweight assistance" },
-    { id: "writer/palmyra-med-70b", name: "Palmyra Med 70B", tag: "Flagship" },
-    { id: "zyphra/zamba2-7b-instruct", name: "Zamba2 7B Instruct", tag: "Fast" },
   ],
   openai: [
     { id: "gpt-4o", name: "GPT-4o", tag: "Flagship", description: "Omni-modal flagship model for complex coding" },
@@ -44,12 +43,11 @@ export const PRESET_MODELS: Record<string, CuratedModel[]> = {
     { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro", tag: "Flagship", description: "High-capacity analysis" },
   ],
   groq: [
-    { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B", tag: "Recommended", description: "High-parameter open coding powerhouse" },
-    { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B", tag: "Fast", description: "Ultra-fast low-latency code completion" },
-    { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", tag: "Flagship", description: "128k context versatile coding" },
-    { id: "deepseek-r1-distill-llama-70b", name: "DeepSeek R1 Distill 70B", tag: "Reasoning", description: "Fast reasoning on Groq LPU" },
-    { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant", tag: "Fast", description: "750+ tokens/second speed" },
-    { id: "mixtral-8x7b-32768", name: "Mixtral 8x7B", tag: "Coding", description: "32k context MoE model" },
+    { id: "openai/gpt-oss-120b", name: "GPT OSS 120B", tag: "Recommended", description: "Flagship 120B open-weights model hosted on Groq" },
+    { id: "openai/gpt-oss-20b", name: "GPT OSS 20B", tag: "Fast", description: "High-speed 20B open-weights model hosted on Groq" },
+    { id: "qwen/qwen3.6-27b", name: "Qwen 3.6 27B", tag: "Reasoning", description: "High-accuracy open reasoning model on Groq LPU" },
+    { id: "groq/compound-mini", name: "Compound Mini", tag: "Fast", description: "Groq composite agent architecture" },
+    { id: "groq/compound", name: "Compound", tag: "Flagship", description: "Groq high-capability reasoning model" },
   ],
   deepseek: [
     { id: "deepseek-chat", name: "DeepSeek V3 (Chat)", tag: "Recommended", description: "671B MoE frontier coding & general agent" },
@@ -129,3 +127,50 @@ export function deleteUserCustomModel(presetId: string, modelId: string): void {
     // Ignore storage error
   }
 }
+
+export const VISION_MODELS: Record<string, CuratedModel[]> = {
+  groq: [
+    { id: "llama-3.2-11b-vision-preview", name: "Llama 3.2 11B Vision", tag: "Recommended", description: "Fast & precise multimodal QA on Groq LPU" },
+    { id: "llama-3.2-90b-vision-preview", name: "Llama 3.2 90B Vision", tag: "Flagship", description: "Deep reasoning multimodal model on Groq LPU" },
+    { id: "meta-llama/llama-4-scout", name: "Llama 4 Scout", tag: "Fast", description: "Next-gen multimodal reasoning" },
+  ],
+  openai: [
+    { id: "gpt-4o-mini", name: "GPT-4o Mini", tag: "Recommended", description: "High-speed, low-cost visual inspection" },
+    { id: "gpt-4o", name: "GPT-4o", tag: "Flagship", description: "Frontier vision & complex UI layout analysis" },
+  ],
+  anthropic: [
+    { id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku", tag: "Recommended", description: "Fast visual inspection & spatial analysis" },
+    { id: "claude-3-5-sonnet-latest", name: "Claude 3.5 Sonnet", tag: "Flagship", description: "Benchmark visual reasoning & design critique" },
+  ],
+  gemini: [
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", tag: "Recommended", description: "Ultra-fast multimodal UI inspection" },
+    { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", tag: "Flagship", description: "High-intelligence visual layout analysis" },
+  ],
+  "nvidia-nim": [
+    { id: "meta/llama-3.2-11b-vision-instruct", name: "Llama 3.2 11B Vision Instruct", tag: "Recommended", description: "NVIDIA-accelerated visual inspector" },
+    { id: "meta/llama-3.2-90b-vision-instruct", name: "Llama 3.2 90B Vision Instruct", tag: "Flagship", description: "High-resolution multimodal visual QA" },
+    { id: "nvidia/neva-22b", name: "Neva 22B", tag: "Vision", description: "NVIDIA visual reasoning model" },
+  ],
+  ollama: [
+    { id: "llama3.2-vision", name: "Llama 3.2 Vision", tag: "Recommended", description: "Local offline multimodal visual inspector" },
+    { id: "llava", name: "LLaVA", tag: "Vision", description: "Open source visual assistant" },
+    { id: "bakllava", name: "BakLLaVA", tag: "Fast", description: "Lightweight local visual QA" },
+  ],
+  openrouter: [
+    { id: "openai/gpt-4o-mini", name: "GPT-4o Mini", tag: "Recommended" },
+    { id: "meta-llama/llama-3.2-11b-vision-instruct", name: "Llama 3.2 11B Vision", tag: "Vision" },
+    { id: "anthropic/claude-3.5-haiku", name: "Claude 3.5 Haiku", tag: "Fast" },
+  ],
+  auto: [
+    { id: "llama-3.2-11b-vision-preview", name: "Llama 3.2 11B Vision", tag: "Recommended", description: "Auto-routes to fastest available vision model" },
+  ],
+  custom: [
+    { id: "custom-vlm", name: "Custom Vision Model", tag: "Custom", description: "Model provided by your custom vision endpoint" },
+  ],
+};
+
+export function getDefaultVisionModel(presetId: string): string {
+  const models = VISION_MODELS[presetId] || VISION_MODELS.groq;
+  return models[0]?.id || "llama-3.2-11b-vision-preview";
+}
+

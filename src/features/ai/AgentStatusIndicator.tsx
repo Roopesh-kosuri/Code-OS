@@ -20,6 +20,7 @@ import {
   Layers,
   Ban,
   HelpCircle,
+  Eye,
 } from "lucide-react";
 import {
   useAIStore,
@@ -46,6 +47,26 @@ export function AgentStatusIndicator({
   const pendingApproval = useAIStore((s) => s.pendingApproval);
   const currentTier = useAIStore((s) => s.currentTier);
   const currentTierLabel = useAIStore((s) => s.currentTierLabel);
+  const currentTierReason = useAIStore((s) => s.currentTierReason);
+  const streamStartTimestamp = useAIStore((s) => s.streamStartTimestamp);
+  const lastTokenTimestamp = useAIStore((s) => s.lastTokenTimestamp);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!streaming) return;
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, [streaming]);
+
+  const formatSeconds = (sec: number) => {
+    if (sec < 60) return `${sec}s`;
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}m ${s}s`;
+  };
+
+  const totalElapsedSec = streamStartTimestamp ? Math.max(0, Math.floor((now - streamStartTimestamp) / 1000)) : 0;
+  const lastTokenSec = lastTokenTimestamp ? Math.max(0, Math.floor((now - lastTokenTimestamp) / 1000)) : 0;
 
   // Auto-expand when user approval or replanning occurs
   useEffect(() => {
@@ -76,9 +97,12 @@ export function AgentStatusIndicator({
     }
 
     if (!status) {
+      const hbText = streaming && streamStartTimestamp
+        ? `Working — ${formatSeconds(totalElapsedSec)} (last token ${lastTokenSec}s ago)`
+        : "Reasoning...";
       return {
         icon: <Loader2 size={13} className="animate-spin text-primary" />,
-        text: "Reasoning...",
+        text: hbText,
         colorClass: "border-primary/30 bg-primary/10 text-primary",
       };
     }
@@ -108,6 +132,12 @@ export function AgentStatusIndicator({
           text: status.message || "Running self-critique pass...",
           colorClass: "border-primary/30 bg-primary/10 text-primary",
         };
+      case "secret_scan":
+        return {
+          icon: <ShieldAlert size={13} className="text-rose-400 animate-pulse" />,
+          text: status.message || "Scanning diff for credentials...",
+          colorClass: "border-rose-500/40 bg-rose-500/10 text-rose-300",
+        };
       case "replan":
         return {
           icon: <RefreshCw size={13} className="animate-spin text-amber-400" />,
@@ -120,30 +150,53 @@ export function AgentStatusIndicator({
           text: status.message || "Skipped repeated failure",
           colorClass: "border-amber-500/30 bg-amber-500/10 text-amber-300",
         };
-      case "thinking":
+      case "vision":
         return {
-          icon: <Loader2 size={13} className="animate-spin text-primary" />,
-          text: status.message || "Reasoning...",
+          icon: <Eye size={13} className="text-primary animate-pulse" />,
+          text: status.message || `Visual Inspection: ${status.detail || ""}`,
           colorClass: "border-primary/30 bg-primary/10 text-primary",
         };
+      case "thinking": {
+        const hbText = streaming && streamStartTimestamp
+          ? `${status.message || "Working"} — ${formatSeconds(totalElapsedSec)} (last token ${lastTokenSec}s ago)`
+          : status.message || "Reasoning...";
+        return {
+          icon: <Loader2 size={13} className="animate-spin text-primary" />,
+          text: hbText,
+          colorClass: "border-primary/30 bg-primary/10 text-primary",
+        };
+      }
       case "tool": {
         let toolIcon = <Terminal size={13} className="text-secondary" />;
         if (status.tool === "read_file" || status.tool === "edit_file" || status.tool === "append_file") {
           toolIcon = <FileCode size={13} className="text-amber-400" />;
-        } else if (status.tool === "search_code" || status.tool === "semantic_search") {
+        } else if (status.tool === "search_code" || status.tool === "semantic_search" || status.tool === "find_references" || status.tool === "go_to_definition") {
           toolIcon = <Search size={13} className="text-cyan-400" />;
+        } else if (status.tool === "server_session") {
+          toolIcon = <Zap size={13} className="text-emerald-400" />;
+        } else if (status.tool === "git_diff") {
+          toolIcon = <Layers size={13} className="text-primary" />;
+        } else if (status.tool === "find_dead_code") {
+          toolIcon = <AlertCircle size={13} className="text-rose-400" />;
+        } else if (status.tool === "update_architecture_doc") {
+          toolIcon = <Brain size={13} className="text-primary" />;
         } else if (status.tool === "memory_write") {
           toolIcon = <BookmarkCheck size={13} className="text-cyan-400" />;
         } else if (status.tool === "ask_user") {
           toolIcon = <HelpCircle size={13} className="text-primary" />;
+        } else if (status.tool === "take_screenshot" || status.tool === "inspect_visuals" || status.tool === "vision") {
+          toolIcon = <Eye size={13} className="text-primary" />;
         }
+        const toolElapsedText = streaming && streamStartTimestamp ? ` (${formatSeconds(totalElapsedSec)} elapsed)` : "";
         const desc = status.detail
-          ? `${status.tool || "Working"}: ${status.detail}`
-          : status.message || `Running ${status.tool}...`;
+          ? `${status.tool || "Working"}: ${status.detail}${toolElapsedText}`
+          : `${status.message || `Running ${status.tool}...`}${toolElapsedText}`;
         return {
           icon: toolIcon,
           text: desc,
-          colorClass: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+          colorClass: status.tool === "take_screenshot" || status.tool === "inspect_visuals"
+            ? "border-primary/30 bg-primary/10 text-primary"
+            : "border-amber-500/30 bg-amber-500/10 text-amber-300",
         };
       }
       case "step_complete":
@@ -215,13 +268,16 @@ export function AgentStatusIndicator({
             {text}
           </span>
           {currentTier !== null && (
-            <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-full font-mono font-bold flex items-center gap-1 ${
-              currentTier === 2
-                ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
-                : currentTier === 1
-                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
-                : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-            }`}>
+            <span
+              title={currentTierReason || undefined}
+              className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-full font-mono font-bold flex items-center gap-1 cursor-help ${
+                currentTier === 2
+                  ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
+                  : currentTier === 1
+                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                  : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+              }`}
+            >
               {currentTier === 2 ? <Brain size={10} /> : <Zap size={10} />}
               {currentTierLabel || (currentTier === 0 ? "Fast path" : (currentTier === 1 ? "Quick task" : "Deep think"))}
             </span>
@@ -248,6 +304,20 @@ export function AgentStatusIndicator({
       {/* ── Expanded Drawer (Plan & Tool Activity) ─────────────────────────── */}
       {expanded && (
         <div className="p-3 space-y-3 bg-[#111215] text-[11px] leading-relaxed max-h-72 overflow-y-auto animate-in fade-in slide-in-from-top-1 duration-200">
+          {/* Decision Reason Banner */}
+          {currentTierReason && (
+            <div className="p-2 rounded bg-white/[0.03] border border-white/5 text-[10.5px] text-on-surface-variant flex items-center gap-2 font-mono">
+              {currentTier === 2 ? (
+                <Brain size={12} className="text-purple-400 shrink-0" />
+              ) : currentTier === 1 ? (
+                <Zap size={12} className="text-amber-400 shrink-0" />
+              ) : (
+                <Zap size={12} className="text-emerald-400 shrink-0" />
+              )}
+              <span className="truncate">{currentTierReason}</span>
+            </div>
+          )}
+
           {/* Dependency-Aware DAG Plan Checklist */}
           {hasPlan && (
             <div className="space-y-1.5">
@@ -327,26 +397,36 @@ export function AgentStatusIndicator({
             </div>
             {toolHistory.length > 0 ? (
               <div className="space-y-1 pl-1 font-mono text-[10.5px]">
-                {toolHistory.map((item, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center justify-between gap-2 p-1.5 rounded bg-[#18191f] border border-white/5"
-                  >
-                    <div className="flex items-center gap-1.5 truncate">
-                      <span className="text-amber-400 font-bold">[{item.tool}]</span>
-                      <span className="truncate text-on-surface-variant">
-                        {item.detail || "Executed"}
+                {toolHistory.map((item, idx) => {
+                  const isVision = item.tool === "take_screenshot" || item.tool === "inspect_visuals" || item.tool === "vision";
+                  return (
+                    <div
+                      key={idx}
+                      className="flex items-center justify-between gap-2 p-1.5 rounded bg-[#18191f] border border-white/5"
+                    >
+                      <div className="flex items-center gap-1.5 truncate">
+                        {isVision ? (
+                          <span className="text-primary font-bold flex items-center gap-1">
+                            <Eye size={11} className="shrink-0" />
+                            [vision]
+                          </span>
+                        ) : (
+                          <span className="text-amber-400 font-bold">[{item.tool}]</span>
+                        )}
+                        <span className="truncate text-on-surface-variant">
+                          {item.detail || "Executed"}
+                        </span>
+                      </div>
+                      <span className="shrink-0 text-[9px] text-outline-variant">
+                        {new Date(item.timestamp).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                        })}
                       </span>
                     </div>
-                    <span className="shrink-0 text-[9px] text-outline-variant">
-                      {new Date(item.timestamp).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                      })}
-                    </span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <div className="text-on-surface-variant/50 text-[10.5px] italic pl-1 py-1">

@@ -167,3 +167,31 @@ def write_file(workspace: str, path: str, content: str) -> None:
         raise HTTPException(status_code=400, detail="Cannot write to a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+
+
+def reveal_entry(workspace: str, path: str) -> None:
+    import platform
+    import subprocess
+    logger.info("files.reveal workspace=%s path=%s", workspace, path)
+    target = ensure_within_workspace(workspace, path)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    
+    current_os = platform.system()
+    try:
+        if current_os == "Windows":
+            if target.is_file():
+                subprocess.Popen(["explorer", f"/select,{str(target)}"])
+            else:
+                subprocess.Popen(["explorer", str(target)])
+        elif current_os == "Darwin":
+            subprocess.Popen(["open", "-R", str(target)])
+        else:
+            if target.is_dir():
+                subprocess.Popen(["xdg-open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target.parent)])
+    except Exception as e:
+        logger.error("files.reveal failed for path=%s: %s", target, e)
+        raise HTTPException(status_code=500, detail=f"Failed to open system file explorer: {e}")
+

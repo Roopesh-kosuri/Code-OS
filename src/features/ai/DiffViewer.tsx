@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { api } from "../../lib/api";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useBackendStore } from "../../stores/backendStore";
 
 
 type FileChange = {
@@ -65,7 +66,7 @@ export function DiffViewer() {
   const workspace = useWorkspaceStore((state) => state.currentWorkspace);
 
   const fetchProposals = async () => {
-    if (!workspace) return;
+    if (!workspace || useBackendStore.getState().status !== "connected") return;
     try {
       const data = await api.get<Proposal[]>("/api/ai/edit-proposals", { workspace: workspace.path });
       const pendingList = data.filter((p) => p.status === "pending");

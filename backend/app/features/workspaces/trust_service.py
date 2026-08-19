@@ -39,8 +39,8 @@ async def get_workspace_trust(workspace_path: str) -> dict:
                 "trust_level": row["trust_level"],
                 "trusted_at": row["trusted_at"]
             }
-    # Default to trusted=True for unrecorded workspaces to prevent blocking the user
-    return {"path": workspace_path, "trusted": True, "trust_level": "full", "trusted_at": None}
+    # Default to trusted=False for unrecorded workspaces — explicit trust must be granted
+    return {"path": workspace_path, "trusted": False, "trust_level": None, "trusted_at": None}
 
 
 async def set_workspace_trust(workspace_path: str, trusted: bool, trust_level: str = "full") -> dict:

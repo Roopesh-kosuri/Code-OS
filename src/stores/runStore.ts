@@ -151,6 +151,7 @@ export const useRunStore = create<RunState>((set, get) => ({
               status: isSuccess ? "completed" : "failed",
               exitCode: data.exit_code,
               durationMs: data.duration_ms,
+              error: isSuccess ? null : (data.error || s.error || `Process exited with code ${data.exit_code}`),
               logs: [
                 ...s.logs,
                 {

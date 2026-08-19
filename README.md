@@ -1,286 +1,178 @@
 <div align="center">
 
-# CODE-OS
+# CODE-OS (v2.4.0)
 
-### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
+### A local-first AI IDE that plans, codes, reviews, and runs your software — with strict server-side boundaries and zero telemetry leaks.
 
-[![CI/CD](./docs/badges/cicd.svg)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
-[![License: MIT](./docs/badges/license.svg)](./LICENSE)
-![Platform](./docs/badges/platform.svg)
-![Made with Electron](./docs/badges/electron.svg)
-![FastAPI](./docs/badges/fastapi.svg)
+[![CI/CD](https://github.com/Roopesh-kosuri/code-os/actions/workflows/ci.yml/badge.svg)](https://github.com/Roopesh-kosuri/code-os/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-brightgreen.svg)]()
+[![Electron](https://img.shields.io/badge/Electron-33-47848F.svg)](https://www.electronjs.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688.svg)](https://fastapi.tiangolo.com/)
 
 <br>
 
-### ▶️ Demo
+### ▶️ Demo & Website
 
-[![Watch the demo](https://img.youtube.com/vi/2LZ2V9nhz34/maxresdefault.jpg)](https://www.youtube.com/watch?v=2LZ2V9nhz34)
+🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/websitecodeos/) · 📹 [**Watch Demo Video**](https://www.youtube.com/watch?v=2LZ2V9nhz34)
 
-🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/websitecodeos/)
-
-**[Getting Started](#-getting-started)** · **[Features](#-what-it-can-do)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
+**[Getting Started](#-getting-started)** · **[Key Features](#-what-it-can-do)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security Model](#-security-architecture)** · **[Docs](#-documentation)**
 
 </div>
 
 ---
 
-## ⚡ Why CODE OS
+## ⚡ Why CODE OS?
 
-Most "AI IDEs" are a chat box bolted onto a text editor. CODE OS is built differently:
+Most "AI IDEs" are simply a chat box bolted onto a text editor. CODE OS is designed from the ground up as an agentic developer operating system:
 
-- 🧠 **5 specialized agents** — Planner, Coder, Reviewer, Tester, Documenter — that plan, write, self-review, and test code as one coordinated system, not a single chat wrapper
-- 🔒 **Nothing runs or writes without your approval** — every AI-proposed change goes through a diff you review; every shell command needs an explicit click
-- 🌐 **9 AI providers, your choice** — Ollama locally, or bring your own key for OpenAI, Anthropic, Gemini, Groq, DeepSeek, Mistral, OpenRouter, or NVIDIA NIM
-- ⚔️ **Duo Loop** — two models argue it out (Generator vs. Critic) until the code is actually good, before you ever see it
-- 💻 **A real terminal** — genuine PTY support (`vim`, `git rebase -i`, REPLs), not a fake command box
-- 🎨 **7 themes**, including a proper Cyberpunk mode
+- 🧠 **5 Specialized Agents** — Planner, Coder, Reviewer, Tester, and Documenter work as a coordinated team with AST symbol indexing and dependency mapping.
+- 🔒 **Zero Unapproved Writes** — Every AI-proposed change generates an interactive diff for user approval before anything touches disk.
+- 🌐 **9 AI Providers Supported** — 100% offline with Ollama, or bring your own key for Google Gemini, Groq, OpenAI, Anthropic Claude, DeepSeek, Mistral, OpenRouter, or NVIDIA NIM.
+- ⚔️ **Duo Loop Engine** — Automated adversarial generator-vs-critic debates that refine code quality before presenting final proposals.
+- 🚀 **Native Multi-Language Runner** — Integrated execution (`Ctrl+Shift+R` / `F5`) with auto toolchain detection across Python, JS/TS, C/C++, Rust, Go, Java, and PowerShell with memory limits and instant process kill.
+- 👁️ **Offscreen Vision & VLM QA** — Electron offscreen rendering pool for automated UI defect analysis and visual regression testing.
+- 💻 **True PTY Terminal** — Full pseudo-terminal support (`node-pty` / `pywinpty`) capable of running `vim`, interactive `git rebase -i`, and real REPLs.
+- 🎨 **7 Polished Themes** — Cyberpunk, Void, Dark, Light, Crimson, Navy, and Violet.
 
-Everything runs on your machine. Your code never leaves it, except to whichever AI provider you explicitly choose, with your own key.
+Everything runs on your local machine. Your code never leaves your computer, except to whichever AI provider you explicitly configure.
 
 ---
 
 ## 🚀 Getting Started
 
-### Option A — Docker (fastest way to try it, nothing to install locally)
+### Prerequisites
 
-The only thing you need on your machine is **Docker** itself — Node.js and Python are bundled inside the container, so you don't need either installed locally.
-
-```bash
-git clone https://github.com/roopesh-kosuri/code-os.git
-cd code-os
-docker compose up
-```
-
-→ Frontend at `http://localhost:5173` · Backend at `http://localhost:8000`
-→ Verify it's healthy: visit `http://localhost:8000/health` — should return `{"status": "ok"}`
-
-> Docker runs CODE OS in browser mode — you get the full AI/agent experience, with a WebSocket-based terminal fallback instead of Electron's native PTY. For the complete desktop experience, use Option B.
-
-### Option B — Full Desktop App
-
-Unlike Docker, this requires a few things installed **on your machine first** — these are language runtimes CODE OS depends on, not something CODE OS can install for itself (no project can bootstrap its own runtime — `npm` ships with Node, `pip` ships with Python, so both need to already exist before either can be used).
-
-**1. Install these first, manually, before anything else:**
 - **Node.js 20+** — [nodejs.org](https://nodejs.org)
 - **Python 3.11+** — [python.org](https://python.org)
 - **Git**
-- **OS-specific build tools** (required to compile `node-pty`'s native terminal module):
-  - **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) — select the "Desktop development with C++" workload, and make sure Python is on your system `PATH`
-  - **macOS**: run `xcode-select --install` in a terminal
-  - **Linux (Ubuntu/Debian)**: `sudo apt-get update && sudo apt-get install -y build-essential make python3`
+- **C++ Build Tools** (for native `node-pty` terminal compilation):
+  - **Windows**: [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (Desktop C++ workload)
+  - **macOS**: `xcode-select --install`
+  - **Linux**: `sudo apt-get install -y build-essential python3`
 
-**2. Once those exist, everything else is automatic:**
+---
+
+### Installation & Quick Start
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/roopesh-kosuri/code-os.git
+   cd code-os
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   npm install
+   pip install -r backend/requirements.txt
+   ```
+
+3. **Configure environment (optional):**
+   ```bash
+   cp .env.example .env
+   ```
+
+4. **Launch the development environment:**
+   ```bash
+   npm run dev
+   ```
+   *This starts the FastAPI backend (`http://127.0.0.1:8000`), the Vite frontend, and the Electron desktop application concurrently.*
+
+---
+
+### Docker Quickstart (Browser Mode)
+
+Run CODE OS in browser mode without configuring local Node/Python runtimes:
 
 ```bash
-git clone https://github.com/roopesh-kosuri/code-os.git
-cd code-os
-
-npm install
-pip install -r backend/requirements.txt
+docker compose up
 ```
-
-> The backend's terminal dependency is platform-specific and installs automatically for your OS: `pywinpty` on Windows, `ptyprocess` on macOS/Linux — `pip install` picks the right one for you.
-
-**Run everything together (recommended):**
-```bash
-npm run dev
-```
-This starts the Vite dev server, the FastAPI backend, and Electron all at once. The Electron window should open automatically.
-
-**Or run backend/frontend separately** (useful for API testing or browser-only UI work without Electron):
-```bash
-# Terminal 1 — backend only
-cd backend
-uvicorn app.main:app --reload --port 8000
-
-# Terminal 2 — frontend only (browser mode, no Electron)
-npm run dev:web
-```
-Then open `http://127.0.0.1:5173` in your browser.
-
-**Verify it's running:** visit `http://localhost:8000/health` — should return `{"status": "ok"}`.
-
-First launch walks you through a quick setup: accept the terms, optionally take the guided tour, then open your first folder and add your API key(s) under **Settings → AI Providers**. No manual database setup needed — the SQLite database initializes itself on first run.
-
-> **Using local models?** Install [Ollama](https://ollama.com) separately and run `ollama pull <model-name>` before selecting Ollama as your provider in Settings — this is optional and only needed if you want local (non-API) models.
-
-**Want a packaged installer instead?**
-```bash
-npm run package
-```
-Builds a `.exe` (Windows), `.dmg` (macOS), or `.AppImage`/`.deb` (Linux) via `electron-builder`.
-
-> ℹ️ The packaged installer still expects Python on the host machine — a fully bundled standalone backend (no separate Python install needed) is on the roadmap for an upcoming release.
-> ℹ️ **macOS:** since installer builds aren't code-signed yet, Gatekeeper will block the `.app` on first open. Right-click → Open, or run `xattr -d com.apple.quarantine /Applications/CODE\ OS.app`.
+- **Frontend UI**: `http://localhost:5173`
+- **Backend API**: `http://localhost:8000`
+- **Health Check**: `http://localhost:8000/health` → `{"status": "ok"}`
 
 ---
 
 ## 🧩 What It Can Do
 
-<table>
-<tr>
-<td width="50%" valign="top">
-
-### 🧠 Multi-Agent System
-Five agents, one job engine. **CoderAgent** is the flagship — it grounds every plan in your real codebase (indexed symbols, imports, dependencies), writes multi-file changes as one coherent unit, self-reviews its own diffs, runs your test suite on itself, and calls in a second opinion (Duo Loop) for anything risky. Tasks run as real background jobs — switch panels all you want, they keep going.
-
-### ⚔️ Duo Loop
-Pick a Generator and a Critic — any mix of local and API models — and let them go back and forth until the Critic actually approves, capped at a safe round limit. You only see the final, vetted result.
-
-### 💬 AI Chat, Done Properly
-Real markdown & syntax-highlighted code blocks, multi-thread history, full visibility into what context is being sent, and slash commands (`/fix`, `/refactor`, `/test`, `/review`, and more).
-
-</td>
-<td width="50%" valign="top">
-
-### 🛡️ Security That's Actually Enforced
-Open an unfamiliar folder and choose **Restricted Mode** — and it's enforced *server-side*, across every file-write, search-replace, terminal session, and MCP call. Not a UI suggestion. A real boundary.
-
-### 🖥️ A Real IDE Underneath
-Monaco editor with tabs & split view, Git (status/diff/commit/branch/history), real symbol-indexed search, and a genuine PTY terminal that runs `vim` and interactive `git rebase -i` like the real thing.
-
-### 🎨 7 Themes
-Dark, Light, Crimson, Navy, Void, Violet, and a proper dual-accent **Cyberpunk** mode — not just palette swaps.
-
-</td>
-</tr>
-</table>
+| Capability | Description |
+|---|---|
+| **Autonomous Multi-Agent System** | Coordinates Planner, Coder, Reviewer, Tester, and Documenter on complex multi-file engineering tasks with background job queues. |
+| **Duo Adversarial Loop** | Dual-model debate engine (Generator vs. Critic) that iterates until rigorous criteria are satisfied. |
+| **Interactive Diff Proposal Engine** | Real-time line-by-line diff review with side-by-side Monaco comparison before applying changes. |
+| **Multi-Language Runner** | One-click execution with sandboxed memory governors (512MB RAM cap) and execution timeouts (60s). |
+| **Repository Intelligence Indexer** | AST symbol extraction, cross-file reference tracking, import graph analysis, and convention learning. |
+| **Restricted Mode Security** | Server-enforced read-only workspace containment blocking file mutation, execution, and secret leaks on untrusted repos. |
+| **Offline Privacy Mode** | Complete offline support via local Ollama models with zero external network connectivity required. |
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-Electron Main Process (Node.js)
-   │  native PTYs · window · backend lifecycle
-   │  IPC
-   ▼
-React Frontend
-   │  Monaco · panels · Zustand state
-   │  HTTP / SSE / WebSocket
-   ▼
-FastAPI Backend (Python)
-   │  files · git · search · indexing · AI orchestration
-   │  aiosqlite
-   ▼
-SQLite  →  workspaces · settings · encrypted keys · index · jobs · history
+┌─────────────────────────────────────────────────────────────┐
+│                 Electron Desktop Shell                      │
+│   Native PTY Subprocesses · Window Management · IPC         │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     React 18 Frontend                       │
+│   Monaco Editor · Zustand Stores · Tailwind CSS · xterm.js  │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ HTTP / SSE / WebSocket
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   FastAPI Backend Core                      │
+│   Agent Harness · Code Intelligence · Multi-Language Runner  │
+│   Restricted Mode Guard · Session Token Auth · Vision Pool  │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Local Storage & Persistence               │
+│   SQLite (Encrypted API Keys, Jobs, Workspaces, Index)      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-| Layer | Tech |
-|---|---|
-<<<<<<< HEAD
-| Desktop | Electron 33 |
-| Frontend | React 18 · TypeScript · Zustand · Tailwind · Monaco · xterm.js |
-| Backend | Python · FastAPI · Uvicorn · aiosqlite |
-| Terminal | node-pty (Electron) / pywinpty on Windows + ptyprocess on macOS/Linux (WebSocket fallback) |
-| Git | GitPython |
-| AI | Ollama + OpenAI · Anthropic · Gemini · Groq · DeepSeek · Mistral · OpenRouter · NVIDIA NIM |
-| Security | Fernet-encrypted keys · server-side trust enforcement |
-| CI/CD | GitHub Actions — tests + build on every push, multi-platform installers on release |
-=======
-| Monaco code editor (multi-tab, split view, syntax highlighting) | WORKING |
-| Multi-root workspace explorer (drag-drop, file ops) | WORKING |
-| Real PTY terminal via node-pty (Electron) | WORKING |
-| WebSocket terminal fallback (browser mode with trust check) | WORKING |
-| Git: status, commit, push/pull, branch, history | WORKING |
-| AI chat streaming (Native Anthropic Messages API, Ollama & OpenAI-compatible) | WORKING |
-| Slash commands: /fix /refactor /explain /test /review /commit | WORKING |
-| AI edit proposals (diff view, approve/reject, write to disk) | WORKING |
-| Multi-agent orchestration (Planner, Coder, Reviewer, Tester, Documenter) | WORKING |
-| Repository indexer (AST symbols, imports, deps) | WORKING |
-| Text + symbol search with replace | WORKING |
-| Light/dark theme (Monaco synced) | WORKING |
-| Resizable panels (persist across reload) | WORKING |
-| Settings + encrypted API keys (OS Keychain / Fernet fallback) | WORKING |
-| Diagnostics dashboard (psutil: real CPU/RAM) | WORKING |
-| MCP integration (Filesystem, Git servers) | WORKING |
-| Plugin system (load from ~/.code-os/extensions/) | WORKING |
+### Tech Stack Breakdown
 
-## Security Architecture
-
-CODE OS implements multi-layer defense-in-depth:
-- **Workspace Trust Model**: Workspace paths are categorized into Restricted Mode vs. Trusted Mode. File modifications, terminal creation, and mutating API endpoints require explicit user trust.
-- **Strict Path Sandboxing**: Client-supplied paths are verified with strict `ensure_within_workspace` checks, blocking tilde (`~`) expansion, symlink escape, and `..` path traversal.
-- **Session Bearer Token Authentication**: High-privilege API endpoints require an ephemeral 256-bit cryptographically secure session token (`Authorization: Bearer <session-token>`).
-- **Terminal Environment Sanitization**: Terminal subprocesses run with an explicit environment allowlist (`PATH`, `SSH_AGENT_PID`, `TERM`, etc.), stripping sensitive API keys and cloud credentials (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, etc.).
-- **Encrypted API Key Rest**: API keys are encrypted at rest using Fernet master keys stored securely in OS-native credential storage (macOS Keychain, Windows Credential Manager, Linux Secret Service using `keyring`), with a fallback file chmod `0600`.
-- **Sliding-Window Rate Limiting**: Mutating and AI streaming endpoints enforce rate limiting (HTTP 429) to prevent abuse and API quota exhaustion.
-- **Content Security Policy (CSP)**: `index.html` specifies restrictive CSP directives limiting network connectivity (`connect-src`), frame embedding, and script sources.
->>>>>>> 4132f1f (Security patches and ui upgrade)
+- **Desktop Shell**: Electron 33, `node-pty` 1.1
+- **Frontend UI**: React 18, TypeScript 5.7, Tailwind CSS 3, Zustand 5, Monaco Editor, xterm.js, Vite 6
+- **Backend API**: Python 3.11+, FastAPI 0.115, Uvicorn, aiosqlite, GitPython, psutil, httpx
+- **Security & Crypto**: Cryptography (Fernet), OS Keychain (`keyring`), Session Bearer Tokens
 
 ---
 
-<<<<<<< HEAD
-## 🔐 Security
+## 🛡️ Security Architecture
 
-Every untrusted workspace runs in **Restricted Mode**, blocked at the API layer — not just hidden buttons. Every shell command needs explicit approval. API keys are encrypted at rest, never logged in plaintext, and spawned processes get their environment sanitized of anything credential-shaped.
+CODE OS implements multi-layer defense-in-depth across the entire stack:
 
-A formal third-party security audit hasn't happened yet — **planned for Q3 2026 in collaboration with external auditors** as part of an upcoming hardening release, and it'll be linked here the moment it's done.
-=======
-CODE OS provides native adapters and OpenAI-compatible integration for verified AI providers:
-1. **Ollama** (100% offline local LLM hosting on 127.0.0.1 / localhost)
-2. **Anthropic** (Native Messages API `/v1/messages` with `x-api-key` & `anthropic-version`)
-3. **OpenAI-Compatible Providers** (OpenAI, Groq, DeepSeek, Mistral AI, OpenRouter, NVIDIA NIM, and self-hosted endpoints)
-
-## Known Limitations
-
-- **No OS-Level Container Sandbox**: Terminal execution relies on environment sanitization and workspace trust checks rather than hardware containerization (Docker or OS jail).
-- **No Native Code Signing**: Executables and desktop bundles are not currently signed with Apple Developer / Microsoft Authenticode certificates.
-- **No Third-Party Security Audit**: The codebase has undergone comprehensive internal automated testing and static analysis, but has not received a formal external third-party penetration audit.
-- **No Language Server Protocol (LSP)**: Code intelligence uses AST parsing and symbol indexers; native LSP daemon integration is planned for future releases.
-
-## Documentation
-
-- [SECURITY.md](./SECURITY.md) — Security policy, reporting SLA, and security controls summary.
-- [docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md) — Architectural trust boundaries, threats, and mitigations.
-- [FULL_README.md](./FULL_README.md) — Complete technical specification and API documentation.
->>>>>>> 4132f1f (Security patches and ui upgrade)
-
-Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)**
-
----
-
-## 📊 Project Status
-
-<<<<<<< HEAD
-This is real, working software — actively developed and hardened through iterative testing, not a mockup. Community feedback is shaping upcoming releases:
-
-✅ **Solid & verified:** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent system + Duo Loop (including background job persistence), workspace trust enforcement swept across every route, a real automated test suite, CI/CD running on every push via GitHub Actions.
-
-🛠️ **Coming in an upcoming update:** the plugin/extension system currently discovers extensions but can't execute them yet — full execution support is next up. A bundled standalone backend (so the installer no longer needs a separate Python install) is also in progress, and a formal third-party security audit is **planned for Q3 2026 in collaboration with external auditors**.
-
-Built iteratively, hardened by actually testing behavior — not by assuming code that compiles is code that works.
+1. **Workspace Trust Model**: Untrusted workspaces boot in **Restricted Mode**. File writes, shell executions, search-and-replace mutations, and MCP calls are blocked server-side by FastAPI middleware.
+2. **Strict Path Sandboxing**: Client-supplied paths are validated using `ensure_within_workspace`, blocking tilde expansion, symlink escape, and path traversal attacks.
+3. **Session Token Authentication**: High-privilege API routes require a cryptographically generated 256-bit bearer token (`Authorization: Bearer <session-token>`).
+4. **Environment Sanitization**: Subprocess runners execute with an explicit environment allowlist, stripping cloud credentials (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, etc.).
+5. **Encrypted Key Storage**: API keys are encrypted at rest with Fernet symmetric encryption and stored in OS-native credential storage (Windows Credential Manager, macOS Keychain, Linux Secret Service).
+6. **Rate Limiting & Memory Governors**: Sliding-window rate limiters prevent API quota exhaustion; memory monitors enforce hard process RAM limits.
 
 ---
 
 ## 📚 Documentation
 
-All project docs in one place, so you don't have to go hunting:
-
-| Doc | What's in it |
-|---|---|
-| **[ARCHITECTURE.md](./ARCHITECTURE.md)** | Full system design, data flow, and component breakdown |
-| **[SECURITY.md](./SECURITY.md)** | Threat model, Restricted Mode enforcement, disclosure process |
-| **[ROADMAP.md](./ROADMAP.md)** | What's shipped, what's in progress, what's next |
-| **[CONTRIBUTING.md](./CONTRIBUTING.md)** | How to set up, branch, and submit PRs |
+- [**CHANGELOG.md**](./CHANGELOG.md) — Release notes and detailed feature history.
+- [**SECURITY.md**](./SECURITY.md) — Security policies, vulnerability disclosure, and threat mitigations.
+- [**ARCHITECTURE.md**](./ARCHITECTURE.md) — Deep architectural specification and module breakdown.
+- [**CONTRIBUTING.md**](./CONTRIBUTING.md) — Contribution guidelines and development workflows.
+- [**.env.example**](./.env.example) — Full environment variable reference.
 
 ---
-
-## 🤝 Contributing
-
-Bug reports, feature ideas, and pull requests are genuinely welcome — particularly around **plugin execution, new AI provider integrations, security hardening, UI themes, and testing improvements**, but any contribution counts. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** to get set up. PRs need to pass CI (typecheck, build, backend test suite) before merge.
 
 ## 📄 License
 
-This project is licensed under the MIT License — see [LICENSE](./LICENSE).
+Distributed under the **MIT License**. See [LICENSE](./LICENSE) for more information.
 
 ---
 
-🔗 **Links**
-LinkedIn: [Roopesh Ram Varma Kosuri](https://www.linkedin.com/in/roopesh-ram-varma-kosuri-28186a37b/)
-X (Twitter): [@KosuriRoopesh](https://x.com/KosuriRoopesh)
-=======
-**Frontend**: React 18, TypeScript, Tailwind CSS 3, Zustand 5, Monaco Editor, xterm.js, Vite 6  
-**Backend**: Python 3.11+, FastAPI 0.115, aiosqlite, GitPython, psutil, cryptography, keyring, watchdog, httpx  
-**Desktop**: Electron 33, node-pty 1.1
->>>>>>> 4132f1f (Security patches and ui upgrade)
+<div align="center">
+  <sub>Developed by <b>Roopesh Kosuri</b>. Contributions and feedback are welcome!</sub>
+</div>

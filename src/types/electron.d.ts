@@ -26,7 +26,15 @@ export type CodeOSDesktopApi = {
    */
   getSessionToken: () => Promise<string | null>;
   getBackendStatus?: () => Promise<{ running: boolean; error: string | null; token: string | null }>;
+  visionCapture?: (req: { mode?: "preview" | "app_window"; target?: string; workspace?: string; width?: number; height?: number }) => Promise<{ success: boolean; image_base64?: string; format?: string; error?: string }>;
+  windowControls?: {
+    minimize: () => Promise<void>;
+    maximize: () => Promise<void>;
+    close: () => Promise<void>;
+    isMaximized: () => Promise<boolean>;
+  };
 };
+
 
 declare global {
   interface Window {

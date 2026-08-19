@@ -33,6 +33,7 @@ export interface AgentStatus {
     | "secret_scan"
     | "regression_guard"
     | "tool_skipped"
+    | "tool_error"
     | "replan"
     | "partial_report"
     | "audit"
@@ -41,6 +42,7 @@ export interface AgentStatus {
   tool?: string;
   detail?: string;
   command?: string;
+  reason?: string;
   step?: number;
   total?: number;
   tier?: number;
@@ -87,6 +89,7 @@ export interface CommandExecution {
   output: string;
   exit_code: number;
   success: boolean;
+  reason?: string;
 }
 
 export interface AttachedImage {
@@ -101,6 +104,27 @@ export interface CheckpointInfo {
   commit_hash: string;
   touched_files: string[];
   undone?: boolean;
+}
+
+export interface TokenUsageStatus {
+  provider: string;
+  date: string;
+  used_tokens: number;
+  daily_limit: number;
+  remaining_tokens: number;
+  percent_used: number;
+}
+
+export interface ProviderHealthStatus {
+  provider: string;
+  status: "healthy" | "degraded" | "circuit_open";
+  status_label: string;
+  total_requests_last_hour: number;
+  failures_last_hour: number;
+  failure_rate: number;
+  consecutive_failures: number;
+  circuit_open: boolean;
+  cooldown_remaining_seconds: number;
 }
 
 export interface InterruptedState {
@@ -182,6 +206,12 @@ type AIState = {
   currentThreadId: string | null;
   threads: ChatThread[];
 
+  // Token usage & provider health tracking
+  tokenUsage: Record<string, TokenUsageStatus> | null;
+  providerHealth: Record<string, ProviderHealthStatus> | null;
+  fetchTokenUsage: () => Promise<void>;
+  fetchProviderHealth: () => Promise<void>;
+
   setPreset: (presetId: string, baseUrlOverride?: string, modelOverride?: string) => void;
   setModel: (model: string) => void;
   setVisionModel: (visionModel: string) => void;
@@ -236,6 +266,10 @@ export const useAIStore = create<AIState>((set, get) => ({
   models: [],
   streaming: false,
   error: null,
+
+  // Token usage & Provider health
+  tokenUsage: null,
+  providerHealth: null,
 
   // Agent mode defaults (OFF by default)
   agentMode: false,
@@ -552,6 +586,24 @@ export const useAIStore = create<AIState>((set, get) => ({
     }
   },
 
+  fetchTokenUsage: async () => {
+    try {
+      const data = await api.get<Record<string, TokenUsageStatus>>("/api/ai/token-usage");
+      set({ tokenUsage: data });
+    } catch {
+      // Ignore
+    }
+  },
+
+  fetchProviderHealth: async () => {
+    try {
+      const data = await api.get<Record<string, ProviderHealthStatus>>("/api/ai/provider-health");
+      set({ providerHealth: data });
+    } catch {
+      // Ignore
+    }
+  },
+
   stopGeneration: () => {
     activeController?.abort();
     activeController = null;
@@ -823,6 +875,7 @@ export const useAIStore = create<AIState>((set, get) => ({
               output: data.output || "",
               exit_code: typeof data.exit_code === "number" ? data.exit_code : (data.success ? 0 : 1),
               success: data.success ?? true,
+              reason: data.reason || "",
             };
             set((state) => {
               const messages = [...state.messages];
@@ -832,6 +885,7 @@ export const useAIStore = create<AIState>((set, get) => ({
                 detail: cmdResult.command,
                 timestamp: new Date().toISOString(),
                 success: cmdResult.success,
+                reason: cmdResult.reason,
               };
               const updatedHistory = [...state.agentToolHistory, toolEntry];
               if (last && last.role === "assistant") {
@@ -902,18 +956,22 @@ export const useAIStore = create<AIState>((set, get) => ({
               return { error: errMsg, messages, pendingApproval: null, pendingApprovals: [], pendingUserResponse: null };
             });
           } else if (eventType === "done") {
+            const isSuccess = data.success !== false;
+            const doneMsg = data.message || (isSuccess ? "Task completed" : "Task stopped");
             set((state) => {
               const messages = [...state.messages];
               const last = messages[messages.length - 1];
               if (last && last.role === "assistant") {
+                const finalContent = last.content || (isSuccess ? "" : `⚠️ **AI Provider Error:**\n\n${doneMsg}\n\n*Tip: Switch providers or update your API key in Settings.*`);
                 messages[messages.length - 1] = {
                   ...last,
-                  agentStatus: { type: "done", message: data.message || "Task completed" },
+                  content: finalContent,
+                  agentStatus: { type: isSuccess ? "done" : "error", message: doneMsg },
                   agentToolHistory: state.agentToolHistory,
                 };
               }
               return {
-                agentStatus: { type: "done", message: data.message || "Task completed" },
+                agentStatus: { type: isSuccess ? "done" : "error", message: doneMsg },
                 pendingApproval: null,
                 pendingApprovals: [],
                 pendingUserResponse: null,

@@ -36,7 +36,7 @@ def create_session(cwd: str, shell: str | None = None) -> TerminalSession:
         id=str(uuid.uuid4()),
         name="Terminal",
         cwd=str(cwd_path),
-        shell=shell or ("powershell" if os.name == "nt" else "bash"),
+        shell=shell or ("powershell" if os.name == "nt" else "bash"),  # nosec B604
         processes=[],
     )
     sessions[session.id] = session
@@ -79,13 +79,6 @@ _ALLOWED_ENV_VARS: frozenset[str] = frozenset({
     "COLORTERM",
     "COLUMNS",
     "LINES",
-
-    # SSH agent forwarding (the socket path is not a secret)
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-
-    # GPG agent
-    "GPG_AGENT_INFO",
 
     # Python runtime
     "PYTHONPATH",
@@ -131,6 +124,10 @@ _ALLOWED_ENV_VARS: frozenset[str] = frozenset({
     "COMMONPROGRAMFILES(X86)",
     "COMPUTERNAME",
 
+    # SSH agent IPC (operational sockets / process IDs, not keys)
+    "SSH_AGENT_PID",
+    "SSH_AUTH_SOCK",
+
     # Display / Wayland / X11
     "DISPLAY",
     "WAYLAND_DISPLAY",
@@ -139,31 +136,48 @@ _ALLOWED_ENV_VARS: frozenset[str] = frozenset({
 })
 
 
+def _sanitize_env(env_dict: dict[str, str] | None = None) -> dict[str, str]:
+    """
+    Filter an environment dict to keep only safe, allowlisted variables.
+    If env_dict is None, reads from os.environ.
+    SSH_AGENT_PID and SSH_AUTH_SOCK are allowed (they are IPC references, not secrets).
+    """
+    source = env_dict if env_dict is not None else dict(os.environ)
+    safe: dict[str, str] = {}
+    _SSH_SAFE = {"SSH_AGENT_PID", "SSH_AUTH_SOCK"}
+    for key, value in source.items():
+        k_upper = key.upper()
+        if k_upper in _SSH_SAFE:
+            safe[key] = value
+            continue
+        # Block actual secrets — but keep SSH_AGENT_PID / SSH_AUTH_SOCK above
+        if any(bad in k_upper for bad in ("KEY", "SECRET", "TOKEN", "PASS", "AUTH", "CREDENTIAL", "GIT_CONFIG")):
+            continue
+        if k_upper in _ALLOWED_ENV_VARS:
+            safe[key] = value
+
+    # Ensure current Python interpreter and Scripts directory are in PATH if PATH is present
+    if "PATH" in safe:
+        try:
+            py_dir = str(Path(sys.executable).parent)
+            scripts_dir = str(Path(sys.executable).parent / "Scripts")
+            current_path = safe.get("PATH", "")
+            if py_dir not in current_path:
+                safe["PATH"] = f"{py_dir};{scripts_dir};{current_path}" if os.name == "nt" else f"{py_dir}:{scripts_dir}:{current_path}"
+        except Exception:
+            pass
+
+    # Always inject a sane TERM value if not explicitly given
+    safe.setdefault("TERM", "xterm-256color")
+    return safe
+
+
 def _build_safe_environment() -> dict[str, str]:
     """
     Return a copy of the environment containing ONLY the variables in
-    _ALLOWED_ENV_VARS.  This prevents secrets (API keys, cloud credentials,
-    tokens, passwords) from leaking into terminal subprocesses — including
-    commands executed automatically by the AI agent.
+    _ALLOWED_ENV_VARS. This prevents secrets from leaking into subprocesses.
     """
-    safe: dict[str, str] = {}
-    for key, value in os.environ.items():
-        if key.upper() in _ALLOWED_ENV_VARS:
-            safe[key.upper()] = value
-    
-    # Ensure current Python interpreter and Scripts directory are in PATH
-    try:
-        py_dir = str(Path(sys.executable).parent)
-        scripts_dir = str(Path(sys.executable).parent / "Scripts")
-        current_path = safe.get("PATH", "")
-        if py_dir not in current_path:
-            safe["PATH"] = f"{py_dir};{scripts_dir};{current_path}" if os.name == "nt" else f"{py_dir}:{scripts_dir}:{current_path}"
-    except Exception:
-        pass
-
-    # Always inject a sane TERM value so TUI programs behave correctly.
-    safe.setdefault("TERM", "xterm-256color")
-    return safe
+    return _sanitize_env(dict(os.environ))
 
 
 def _is_cd_command(command: str) -> bool:
@@ -171,13 +185,10 @@ def _is_cd_command(command: str) -> bool:
     return cmd_lower == "cd" or cmd_lower.startswith("cd ") or cmd_lower.startswith("cd\t")
 
 
-def _sanitize_env(env_dict: dict[str, str] | None = None) -> dict[str, str]:
-    return _build_safe_environment()
-
-
 # Keep the old name as an alias so call-sites don't need updating yet.
 def _sanitize_environment() -> dict[str, str]:
     return _build_safe_environment()
+
 
 
 async def run_command(session_id: str, command: str, background: bool) -> tuple[str, int | None, bool]:

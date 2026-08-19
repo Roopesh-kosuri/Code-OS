@@ -288,14 +288,14 @@ async def provider_for(request: ChatRequest):
                 "openai": "gpt-4o",
                 "anthropic": "claude-3-5-sonnet-latest",
                 "gemini": "gemini-2.5-flash",
-                "groq": "openai/gpt-oss-20b",
+                "groq": "openai/gpt-oss-120b",
                 "deepseek": "deepseek-chat",
                 "mistral": "mistral-large-latest",
                 "openrouter": "openai/gpt-4o",
-                "nvidia-nim": "meta/llama-3.3-70b-instruct",
+                "nvidia-nim": "meta/llama-3.1-70b-instruct",
             }
             if not request.model:
-                request.model = settings.get(f"{api_key_id}.model") or _DEFAULT_MODELS.get(api_key_id, "openai/gpt-oss-20b" if api_key_id == "groq" else "gpt-4o")
+                request.model = settings.get(f"{api_key_id}.model") or _DEFAULT_MODELS.get(api_key_id, "openai/gpt-oss-120b" if api_key_id == "groq" else "gpt-4o")
             else:
                 request.model = settings.get(f"{api_key_id}.model") or request.model
         else:
@@ -308,11 +308,11 @@ async def provider_for(request: ChatRequest):
         "openai": "gpt-4o",
         "anthropic": "claude-3-5-sonnet-latest",
         "gemini": "gemini-2.5-flash",
-        "groq": "openai/gpt-oss-20b",
+        "groq": "openai/gpt-oss-120b",
         "deepseek": "deepseek-chat",
         "mistral": "mistral-large-latest",
         "openrouter": "openai/gpt-4o",
-        "nvidia-nim": "meta/llama-3.3-70b-instruct",
+        "nvidia-nim": "meta/llama-3.1-70b-instruct",
         "ollama": "llama3",
     }
 
@@ -348,8 +348,11 @@ async def provider_for(request: ChatRequest):
 
         if not request.model or request.model in ("auto", "default"):
             request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "openai/gpt-oss-20b" if key_id == "groq" else "gpt-4o")
+        elif key_id == "groq" and request.model in ("llama3", "llama-3", "llama-3-70b", "llama3-70b-8192", "llama3-8b-8192"):
+            request.model = "llama-3.3-70b-versatile"
         timeout, retries = _provider_resilience(settings, key_id)
-        return OpenAICompatibleProvider(base_url, await get_api_key(key_id), timeout, retries)
+        return OpenAICompatibleProvider(base_url, await get_api_key(key_id), timeout, retries, provider_id=key_id)
+
 
     if request.provider == "anthropic":
         from .providers.anthropic import AnthropicProvider

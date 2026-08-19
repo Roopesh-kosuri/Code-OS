@@ -1,4 +1,5 @@
-import { FolderOpen, RotateCw, Settings, ShieldCheck, ShieldAlert, RefreshCw } from "lucide-react";
+import { useState, useEffect } from "react";
+import { FolderOpen, RotateCw, Settings, ShieldCheck, ShieldAlert, RefreshCw, Minus, Square, X, Copy } from "lucide-react";
 import { useEditorStore } from "../../stores/editorStore";
 import { useIndexStore } from "../../stores/indexStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -17,6 +18,29 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
   const runIndex = useIndexStore((state) => state.run);
   const restrictedMode = useWorkspaceStore((state) => state.restrictedMode);
   const setWorkspaceTrust = useWorkspaceStore((state) => state.setWorkspaceTrust);
+  const [isMaximized, setIsMaximized] = useState(false);
+
+  useEffect(() => {
+    if (window.codeOS?.windowControls) {
+      window.codeOS.windowControls.isMaximized().then(setIsMaximized).catch(() => {});
+    }
+  }, []);
+
+  const handleMinimize = () => {
+    window.codeOS?.windowControls?.minimize();
+  };
+
+  const handleMaximize = async () => {
+    if (window.codeOS?.windowControls) {
+      await window.codeOS.windowControls.maximize();
+      const max = await window.codeOS.windowControls.isMaximized();
+      setIsMaximized(max);
+    }
+  };
+
+  const handleClose = () => {
+    window.codeOS?.windowControls?.close();
+  };
 
   const indexLabel = indexStatus
     ? indexStatus.status === "ready"
@@ -35,9 +59,12 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
   ];
 
   return (
-    <header className="bg-background flex justify-between items-center w-full px-6 py-2.5 border-b border-surface-container-low flex-shrink-0 z-50 select-none text-on-surface">
+    <header
+      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      className="bg-background flex justify-between items-center w-full px-6 py-2.5 border-b border-surface-container-low flex-shrink-0 z-50 select-none text-on-surface"
+    >
       {/* Left: Brand Logo & Status Cluster */}
-      <div className="flex items-center gap-6">
+      <div className="flex items-center gap-6" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         <div 
           onClick={() => onViewChange("main")}
           className="flex items-center gap-2 cursor-pointer group"
@@ -62,11 +89,11 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
                     await setWorkspaceTrust(currentWorkspace.path, true);
                   }
                 }}
-                className="bg-error-container/20 text-error border border-error-container/40 rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 hover:bg-error-container/30 transition-colors"
+                className="bg-error/15 text-error border border-error/30 rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 hover:bg-error/25 transition-all shadow-xs cursor-pointer"
                 title="Workspace in Restricted Mode (Click to Trust workspace)"
               >
-                <span className="material-symbols-outlined text-[14px]">gjt</span>
-                <span>Restricted</span>
+                <ShieldAlert size={13} className="text-error shrink-0" />
+                <span className="font-semibold text-xs">Restricted</span>
               </button>
             ) : (
               <button
@@ -75,13 +102,11 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
                     await setWorkspaceTrust(currentWorkspace.path, false);
                   }
                 }}
-                className="bg-secondary-container/20 text-secondary border border-secondary-container rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 hover:bg-secondary-container/30 transition-colors"
+                className="bg-secondary-container/20 text-secondary border border-secondary-container rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 hover:bg-secondary-container/30 transition-all shadow-xs cursor-pointer"
                 title="Workspace is Trusted (Click to switch to Restricted Mode)"
               >
-                <span className="material-symbols-outlined text-[14px]" style={{ fontVariationSettings: "'FILL' 1" }}>
-                  verified_user
-                </span>
-                <span>Trusted</span>
+                <ShieldCheck size={13} className="text-secondary shrink-0" />
+                <span className="font-semibold text-xs">Trusted</span>
               </button>
             )
           )}
@@ -93,7 +118,7 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
       </div>
 
       {/* Center: Navigation Links */}
-      <nav className="flex items-center space-x-6">
+      <nav className="flex items-center space-x-6" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         {navItems.map(({ id, label }) => {
           const isActive = id === "settings" ? false : activeView === id;
           return (
@@ -118,12 +143,12 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
         })}
       </nav>
 
-      {/* Right: Actions */}
-      <div className="flex items-center gap-3 text-on-surface-variant">
+      {/* Right: Actions & Window Controls */}
+      <div className="flex items-center gap-3 text-on-surface-variant" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
         {currentWorkspace ? (
           <button
             onClick={() => void openWorkspace()}
-            className="flex items-center gap-2 bg-surface-container-low hover:bg-surface-container-high px-3 py-1 rounded-full border border-white/5 text-xs font-mono text-on-surface transition-all max-w-[180px] truncate"
+            className="flex items-center gap-2 bg-surface-container-low hover:bg-surface-container-high px-3 py-1 rounded-full border border-white/5 text-xs font-mono text-on-surface transition-all max-w-[180px] truncate cursor-pointer"
             title={`Workspace: ${currentWorkspace.path} (Click to switch)`}
           >
             <FolderOpen size={13} className="text-primary shrink-0" />
@@ -133,7 +158,7 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
           <button
             onClick={() => void openWorkspace()}
             disabled={loading}
-            className="flex items-center gap-2 bg-primary-container/10 hover:bg-primary-container/20 text-primary-container border border-primary-container/30 px-3 py-1 rounded-full text-xs font-bold transition-all shadow-[0_0_10px_rgba(0,218,243,0.15)]"
+            className="flex items-center gap-2 bg-primary-container/10 hover:bg-primary-container/20 text-primary-container border border-primary-container/30 px-3 py-1 rounded-full text-xs font-bold transition-all shadow-[0_0_10px_rgba(0,218,243,0.15)] cursor-pointer"
           >
             <FolderOpen size={13} />
             <span>Open Folder</span>
@@ -142,7 +167,7 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
 
         <button
           onClick={() => void runIndex()}
-          className="hover:text-primary transition-colors p-1.5 rounded-full hover:bg-surface-variant/40"
+          className="hover:text-primary transition-colors p-1.5 rounded-full hover:bg-surface-variant/40 cursor-pointer"
           title="Re-index workspace"
         >
           <span className="material-symbols-outlined text-[18px]">refresh</span>
@@ -150,7 +175,7 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
 
         <button
           onClick={onOpenSettings}
-          className="hover:text-primary transition-colors p-1.5 rounded-full hover:bg-surface-variant/40"
+          className="hover:text-primary transition-colors p-1.5 rounded-full hover:bg-surface-variant/40 cursor-pointer"
           title="Settings"
         >
           <span className="material-symbols-outlined text-[18px]">settings</span>
@@ -165,7 +190,38 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
             account_circle
           </span>
         </div>
+
+        {/* Custom Window Controls (Frameless Chrome) */}
+        {window.codeOS && (
+          <div className="flex items-center gap-1 ml-2 pl-2 border-l border-surface-container-high">
+            <button
+              onClick={handleMinimize}
+              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-surface-variant text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer"
+              title="Minimize"
+              aria-label="Minimize"
+            >
+              <Minus size={13} />
+            </button>
+            <button
+              onClick={handleMaximize}
+              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-surface-variant text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer"
+              title={isMaximized ? "Restore" : "Maximize"}
+              aria-label={isMaximized ? "Restore" : "Maximize"}
+            >
+              {isMaximized ? <Copy size={11} className="rotate-180" /> : <Square size={11} />}
+            </button>
+            <button
+              onClick={handleClose}
+              className="w-7 h-7 flex items-center justify-center rounded-md hover:bg-error hover:text-white text-on-surface-variant transition-colors cursor-pointer"
+              title="Close"
+              aria-label="Close"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );
 }
+

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { api } from "../lib/api";
+import { useBackendStore } from "./backendStore";
 import type { FileNode, WorkspaceDto } from "../types/api";
 
 type WorkspaceState = {
@@ -48,9 +49,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
   restoreLastWorkspace: async () => {
     try {
-      console.info("[workspace.restore] requesting last workspace");
+      if (import.meta.env.DEV) console.info("[workspace.restore] requesting last workspace");
       const last = await api.get<WorkspaceDto | null>("/api/workspaces/last");
-      console.info("[workspace.restore] backend returned", last);
+      if (import.meta.env.DEV) console.info("[workspace.restore] backend returned", last);
       
       const storedPaths = JSON.parse(localStorage.getItem("code-os:active-workspaces") ?? "[]") as string[];
       const activeList: WorkspaceDto[] = [];
@@ -176,6 +177,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
   refreshTree: async () => {
     const actives = get().activeWorkspaces;
+    if (useBackendStore.getState().status !== "connected") {
+      return;
+    }
     if (actives.length === 0) {
       set({ fileTree: null, fileTrees: {}, error: null });
       return;
@@ -185,7 +189,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       await Promise.all(
         actives.map(async (ws) => {
           try {
-            console.info("[workspace.tree] loading", ws.path);
+            if (import.meta.env.DEV) console.info("[workspace.tree] loading", ws.path);
             const response = await api.get<{ root: FileNode }>("/api/files/tree", { workspace: ws.path, max_depth: 8 });
             nextTrees[ws.path] = response.root;
           } catch (error) {
@@ -211,7 +215,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return normPath === wNorm || normPath.startsWith(wNorm + "/");
     });
     if (found && get().currentWorkspace?.path !== found.path) {
-      console.info("[workspace.select] switching currentWorkspace to", found.path);
+      if (import.meta.env.DEV) console.info("[workspace.select] switching currentWorkspace to", found.path);
       const isTrusted = get().trustedWorkspaces[found.path] ?? true;
       set({ 
         currentWorkspace: found,

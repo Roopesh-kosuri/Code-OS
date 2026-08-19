@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -162,15 +163,61 @@ async def _compile_file(
         return True, [str(out_bin)], ""
 
     if lang_spec.id == "java":
-        # Java 11+ supports direct `java File.java` without explicit compilation
         javac = _find_executable(["javac"])
+        if not javac:
+            return False, [], "Java compiler (javac) not found. Install JDK 11+ (or JDK 17+) or set JAVA_HOME."
+
         java = _find_executable(["java"])
         if not java:
-            return False, [], "Java runtime not found. Please install JDK 17+."
-        
-        # Test if direct execution works or compile with javac
-        cmd = [java, str(file_path)]
-        return True, cmd, ""
+            return False, [], "Java runtime (java) not found. Please install JDK 17+ or set JAVA_HOME."
+
+        # Parse package name if declared in the Java source file
+        package_name = ""
+        try:
+            content = file_path.read_text(encoding="utf-8", errors="replace")
+            pkg_match = re.search(r"^\s*package\s+([a-zA-Z0-9_.]+)\s*;", content, re.MULTILINE)
+            if pkg_match:
+                package_name = pkg_match.group(1).strip()
+        except Exception:
+            pass
+
+        class_name = file_path.stem
+        full_class_name = f"{package_name}.{class_name}" if package_name else class_name
+
+        # Detect source root (e.g. if inside src/main/java or src or workspace)
+        src_root = workspace
+        if (workspace / "src" / "main" / "java").is_dir():
+            src_root = workspace / "src" / "main" / "java"
+        elif (workspace / "src").is_dir():
+            src_root = workspace / "src"
+
+        # Build classpath for compilation: temp_dir + src_root + workspace
+        cp_dirs = [str(temp_dir), str(src_root), str(workspace)]
+        cp_arg = os.pathsep.join(cp_dirs)
+
+        compile_cmd = [
+            javac,
+            "-d", str(temp_dir),
+            "-encoding", "UTF-8",
+            "-cp", cp_arg,
+            str(file_path),
+        ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *compile_cmd,
+            cwd=str(workspace),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            err = (stderr or stdout).decode("utf-8", errors="replace")
+            return False, [], err
+
+        # Execution command after compilation: java -cp <temp_dir>;<src_root>;<workspace> <full_class_name>
+        run_cmd = [java, "-cp", cp_arg, full_class_name]
+        return True, run_cmd, ""
 
     return False, [], f"Compilation not supported for language '{lang_spec.id}'"
 
@@ -205,14 +252,15 @@ async def run_file_stream(
             full_path = ensure_within_workspace(str(norm_ws), file_path)
 
         if not full_path.is_file():
-            yield sse("error", {"error": f"File '{file_path}' does not exist."})
+            yield sse("error", {"error": f"File '{file_path}' does not exist.", "failure_reason": "not_found"})
             return
 
         # 2. Language Detection
         lang_spec = detect_language(full_path)
         if not lang_spec:
             yield sse("error", {
-                "error": f"Unsupported file type '{full_path.suffix}'. CODE OS supports Python, JavaScript, TypeScript, C/C++, Java, Go, Rust, and Shell."
+                "error": f"Unsupported file type '{full_path.suffix}'. CODE OS supports Python, JavaScript, TypeScript, C/C++, Java, Go, Rust, and Shell.",
+                "failure_reason": "not_found",
             })
             return
 
@@ -222,7 +270,12 @@ async def run_file_stream(
             err_msg = status.error_message or f"{lang_spec.name} toolchain is not installed."
             if status.install_hint:
                 err_msg += f"\n\n[Installation Guide]:\n{status.install_hint}"
-            yield sse("error", {"error": err_msg, "toolchain": lang_spec.id, "install_hint": status.install_hint})
+            yield sse("error", {
+                "error": err_msg,
+                "failure_reason": "not_found",
+                "toolchain": lang_spec.id,
+                "install_hint": status.install_hint,
+            })
             return
 
         env = _build_safe_environment()
@@ -243,7 +296,13 @@ async def run_file_stream(
             )
             if not comp_ok:
                 yield sse("stderr", {"text": comp_err or "Compilation failed."})
-                yield sse("exit", {"exit_code": 1, "duration_ms": (time.time() - start_time) * 1000.0, "run_id": run_id})
+                yield sse("exit", {
+                    "exit_code": 1,
+                    "duration_ms": (time.time() - start_time) * 1000.0,
+                    "run_id": run_id,
+                    "failure_reason": "exit_code",
+                    "error": comp_err or "Compilation failed.",
+                })
                 return
             exec_cmd = comp_args
         else:
@@ -340,11 +399,13 @@ async def run_file_stream(
                     break
 
                 if gov_task.done():
-                    hit, msg = gov_task.result()
-                    if hit:
-                        gov_exceeded = True
-                        gov_message = msg
-                        break
+                    res = gov_task.result()
+                    if isinstance(res, (tuple, list)) and len(res) == 2:
+                        hit, msg = res
+                        if hit:
+                            gov_exceeded = True
+                            gov_message = msg
+                            break
 
                 try:
                     event_name, text = await asyncio.wait_for(queue.get(), timeout=0.1)
@@ -367,12 +428,14 @@ async def run_file_stream(
 
         if gov_exceeded:
             yield sse("stderr", {"text": f"\n[RESOURCE ERROR]: {gov_message}\n", "run_id": run_id})
-            yield sse("exit", {"exit_code": 137, "duration_ms": dur_ms, "run_id": run_id})
+            yield sse("exit", {"exit_code": 137, "duration_ms": dur_ms, "run_id": run_id, "failure_reason": "governor_kill"})
         elif timeout_exceeded:
             yield sse("stderr", {"text": f"\n[TIMEOUT ERROR]: Process timed out after {int(MAX_RUN_TIMEOUT_SECONDS)}s ceiling.\n", "run_id": run_id})
-            yield sse("exit", {"exit_code": 124, "duration_ms": dur_ms, "run_id": run_id})
+            yield sse("exit", {"exit_code": 124, "duration_ms": dur_ms, "run_id": run_id, "failure_reason": "execution_timeout"})
         else:
-            yield sse("exit", {"exit_code": proc.returncode, "duration_ms": dur_ms, "run_id": run_id})
+            exit_code = proc.returncode if proc.returncode is not None else 0
+            reason = "exit_code" if exit_code != 0 else ""
+            yield sse("exit", {"exit_code": exit_code, "duration_ms": dur_ms, "run_id": run_id, "failure_reason": reason})
 
     except Exception as exc:
         logger.exception("run_service: execution error for %s: %s", file_path, exc)

@@ -1,7 +1,7 @@
 {
   "name": "code-os",
-  "version": "0.1.0",
-  "description": "CODE OS Phase 1 - local-first AI development workspace",
+  "version": "2.4.0",
+  "description": "CODE OS v2.4.0 - Next-generation agentic AI operating system for developers",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.js",
@@ -66,7 +66,7 @@
     "appId": "com.codeos.app",
     "productName": "CODE OS",
     "directories": {
-      "output": "dist-release"
+      "output": "release"
     },
     "asarUnpack": [
       "**/node_modules/node-pty/**"
@@ -94,8 +94,10 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         "nsis",
+        "portable",
         "dir"
       ]
     },
@@ -108,7 +110,11 @@
       "runAfterFinish": true,
       "differentialPackage": false
     },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
     "mac": {
+      "icon": "build/icon.png",
       "target": [
         "dmg",
         "dir"
@@ -118,6 +124,7 @@
       "gatekeeperAssess": false
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": [
         "AppImage",
         "deb",
@@ -127,4 +134,5 @@
       "maintainer": "Roopesh Kosuri <roopesh@codeos.ai>"
     }
   }
+
 }

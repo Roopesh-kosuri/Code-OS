@@ -524,3 +524,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
     scroll-behavior: auto !important;
   }
 }
+/* Debugger decorations use Monaco's standard decoration API. */
+.code-os-breakpoint { background: radial-gradient(circle, #ef4444 0 42%, transparent 46%); }
+.code-os-debug-line { background: rgba(250, 204, 21, 0.18); }

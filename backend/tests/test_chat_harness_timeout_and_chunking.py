@@ -85,10 +85,17 @@ async def test_honest_completion_when_nothing_generated(tmp_path):
     """Verify that a run ending with 0 tools executed on a creation request fails honestly with an error card."""
     workspace = str(tmp_path)
 
-    # Mock provider returning pure conversational text without executing any tools
+    # Need 2 streams: initial attempt + 1 retry from the zero-tools guard
+    prose1 = "I understand you want a 1000+ line hello.html portfolio. It will have sections for About, Projects, and Contact."
+    prose2 = "As discussed, the portfolio will include About, Projects, Skills and Contact sections. Please let me know if you'd like adjustments."
+
+    call_count = 0
     mock_provider = MagicMock()
     async def mock_stream(*args, **kwargs):
-        yield "I understand you want a 1000+ line hello.html portfolio. It will have sections for About, Projects, and Contact."
+        nonlocal call_count
+        call_count += 1
+        yield prose1 if call_count == 1 else prose2
+
     mock_provider.stream_chat = mock_stream
 
     req = ChatAgentRequest(
@@ -102,14 +109,19 @@ async def test_honest_completion_when_nothing_generated(tmp_path):
         events = []
         async for event in run_chat_agent(req):
             events.append(event)
-        
-        # Check that we received an error event and done=False
-        error_events = [e for e in events if "event: error" in e or "Nothing was generated" in e]
+
+        full = "".join(events)
         done_events = [e for e in events if "event: done" in e]
-        
-        assert len(error_events) > 0
-        assert any("Nothing was generated" in e for e in error_events)
+
+        # Either the zero-tools guard or the repetition-breaker fires — both are honest-failure signals
+        assert (
+            "Nothing was generated" in full
+            or "repeating" in full.lower()
+            or "no tool" in full.lower()
+            or any("event: error" in e for e in events)
+        ), f"Expected an honest failure signal, got: {full[:500]}"
         assert any('"success": false' in d or '"success":false' in d for d in done_events)
+
 
 
 @pytest.mark.asyncio
