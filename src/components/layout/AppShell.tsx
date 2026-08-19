@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { AIChatPanel } from "../../features/ai/AIChatPanel";
 import { EditorWorkspace } from "../../features/editor/EditorWorkspace";
 import { FileExplorer } from "../../features/explorer/FileExplorer";
-import { GitPanel } from "../../features/git/GitPanel";
+import { GitPanel } from "../git/GitPanel";
 import { SearchPanel } from "../../features/search/SearchPanel";
 import { TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TopBar } from "./TopBar";
@@ -148,9 +148,11 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
 
     window.addEventListener("code-os:switch-utility", listener);
     window.addEventListener("code-os:menu-action", listener);
+    window.addEventListener("code-os:menu", listener);
     return () => {
       window.removeEventListener("code-os:switch-utility", listener);
       window.removeEventListener("code-os:menu-action", listener);
+      window.removeEventListener("code-os:menu", listener);
     };
   }, []);
 

@@ -294,9 +294,13 @@ export function EditorWorkspace() {
   };
 
   const handleDebug = async () => {
-    if (!activePath || !activeFile || getLanguageFromPath(activePath) !== "python") return;
+    if (!activePath || !activeFile) return;
     if (activeFile.dirty) await saveFile(activePath);
-    await debugClient.start(activePath);
+    window.dispatchEvent(new CustomEvent("code-os:menu", { detail: "view.switchUtility:debug" }));
+    window.dispatchEvent(new CustomEvent("code-os:menu", { detail: "view.openTerminal" }));
+    if (getLanguageFromPath(activePath) === "python") {
+      await debugClient.start(activePath);
+    }
   };
 
   const replaceInCurrentFile = () => {
