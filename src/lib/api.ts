@@ -83,8 +83,10 @@ async function request<T>(path: string, options: RequestOptions = {}, isRetry = 
       headers,
     });
     useBackendStore.getState().recordSuccess();
-  } catch (err) {
-    useBackendStore.getState().recordFailure(err);
+  } catch (err: any) {
+    if (err?.name !== "AbortError") {
+      useBackendStore.getState().recordFailure(err);
+    }
     throw err;
   }
 

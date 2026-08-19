@@ -104,6 +104,7 @@ async def request_id_middleware(request: Request, call_next):
         request_id_var.reset(token)
 
 
+app.add_middleware(BaseHTTPMiddleware, dispatch=require_token)
 app.add_middleware(BaseHTTPMiddleware, dispatch=request_id_middleware)
 
 app.add_middleware(
@@ -122,12 +123,12 @@ app.add_middleware(
         "http://127.0.0.1:5178",
         "http://localhost:5178",
     ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.add_middleware(BaseHTTPMiddleware, dispatch=require_token)
 
 
 @app.exception_handler(Exception)
