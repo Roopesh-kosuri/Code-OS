@@ -1899,7 +1899,9 @@ def _parse_tool_calls_extended(response: str) -> list[ToolCall]:
     return calls[:MAX_TOOL_CALLS_PER_ITERATION]
 
 
-def _has_tool_calls_extended(response: str) -> bool:
+def _has_tool_calls_extended(response: str | None) -> bool:
+    if not response or not isinstance(response, str):
+        return False
     return bool(_EXTENDED_TOOL_RE.search(response)) or bool(_CODEBLOCK_TOOL_RE.search(response))
 
 

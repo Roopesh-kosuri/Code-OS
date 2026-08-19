@@ -19,19 +19,25 @@ import {
   Send,
   Loader2,
   Eye,
+  Image as ImageIcon,
+  MessageSquare,
+  Cpu,
+  ArrowRight,
+  Code2,
+  GitBranch,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { ProviderSelector, type ProviderConfig } from "../../components/ui/ProviderSelector";
 import { getPreset } from "../../lib/providerPresets";
-import { useAIStore, type ExtendedChatMessage, type ChatThread } from "../../stores/aiStore";
+import { useAIStore, type ExtendedChatMessage, type ChatThread, type AttachedImage, type CheckpointInfo } from "../../stores/aiStore";
 import { useEditorStore } from "../../stores/editorStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { api } from "../../lib/api";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { DockedApprovalCard } from "./DockedApprovalCard";
-import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
+import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink, AlertTriangle } from "lucide-react";
 
 function parseProposals(text: string) {
   const proposals: { path: string; original: string; updated: string }[] = [];
@@ -134,10 +140,17 @@ function ProposalCard({ path, original, updated }: { path: string; original: str
 export function AIChatPanel() {
   const [prompt, setPrompt] = useState("");
   const [attachedPaths, setAttachedPaths] = useState<string[]>([]);
+  const [attachedImages, setAttachedImages] = useState<AttachedImage[]>([]);
   const [showProviderConfig, setShowProviderConfig] = useState(false);
   const [configuredKeys, setConfiguredKeys] = useState<string[]>([]);
   const [showDrawer, setShowDrawer] = useState(false);
+  const [historySearch, setHistorySearch] = useState("");
   const [isListening, setIsListening] = useState(false);
+  const [clarificationInput, setClarificationInput] = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
 
   const messages = useAIStore((s) => s.messages);
   const models = useAIStore((s) => s.models);
@@ -151,6 +164,13 @@ export function AIChatPanel() {
 
   // Agent mode state
   const agentMode = useAIStore((s) => s.agentMode);
+  const currentTier = useAIStore((s) => s.currentTier);
+  const currentTierLabel = useAIStore((s) => s.currentTierLabel);
+  const currentTokensUsed = useAIStore((s) => s.currentTokensUsed);
+  const interruptedState = useAIStore((s) => s.interruptedState);
+  const checkInterruptedState = useAIStore((s) => s.checkInterruptedState);
+  const resumeInterruptedRun = useAIStore((s) => s.resumeInterruptedRun);
+  const dismissInterruptedState = useAIStore((s) => s.dismissInterruptedState);
   const agentStatus = useAIStore((s) => s.agentStatus);
   const agentPlan = useAIStore((s) => s.agentPlan);
   const agentToolHistory = useAIStore((s) => s.agentToolHistory);
@@ -158,20 +178,60 @@ export function AIChatPanel() {
   const pendingApprovals = useAIStore((s) => s.pendingApprovals);
   const pendingUserResponse = useAIStore((s) => s.pendingUserResponse);
   const respondToUserQuestion = useAIStore((s) => s.respondToUserQuestion);
+  const clearPendingUserResponse = useAIStore((s) => s.clearPendingUserResponse);
   const toggleAgentMode = useAIStore((s) => s.toggleAgentMode);
   const setAgentMode = useAIStore((s) => s.setAgentMode);
   const approveAction = useAIStore((s) => s.approveAction);
   const rejectAction = useAIStore((s) => s.rejectAction);
+  const undoTurn = useAIStore((s) => s.undoTurn);
 
+  const [undoingHash, setUndoingHash] = useState<string | null>(null);
+  const [undoFeedback, setUndoFeedback] = useState<Record<string, string>>({});
+
+  const handleUndoTurn = async (checkpoint: CheckpointInfo) => {
+    setUndoingHash(checkpoint.commit_hash);
+    try {
+      const res = await undoTurn(checkpoint.commit_hash, checkpoint.touched_files);
+      setUndoFeedback((prev) => ({
+        ...prev,
+        [checkpoint.commit_hash]: `✓ Restored ${res.restored_files.length} file(s) to pre-turn checkpoint`,
+      }));
+    } catch (err: any) {
+      setUndoFeedback((prev) => ({
+        ...prev,
+        [checkpoint.commit_hash]: `Failed to undo: ${err?.message || err}`,
+      }));
+    } finally {
+      setUndoingHash(null);
+    }
+  };
+
+  const loadThreads = useAIStore((s) => s.loadThreads);
   const sendMessage = useAIStore((s) => s.sendMessage);
   const stopGeneration = useAIStore((s) => s.stopGeneration);
   const regenerate = useAIStore((s) => s.regenerate);
   const newThread = useAIStore((s) => s.newThread);
   const switchThread = useAIStore((s) => s.switchThread);
+  const deleteThread = useAIStore((s) => s.deleteThread);
   const setPreset = useAIStore((s) => s.setPreset);
   const setModel = useAIStore((s) => s.setModel);
 
   const workspace = useWorkspaceStore((s) => s.currentWorkspace);
+
+  useEffect(() => {
+    void loadThreads(workspace?.path);
+    void checkInterruptedState(workspace?.path);
+  }, [workspace?.path, loadThreads, checkInterruptedState]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && showDrawer) {
+        setShowDrawer(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showDrawer]);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -198,100 +258,210 @@ export function AIChatPanel() {
     }
   };
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>, imageOnly = false) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file) => {
+      if (file.type.startsWith("image/") || /\.(png|jpe?g|webp|svg|gif|bmp)$/i.test(file.name)) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataUrl = ev.target?.result as string;
+          if (dataUrl) {
+            setAttachedImages((prev) => [
+              ...prev,
+              { name: file.name, dataUrl, size: file.size, type: file.type },
+            ]);
+          }
+        };
+        reader.readAsDataURL(file);
+      } else if (!imageOnly) {
+        setAttachedPaths((prev) => Array.from(new Set([...prev, file.name])));
+      }
+    });
+
+    e.target.value = "";
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith("image/")) {
+        const file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+            const dataUrl = ev.target?.result as string;
+            if (dataUrl) {
+              setAttachedImages((prev) => [
+                ...prev,
+                { name: file.name || `Pasted Image ${prev.length + 1}.png`, dataUrl, size: file.size, type: file.type },
+              ]);
+            }
+          };
+          reader.readAsDataURL(file);
+        }
+      }
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    Array.from(files).forEach((file) => {
+      if (file.type.startsWith("image/") || /\.(png|jpe?g|webp|svg|gif|bmp)$/i.test(file.name)) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const dataUrl = ev.target?.result as string;
+          if (dataUrl) {
+            setAttachedImages((prev) => [
+              ...prev,
+              { name: file.name, dataUrl, size: file.size, type: file.type },
+            ]);
+          }
+        };
+        reader.readAsDataURL(file);
+      } else {
+        setAttachedPaths((prev) => Array.from(new Set([...prev, file.name])));
+      }
+    });
+  };
+
   return (
     <section data-testid="ai-chat-panel" className="flex flex-col h-full min-h-0 w-full min-w-0 overflow-hidden bg-surface-container-low text-on-surface font-ui-label-reg text-ui-label-reg relative select-none antialiased">
-      {/* ── Header / Model Selector (Elevated z-index for dropdown layering) ───────── */}
-      <div className="p-4 border-b border-surface-variant flex flex-col gap-3 bg-surface-container/50 shrink-0 relative z-40">
-        <div className="flex justify-between items-center">
-          <div className="flex items-center gap-2 font-ui-label-bold text-ui-label-bold text-on-surface">
-            <span className="material-symbols-outlined text-primary text-xl">smart_toy</span>
-            <span>Rony Agent</span>
+      {/* ── Header / Controls (Fluid, Non-cramped Layout) ───────── */}
+      <div className="px-3 py-2.5 border-b border-surface-variant flex flex-col gap-2 bg-surface-container/60 shrink-0 relative z-40">
+        {/* Row 1: Brand Title on Left + Utility Action Buttons on Right */}
+        <div className="flex justify-between items-center min-w-0">
+          <div className="flex items-center gap-2 font-bold text-xs text-on-surface whitespace-nowrap shrink-0">
+            <span className="material-symbols-outlined text-primary text-lg">smart_toy</span>
+            <span className="tracking-tight">Rony Agent</span>
+            {currentTierLabel && (
+              <span className="ml-1 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-white/5 border border-white/10 text-on-surface">
+                <span>{currentTier === 0 ? "⚡" : (currentTier === 1 ? "🛠️" : "🧠")}</span>
+                <span>{currentTierLabel}</span>
+                {currentTokensUsed != null && (
+                  <span className="text-on-surface-variant font-mono">({currentTokensUsed} tok)</span>
+                )}
+              </span>
+            )}
           </div>
 
-          <div className="flex items-center gap-2">
-            {/* Mode Switch: Chat vs Agent with Fluid Sliding Thumb */}
-            <div className="relative flex items-center p-0.5 rounded-lg bg-[#141519] border border-white/10 shadow-inner select-none">
-              {/* Sliding Thumb */}
-              <div
-                className="absolute top-0.5 bottom-0.5 rounded-md transition-all duration-200"
-                style={{
-                  left: agentMode ? "calc(50% + 1px)" : "2px",
-                  right: agentMode ? "2px" : "calc(50% + 1px)",
-                  backgroundColor: agentMode ? "var(--primary, #00daf3)" : "rgba(255, 255, 255, 0.12)",
-                  boxShadow: agentMode ? "0 0 12px rgba(0, 218, 243, 0.35)" : "none",
-                  transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
-                }}
-              />
-              <button
-                type="button"
-                onClick={() => setAgentMode(false)}
-                className={`relative z-10 px-3 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer flex items-center justify-center gap-1 ${
-                  !agentMode ? "text-on-surface font-bold" : "text-on-surface-variant/70 hover:text-on-surface"
-                }`}
-                title="Chat Mode: For coding doubts, questions, explanations, and quick advice"
-              >
-                <span>Chat</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setAgentMode(true)}
-                className={`relative z-10 px-3 py-1 rounded-md text-[11px] font-medium transition-colors cursor-pointer flex items-center justify-center gap-1 ${
-                  agentMode ? "text-[#001f24] font-bold" : "text-on-surface-variant/70 hover:text-on-surface"
-                }`}
-                title="Agent Mode: Rony Agent autonomously reads/edits files, runs terminal commands, runs tests, and verifies results"
-              >
-                <Sparkles size={11} className={agentMode ? "text-[#001f24]" : "text-primary"} />
-                <span>Agent</span>
-              </button>
-            </div>
-
-            <div className="flex items-center gap-1 text-on-surface-variant">
-              <button
-                onClick={() => void newThread()}
-                className="p-1 hover:text-on-surface hover:bg-surface-variant rounded transition-colors cursor-pointer"
-                title="New Chat"
-              >
-                <Plus size={16} />
-              </button>
-              <button
-                onClick={() => setShowDrawer((v) => !v)}
-                className="p-1 hover:text-on-surface hover:bg-surface-variant rounded transition-colors cursor-pointer"
-                title="Chat History"
-              >
-                <History size={16} />
-              </button>
-              <button
-                onClick={() => setShowProviderConfig((v) => !v)}
-                className="p-1 hover:text-on-surface hover:bg-surface-variant rounded transition-colors cursor-pointer"
-                title="Configure Model"
-              >
-                {showProviderConfig ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-              </button>
-            </div>
+          <div className="flex items-center gap-1 text-on-surface-variant shrink-0">
+            <button
+              onClick={() => void newThread(workspace?.path)}
+              className="p-1 hover:text-on-surface hover:bg-white/10 rounded-md transition-colors cursor-pointer"
+              title="New Chat"
+            >
+              <Plus size={15} />
+            </button>
+            <button
+              onClick={() => {
+                setShowDrawer((v) => !v);
+                setShowProviderConfig(false);
+              }}
+              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                showDrawer
+                  ? "text-primary bg-primary/15 border border-primary/30"
+                  : "hover:text-on-surface hover:bg-white/10"
+              }`}
+              title="Chat History"
+            >
+              <History size={15} />
+            </button>
+            <button
+              onClick={() => {
+                setShowProviderConfig((v) => !v);
+                setShowDrawer(false);
+              }}
+              className={`p-1 rounded-md transition-colors cursor-pointer ${
+                showProviderConfig
+                  ? "text-primary bg-primary/15 border border-primary/30"
+                  : "hover:text-on-surface hover:bg-white/10"
+              }`}
+              title="Configure AI Model"
+            >
+              {showProviderConfig ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+            </button>
           </div>
         </div>
 
-        {/* Model Selector Button */}
+        {/* Row 2: Full-Width Responsive Mode Switcher (Chat | Agent) */}
+        <div className="relative grid grid-cols-2 p-0.5 rounded-lg bg-[#0e1014] border border-white/[0.08] shadow-[inset_0_1px_3px_rgba(0,0,0,0.6)] select-none w-full h-[28px] items-center">
+          {/* Sliding Pill Thumb */}
+          <div
+            className={`absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-[6px] transition-all duration-200 ease-out pointer-events-none ${
+              agentMode
+                ? "left-[calc(50%+1px)] bg-gradient-to-b from-primary/25 to-primary/10 border border-primary/40 shadow-[0_0_10px_rgba(0,218,243,0.2)]"
+                : "left-0.5 bg-gradient-to-b from-white/[0.14] to-white/[0.06] border border-white/15 shadow-[0_2px_4px_rgba(0,0,0,0.4)]"
+            }`}
+            style={{
+              transitionTimingFunction: "cubic-bezier(0.16, 1, 0.3, 1)",
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => setAgentMode(false)}
+            className={`relative z-10 h-full rounded-[6px] text-[11px] font-medium transition-all duration-150 cursor-pointer flex items-center justify-center gap-1.5 active:scale-95 ${
+              !agentMode
+                ? "text-white font-semibold"
+                : "text-on-surface-variant/70 hover:text-white"
+            }`}
+            title="Chat Mode: Ask questions, get explanations, and debug code"
+          >
+            <MessageSquare size={11} className={!agentMode ? "text-white" : "text-on-surface-variant/60"} />
+            <span className="truncate">Chat</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setAgentMode(true)}
+            className={`relative z-10 h-full rounded-[6px] text-[11px] font-medium transition-all duration-150 cursor-pointer flex items-center justify-center gap-1.5 active:scale-95 ${
+              agentMode
+                ? "text-primary font-bold tracking-wide"
+                : "text-on-surface-variant/70 hover:text-primary/80"
+            }`}
+            title="Agent Mode: Rony Agent autonomously reads/edits files, executes tools, and verifies tests"
+          >
+            <Sparkles
+              size={11}
+              className={`transition-transform duration-200 ${
+                agentMode
+                  ? "text-primary scale-110 drop-shadow-[0_0_6px_var(--primary)]"
+                  : "text-on-surface-variant/60"
+              }`}
+            />
+            <span className="truncate">Agent</span>
+          </button>
+        </div>
+
+        {/* Row 3: Model Selector Button / Popover */}
         {!showProviderConfig ? (
           <button
-            onClick={() => setShowProviderConfig(true)}
-            className="w-full bg-[#16181f]/80 hover:bg-[#1c1e28] border border-white/10 hover:border-primary/40 rounded-xl px-3.5 py-2 flex items-center justify-between transition-all duration-200 cursor-pointer shadow-sm group"
+            onClick={() => {
+              setShowProviderConfig(true);
+              setShowDrawer(false);
+            }}
+            className="w-full bg-[#16181f]/80 hover:bg-[#1c1e28] border border-white/10 hover:border-primary/40 rounded-lg px-2.5 py-1.5 flex items-center justify-between transition-all duration-200 cursor-pointer shadow-xs group min-w-0"
           >
-            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-              <div className="w-5 h-5 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center overflow-hidden shrink-0 text-primary group-hover:scale-105 transition-transform">
-                <Sparkles size={12} />
+            <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
+              <div className="w-4 h-4 rounded-md bg-primary/20 border border-primary/30 flex items-center justify-center overflow-hidden shrink-0 text-primary group-hover:scale-105 transition-transform">
+                <Sparkles size={10} />
               </div>
-              <div className="flex items-center gap-2 truncate">
-                <span className="font-bold text-xs text-on-surface truncate">
-                  {preset ? getPreset(preset)?.label : "Auto Routing"}
+              <div className="flex items-center gap-1.5 truncate min-w-0">
+                <span className="font-bold text-[11px] text-on-surface shrink-0">
+                  {preset ? getPreset(preset)?.label : "Auto"}
                 </span>
-                <span className="text-[10px] text-on-surface-variant font-mono truncate max-w-[140px]">
+                <span className="text-[10px] text-on-surface-variant font-mono truncate">
                   {model ? model : "auto-select"}
                 </span>
               </div>
             </div>
-            <div className="w-5 h-5 rounded-md bg-white/5 flex items-center justify-center text-on-surface-variant group-hover:text-primary transition-colors">
-              <ChevronDown size={13} />
+            <div className="w-4 h-4 rounded flex items-center justify-center text-on-surface-variant group-hover:text-primary transition-colors shrink-0 ml-1">
+              <ChevronDown size={12} />
             </div>
           </button>
         ) : (
@@ -308,44 +478,266 @@ export function AIChatPanel() {
         )}
       </div>
 
-      {/* ── Thread History Drawer ──────────────────────────────────────────── */}
+      {/* ── Thread History Drawer (Full Z-[60] Overlay, No Overlap) ────────── */}
       {showDrawer && (
-        <div className="absolute inset-0 bg-[#131315]/95 z-30 flex flex-col p-4 space-y-3">
-          <div className="flex justify-between items-center border-b border-surface-variant pb-2">
-            <span className="font-ui-label-bold text-ui-label-bold text-on-surface uppercase text-xs">Conversations</span>
-            <button onClick={() => setShowDrawer(false)} className="text-on-surface-variant hover:text-on-surface">
-              <X size={16} />
-            </button>
-          </div>
-
-          <div className="flex-1 overflow-y-auto space-y-1.5">
-            {threads.map((t) => (
+        <div className="absolute inset-0 bg-[#0d0e14]/98 backdrop-blur-xl z-[60] flex flex-col p-4 space-y-3 animate-fade-in shadow-2xl">
+          {/* Drawer Header */}
+          <div className="flex justify-between items-center border-b border-white/10 pb-3">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-lg bg-primary/20 border border-primary/30 flex items-center justify-center text-primary">
+                <History size={13} />
+              </div>
+              <span className="font-bold text-xs text-on-surface uppercase tracking-wider">
+                Conversation History
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
               <button
-                key={t.id}
-                onClick={async () => {
-                  await switchThread(t.id);
+                onClick={() => {
+                  void newThread(workspace?.path);
                   setShowDrawer(false);
                 }}
-                className={`w-full text-left p-2.5 rounded-xl border text-xs transition-all cursor-pointer ${
-                  currentThreadId === t.id
-                    ? "bg-surface-container-high border-primary/40 text-primary font-bold shadow-sm"
-                    : "bg-surface-container border-transparent text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
-                }`}
+                className="px-2.5 py-1 bg-primary/10 hover:bg-primary/20 border border-primary/30 rounded-lg text-primary text-[11px] font-medium flex items-center gap-1 transition-all cursor-pointer hover:shadow-sm"
+                title="Start a new chat"
               >
-                <div className="truncate">{t.title}</div>
+                <Plus size={13} />
+                <span>New Chat</span>
               </button>
-            ))}
+              <button
+                onClick={() => setShowDrawer(false)}
+                className="p-1 rounded-lg text-on-surface-variant hover:text-on-surface hover:bg-white/10 transition-colors cursor-pointer"
+                title="Close (Esc)"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          </div>
+
+          {/* Search bar if multiple conversations */}
+          {threads.length > 3 && (
+            <div className="relative">
+              <input
+                type="text"
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                placeholder="Search conversations..."
+                className="w-full bg-[#161822] border border-white/10 rounded-xl px-3 py-1.5 text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50"
+              />
+              {historySearch && (
+                <button
+                  onClick={() => setHistorySearch("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-on-surface-variant hover:text-on-surface"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Conversations List */}
+          <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 custom-scrollbar">
+            {threads.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-48 text-center text-xs text-on-surface-variant/50 space-y-2 select-none">
+                <History size={28} className="text-white/20" />
+                <p>No past conversations yet</p>
+                <button
+                  onClick={() => {
+                    void newThread(workspace?.path);
+                    setShowDrawer(false);
+                  }}
+                  className="text-primary hover:underline text-[11px] font-medium"
+                >
+                  Start a new conversation
+                </button>
+              </div>
+            ) : (
+              threads
+                .filter((t) => !historySearch || t.title.toLowerCase().includes(historySearch.toLowerCase()))
+                .map((t) => {
+                  const isActive = currentThreadId === t.id;
+                  return (
+                    <div
+                      key={t.id}
+                      className={`group w-full flex items-center justify-between p-2.5 rounded-xl border text-xs transition-all cursor-pointer ${
+                        isActive
+                          ? "bg-primary/10 border-primary/40 text-primary font-semibold shadow-sm"
+                          : "bg-[#161822]/80 border-white/5 text-on-surface-variant hover:text-on-surface hover:bg-[#1e202e] hover:border-white/15"
+                      }`}
+                      onClick={async () => {
+                        await switchThread(t.id);
+                        setShowDrawer(false);
+                      }}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            isActive ? "bg-primary shadow-[0_0_8px_var(--primary)]" : "bg-white/20"
+                          }`}
+                        />
+                        <span className="truncate">{t.title || "Untitled Conversation"}</span>
+                      </div>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteThread(t.id);
+                          }}
+                          className="p-1 rounded-md text-on-surface-variant hover:text-error hover:bg-error/10 transition-colors"
+                          title="Delete thread"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+            )}
           </div>
         </div>
       )}
 
       {/* ── Chat Messages Stream ───────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden p-3.5 flex flex-col gap-4 select-text min-w-0 w-full max-w-full">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center my-auto p-6 text-center text-xs text-on-surface-variant/50 space-y-2 select-none">
-            <span className="material-symbols-outlined text-3xl text-outline-variant">auto_awesome</span>
-            <p>Ask Rony Agent to code, explain functions, or draft autonomous changes.</p>
+        {interruptedState && (
+          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs shadow-md">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                <RotateCcw size={13} />
+              </div>
+              <div className="min-w-0">
+                <div className="font-bold text-amber-300 truncate">Interrupted Task Available</div>
+                <div className="text-[11px] text-on-surface-variant truncate">
+                  {interruptedState.user_query || `Step ${interruptedState.iteration + 1}`} ({interruptedState.tokens_used || 0} tokens used)
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0 ml-2">
+              <button
+                type="button"
+                onClick={() => void resumeInterruptedRun(workspace?.path)}
+                className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded-lg font-semibold text-[11px] transition-all cursor-pointer"
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                onClick={() => void dismissInterruptedState(workspace?.path)}
+                className="p-1 text-on-surface-variant hover:text-white rounded transition-colors cursor-pointer"
+                title="Dismiss"
+              >
+                <X size={13} />
+              </button>
+            </div>
           </div>
+        )}
+
+        {messages.length === 0 ? (
+          !agentMode ? (
+            /* Chat Mode Empty State — Lightweight coding & questions + Mode switcher guidance */
+            <div className="flex flex-col items-center justify-center my-auto p-4 max-w-sm mx-auto text-center space-y-4 select-none animate-fade-in">
+              {/* Main Badge & Title */}
+              <div className="flex flex-col items-center space-y-2">
+                <div className="w-10 h-10 rounded-2xl bg-white/[0.06] border border-white/10 flex items-center justify-center text-on-surface shadow-inner">
+                  <MessageSquare size={18} className="text-white/90" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-bold text-xs text-white tracking-wide">
+                    Lightweight Coding & Questions
+                  </h3>
+                  <p className="text-[11px] text-on-surface-variant/80 leading-relaxed max-w-[270px]">
+                    Fast answers for syntax doubts, debugging snippets, logic reviews, and coding questions.
+                  </p>
+                </div>
+              </div>
+
+              {/* Mode Guidance & Switcher Recommendation Cards */}
+              <div className="w-full space-y-2 pt-1 text-left">
+                {/* 1. Medium - Large Coding -> Switch to Rony Agent */}
+                <button
+                  type="button"
+                  onClick={() => setAgentMode(true)}
+                  className="w-full text-left p-3 rounded-xl bg-gradient-to-r from-primary/10 via-primary/5 to-transparent border border-primary/25 hover:border-primary/50 hover:bg-primary/15 transition-all duration-200 group cursor-pointer shadow-xs"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1.5 text-primary text-xs font-bold">
+                      <Sparkles size={13} className="group-hover:scale-110 transition-transform" />
+                      <span>Medium – Large Coding</span>
+                    </div>
+                    <span className="text-[10px] font-semibold text-primary px-1.5 py-0.5 rounded bg-primary/20 flex items-center gap-0.5 group-hover:translate-x-0.5 transition-transform">
+                      Switch to Agent <ArrowRight size={10} />
+                    </span>
+                  </div>
+                  <p className="text-[10.5px] text-on-surface-variant/75 leading-normal">
+                    For autonomous multi-file edits, terminal execution, and verified testing, switch to <span className="text-primary font-medium">Rony Agent</span>.
+                  </p>
+                </button>
+
+                {/* 2. Huge Projects -> Switch to Agent Console */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent("code-os:menu-action", { detail: "view.switchTopView:agent" }));
+                  }}
+                  className="w-full text-left p-3 rounded-xl bg-[#14161f]/80 border border-white/10 hover:border-white/20 hover:bg-[#1a1d28] transition-all duration-200 group cursor-pointer shadow-xs"
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1.5 text-on-surface text-xs font-bold">
+                      <Cpu size={13} className="text-secondary group-hover:scale-110 transition-transform" />
+                      <span>Huge Projects</span>
+                    </div>
+                    <span className="text-[10px] font-semibold text-on-surface-variant px-1.5 py-0.5 rounded bg-white/5 flex items-center gap-0.5 group-hover:text-white group-hover:translate-x-0.5 transition-transform">
+                      Agent Console <ExternalLink size={10} />
+                    </span>
+                  </div>
+                  <p className="text-[10.5px] text-on-surface-variant/75 leading-normal">
+                    For full project generation, architecture DAGs, and multi-agent workflows, switch to <span className="text-white font-medium">Agent Console</span>.
+                  </p>
+                  <div className="mt-2 flex items-center gap-1.5 text-[10px] text-amber-300/90 bg-amber-500/10 rounded-md px-2 py-1 border border-amber-500/20">
+                    <AlertTriangle size={11} className="text-amber-400 shrink-0" />
+                    <span>Caution: Running small tasks in Agent workflows costs more tokens and time. Use Chat for quick edits.</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* Agent Mode Empty State — Autonomous Execution */
+            <div className="flex flex-col items-center justify-center my-auto p-4 max-w-sm mx-auto text-center space-y-4 select-none animate-fade-in">
+              <div className="flex flex-col items-center space-y-2">
+                <div className="w-10 h-10 rounded-2xl bg-primary/15 border border-primary/30 flex items-center justify-center text-primary shadow-[0_0_16px_rgba(0,218,243,0.2)]">
+                  <Sparkles size={20} className="animate-pulse" />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="font-bold text-xs text-white tracking-wide">
+                    Rony Autonomous Coding Agent
+                  </h3>
+                  <p className="text-[11px] text-on-surface-variant/80 leading-relaxed max-w-[270px]">
+                    Describe your goal. Rony Agent will inspect files, apply edits, run terminal commands, and verify test passes.
+                  </p>
+                </div>
+              </div>
+
+              {/* Quick Prompt Starters */}
+              <div className="w-full flex flex-col gap-1.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setPrompt("Create a new feature module and verify tests")}
+                  className="w-full text-left px-3 py-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/5 text-[11px] text-on-surface-variant hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <Sparkles size={11} className="text-primary shrink-0" />
+                  <span>"Create a new feature module and verify tests"</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPrompt("Find and fix any bugs or edge cases in this file")}
+                  className="w-full text-left px-3 py-2 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/5 text-[11px] text-on-surface-variant hover:text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <Code2 size={11} className="text-secondary shrink-0" />
+                  <span>"Find and fix any bugs or edge cases in this file"</span>
+                </button>
+              </div>
+            </div>
+          )
         ) : null}
 
         {error && (
@@ -361,10 +753,27 @@ export function AIChatPanel() {
 
           return isUser ? (
             /* User Message Bubble */
-            <div key={index} className="flex flex-col gap-1 items-end animate-message-in">
-              <div className="bg-surface-variant text-on-surface px-3.5 py-2 rounded-2xl rounded-tr-sm max-w-[88%] font-ui-label-reg text-ui-label-reg text-xs leading-relaxed shadow-sm break-words [overflow-wrap:anywhere] overflow-hidden">
-                {cleanText}
-              </div>
+            <div key={index} className="flex flex-col gap-1.5 items-end animate-message-in">
+              {message.attached_images && message.attached_images.length > 0 && (
+                <div className="flex flex-wrap gap-2 justify-end">
+                  {message.attached_images.map((img, iIdx) => (
+                    <div
+                      key={iIdx}
+                      className="rounded-xl overflow-hidden border border-white/15 bg-black/40 shadow-md max-w-[220px]"
+                    >
+                      <img src={img.dataUrl} alt={img.name} className="max-h-40 w-auto object-cover rounded-t-lg" />
+                      <div className="px-2 py-1 bg-surface-container-high/90 text-[10px] font-mono truncate text-on-surface-variant">
+                        {img.name}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {cleanText && (
+                <div className="bg-surface-variant text-on-surface px-3.5 py-2 rounded-2xl rounded-tr-sm max-w-[88%] font-ui-label-reg text-ui-label-reg text-xs leading-relaxed shadow-sm break-words [overflow-wrap:anywhere] overflow-hidden">
+                  {cleanText}
+                </div>
+              )}
             </div>
           ) : (
             /* AI Response Card (Stitch Elevation 2 Card) */
@@ -528,6 +937,35 @@ export function AIChatPanel() {
                 {proposals.map((p, pIdx) => (
                   <ProposalCard key={pIdx} path={p.path} original={p.original} updated={p.updated} />
                 ))}
+
+                {/* Turn Checkpoint & Undo Action */}
+                {message.checkpoint && message.checkpoint.touched_files?.length > 0 && (
+                  <div className="pt-2.5 mt-1 border-t border-white/10 flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-1.5 text-[11px] text-on-surface-variant font-mono truncate">
+                      <GitBranch size={12} className="text-primary/70 shrink-0" />
+                      <span className="truncate">
+                        Checkpoint: <code className="text-cyan-300 font-bold bg-black/40 px-1 py-0.5 rounded">{message.checkpoint.commit_hash.slice(0, 7)}</code> ({message.checkpoint.touched_files.length} modified file{message.checkpoint.touched_files.length > 1 ? "s" : ""})
+                      </span>
+                    </div>
+
+                    {message.checkpoint.undone || undoFeedback[message.checkpoint.commit_hash]?.startsWith("✓") ? (
+                      <span className="text-[10.5px] text-emerald-300 font-semibold flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                        <Check size={11} /> Turn Undone
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={undoingHash === message.checkpoint.commit_hash}
+                        onClick={() => handleUndoTurn(message.checkpoint!)}
+                        className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-500/40 text-on-surface hover:text-amber-200 text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 interactive-scale"
+                        title="Revert only the files modified during this turn back to pre-turn state"
+                      >
+                        <RotateCcw size={11} className={undoingHash === message.checkpoint.commit_hash ? "animate-spin text-amber-400" : "text-amber-400"} />
+                        <span>{undoingHash === message.checkpoint.commit_hash ? "Reverting..." : "Undo turn"}</span>
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -556,21 +994,30 @@ export function AIChatPanel() {
       {/* ── Interactive Clarification Card (ask_user) ──────────────────────── */}
       {pendingUserResponse && (
         <div className="border-t border-b px-4 py-3 shrink-0 bg-[#12141a]/95 border-primary/40 shadow-lg z-20 animate-docked-in backdrop-blur-xl">
-          <div className="flex items-center gap-2 mb-2">
-            <div className="p-1 rounded-md bg-primary/20 text-primary">
-              <Bot size={14} />
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2">
+              <div className="p-1 rounded-md bg-primary/20 text-primary">
+                <Bot size={14} />
+              </div>
+              <span className="font-bold text-xs text-primary">Clarification Requested</span>
             </div>
-            <span className="font-bold text-xs text-primary">Clarification Requested</span>
+            <button
+              type="button"
+              onClick={() => clearPendingUserResponse()}
+              className="text-on-surface-variant hover:text-on-surface p-1 rounded hover:bg-surface-variant/40 transition-colors cursor-pointer"
+              title="Dismiss clarification"
+            >
+              <X size={14} />
+            </button>
           </div>
           <p className="text-xs text-on-surface mb-2.5 leading-relaxed">{pendingUserResponse.question}</p>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-1.5 mb-2.5">
             {pendingUserResponse.options.map((opt, oIdx) => (
               <button
                 key={oIdx}
                 type="button"
                 onClick={() => {
                   void respondToUserQuestion(pendingUserResponse.action_id, opt);
-                  void sendMessage(opt, attachedPaths);
                 }}
                 className="px-3 py-1.5 rounded-full bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 text-xs font-medium cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
               >
@@ -578,63 +1025,172 @@ export function AIChatPanel() {
               </button>
             ))}
           </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (clarificationInput.trim()) {
+                void respondToUserQuestion(pendingUserResponse.action_id, clarificationInput.trim());
+                setClarificationInput("");
+              }
+            }}
+            className="flex items-center gap-1.5"
+          >
+            <input
+              type="text"
+              value={clarificationInput}
+              onChange={(e) => setClarificationInput(e.target.value)}
+              placeholder="Or type a custom answer..."
+              className="flex-1 bg-surface-container-high/60 border border-outline-variant/40 rounded-lg px-2.5 py-1 text-xs text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/60"
+            />
+            <button
+              type="submit"
+              disabled={!clarificationInput.trim()}
+              className="px-3 py-1 rounded-lg bg-primary text-on-primary font-medium text-xs disabled:opacity-40 disabled:cursor-not-allowed hover:bg-primary/90 transition-colors cursor-pointer"
+            >
+              Send
+            </button>
+          </form>
         </div>
       )}
 
       {/* ── Chat Input Container (Google Stitch Footer) ───────────────────── */}
-      <div className="p-4 border-t border-surface-variant bg-surface-container/80 backdrop-blur-md shrink-0">
+      <div className="px-3.5 pt-2 pb-2.5 border-t border-surface-variant bg-surface-container/80 backdrop-blur-md shrink-0 transition-all duration-200">
+        {/* Hidden File Inputs */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          onChange={(e) => handleFileSelect(e, false)}
+          className="hidden"
+        />
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*,.png,.jpg,.jpeg,.webp,.svg,.gif"
+          multiple
+          onChange={(e) => handleFileSelect(e, true)}
+          className="hidden"
+        />
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!prompt.trim() || streaming) return;
+            if ((!prompt.trim() && attachedImages.length === 0) || streaming) return;
             const text = prompt;
+            const currentImages = [...attachedImages];
+            const currentPaths = [...attachedPaths];
             setPrompt("");
-            void sendMessage(text, attachedPaths);
+            setAttachedImages([]);
             setAttachedPaths([]);
+            void sendMessage(text, currentPaths, currentImages);
           }}
-          className="bg-[#1e1f24] rounded-xl p-1 border border-transparent focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all duration-200 shadow-lg"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={handleDrop}
+          className="bg-[#1e1f24] rounded-xl overflow-hidden border border-transparent focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all duration-200 shadow-md"
         >
+          {/* Attachment Preview Chips */}
+          {(attachedImages.length > 0 || attachedPaths.length > 0) && (
+            <div className="flex flex-wrap gap-1.5 p-1.5 border-b border-white/5 bg-[#14151a]/90 max-h-24 overflow-y-auto">
+              {attachedImages.map((img, idx) => (
+                <div
+                  key={`img-${idx}`}
+                  className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-primary/10 border border-primary/25 text-xs text-on-surface shadow-xs animate-fade-in group"
+                >
+                  <img
+                    src={img.dataUrl}
+                    alt={img.name}
+                    className="w-4 h-4 rounded object-cover shrink-0 border border-white/10"
+                  />
+                  <span className="truncate max-w-[110px] font-mono text-[10px]">{img.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachedImages((prev) => prev.filter((_, i) => i !== idx))}
+                    className="text-on-surface-variant hover:text-error transition-colors p-0.5 cursor-pointer"
+                    title="Remove image"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+              {attachedPaths.map((p, idx) => (
+                <div
+                  key={`path-${idx}`}
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-lg bg-surface-variant/80 border border-white/10 text-xs text-on-surface shadow-xs animate-fade-in"
+                >
+                  <Paperclip size={10} className="text-secondary shrink-0" />
+                  <span className="truncate max-w-[120px] font-mono text-[10px]">{p}</span>
+                  <button
+                    type="button"
+                    onClick={() => setAttachedPaths((prev) => prev.filter((_, i) => i !== idx))}
+                    className="text-on-surface-variant hover:text-error transition-colors p-0.5 cursor-pointer"
+                    title="Remove attachment"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
+            onPaste={handlePaste}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                if (prompt.trim() && !streaming) {
+                if ((prompt.trim() || attachedImages.length > 0) && !streaming) {
                   const text = prompt;
+                  const currentImages = [...attachedImages];
+                  const currentPaths = [...attachedPaths];
                   setPrompt("");
-                  void sendMessage(text, attachedPaths);
+                  setAttachedImages([]);
                   setAttachedPaths([]);
+                  void sendMessage(text, currentPaths, currentImages);
                 }
               }
             }}
             placeholder={
               agentMode
-                ? "Describe the coding task for Rony Agent… (@ to mention files)"
-                : "Ask a coding question… (@ to mention files)"
+                ? "Describe the coding task for Rony Agent… (e.g. build feature, fix bug, run tests)"
+                : "Ask a coding question… (For medium/large tasks, switch to Agent above)"
             }
             rows={2}
-            className="w-full bg-transparent border-none focus:ring-0 text-on-surface font-ui-label-reg text-ui-label-reg placeholder:text-outline-variant resize-none p-3 outline-none text-xs"
+            className="w-full bg-transparent border-none focus:ring-0 text-on-surface font-ui-label-reg text-ui-label-reg placeholder:text-outline-variant resize-none px-3 pt-2.5 pb-1 outline-none text-xs no-scrollbar"
           />
 
-          <div className="flex justify-between items-center px-2 pb-2">
-            <div className="flex gap-1 text-on-surface-variant">
+          <div className="flex justify-between items-center px-2 pb-2 pt-0.5">
+            <div className="flex items-center gap-1 text-on-surface-variant">
+              {/* Dedicated Image Upload Button */}
               <button
                 type="button"
-                className="p-1.5 hover:text-primary hover:bg-primary/10 rounded-lg transition-colors cursor-pointer interactive-scale"
-                title="Attach context file"
+                onClick={() => imageInputRef.current?.click()}
+                className="p-1 hover:text-primary hover:bg-primary/10 rounded-lg transition-colors cursor-pointer interactive-scale"
+                title="Upload image / screenshot (or paste Ctrl+V)"
               >
-                <Paperclip size={16} />
+                <ImageIcon size={15} />
               </button>
+
+              {/* Attach File Button */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="p-1 hover:text-primary hover:bg-primary/10 rounded-lg transition-colors cursor-pointer interactive-scale"
+                title="Attach file / context"
+              >
+                <Paperclip size={15} />
+              </button>
+
+              {/* Voice Input */}
               <button
                 type="button"
                 onClick={() => setIsListening(!isListening)}
-                className={`p-1.5 rounded-lg transition-colors cursor-pointer interactive-scale ${
+                className={`p-1 rounded-lg transition-colors cursor-pointer interactive-scale ${
                   isListening ? "text-error bg-error/10 animate-pulse" : "hover:text-primary hover:bg-primary/10"
                 }`}
                 title="Voice input"
               >
-                {isListening ? <MicOff size={16} /> : <Mic size={16} />}
+                {isListening ? <MicOff size={15} /> : <Mic size={15} />}
               </button>
             </div>
 
@@ -642,25 +1198,26 @@ export function AIChatPanel() {
               <button
                 type="button"
                 onClick={stopGeneration}
-                className="bg-error text-on-error w-8 h-8 rounded-full flex items-center justify-center hover:bg-error-container transition-all cursor-pointer shadow-md interactive-scale"
-                title="Stop generation"
+                className="bg-error/90 hover:bg-error text-on-error px-3 py-1 rounded-full flex items-center gap-1.5 text-xs font-semibold transition-all cursor-pointer shadow-md interactive-scale"
+                title="Cancel active run"
               >
-                <Square size={14} />
+                <Square size={11} fill="currentColor" />
+                <span>Cancel</span>
               </button>
             ) : (
               <button
                 type="submit"
-                disabled={!prompt.trim()}
-                className="bg-primary-container text-on-primary-container w-8 h-8 rounded-full flex items-center justify-center hover:bg-primary transition-all disabled:opacity-40 cursor-pointer shadow-md interactive-scale"
+                disabled={!prompt.trim() && attachedImages.length === 0}
+                className="w-7 h-7 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center hover:bg-primary transition-all duration-150 disabled:opacity-40 cursor-pointer shadow-md interactive-scale"
                 title="Send Message"
               >
-                <span className="material-symbols-outlined text-[18px]">arrow_upward</span>
+                <span className="material-symbols-outlined text-[17px] leading-none">arrow_upward</span>
               </button>
             )}
           </div>
         </form>
 
-        <div className="text-center mt-2">
+        <div className="text-center mt-1.5 select-none">
           <span className="font-caption text-[10px] text-outline-variant">AI generated code may contain errors.</span>
         </div>
       </div>

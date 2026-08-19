@@ -806,6 +806,7 @@ class CoderAgent(BaseAgent):
               while tool_iteration <= MAX_TOOL_ITERATIONS:
                 chat_req = self.create_chat_request(messages=messages)
                 response = await instrumented_chat(chat_req, f"Phase 2: Code Gen ({file_to_touch}, iter {tool_iteration})", temp=0.2)
+                response = response or ""
                 final_response = response
 
                 resolved_model = chat_req.model
@@ -866,15 +867,16 @@ class CoderAgent(BaseAgent):
 
               proposals.extend(parsed)
 
+              final_text = (final_response or "").strip()
               if parsed:
                 generation_outcomes[file_to_touch] = f"success:{len(parsed)}"
                 logs.append(f"✓ [EDITED] {file_to_touch} ({len(parsed)} changes)")
-              elif not final_response.strip():
+              elif not final_text:
                 generation_outcomes[file_to_touch] = "empty_response"
                 logs.append(f"⚠ [EMPTY] {file_to_touch} — LLM returned an empty response")
               else:
-                generation_outcomes[file_to_touch] = f"parse_failed:{len(final_response)}"
-                logs.append(f"⚠ [PARSE_FAILED] {file_to_touch} — LLM returned {len(final_response)} chars but parser extracted 0 proposals")
+                generation_outcomes[file_to_touch] = f"parse_failed:{len(final_text)}"
+                logs.append(f"⚠ [PARSE_FAILED] {file_to_touch} — LLM returned {len(final_text)} chars but parser extracted 0 proposals")
               await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
             except Exception as exc:
               generation_outcomes[file_to_touch] = f"llm_error:{exc}"
@@ -923,6 +925,7 @@ class CoderAgent(BaseAgent):
             while tool_iteration <= MAX_TOOL_ITERATIONS:
               chat_req = self.create_chat_request(messages=messages)
               response = await instrumented_chat(chat_req, f"Phase 2: Standard Code Gen (iter {tool_iteration})", temp=0.2)
+              response = response or ""
               final_response = response
 
               resolved_model = chat_req.model
@@ -965,12 +968,13 @@ class CoderAgent(BaseAgent):
               await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
             proposals.extend(parsed)
+            final_std_text = (final_response or "").strip()
             if parsed:
               generation_outcomes["_standard"] = f"success:{len(parsed)}"
-            elif not final_response.strip():
+            elif not final_std_text:
               generation_outcomes["_standard"] = "empty_response"
             else:
-              generation_outcomes["_standard"] = f"parse_failed:{len(final_response)}"
+              generation_outcomes["_standard"] = f"parse_failed:{len(final_std_text)}"
           except Exception as exc:
             generation_outcomes["_standard"] = f"llm_error:{exc}"
             logs.append(f"Standard LLM call failed: {exc}")

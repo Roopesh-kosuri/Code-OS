@@ -216,10 +216,10 @@ def _handle_edit_file(workspace: str, arguments: dict, staged_changes: list) -> 
     """
     from ..schemas import FileChange
 
-    raw_path = arguments.get("path", "")
+    raw_path = str(arguments.get("path", "") or "")
     rel_path = _clean_rel_path(raw_path)
-    original = arguments.get("original", "")
-    updated = arguments.get("updated", "")
+    original = str(arguments.get("original", "") or "")
+    updated = str(arguments.get("updated", "") or "")
 
     if not rel_path or rel_path == ".":
         return ToolResult(tool_name="edit_file", success=False, output="", error="Missing required parameter: path")
@@ -390,8 +390,10 @@ _TOOL_CALL_RE = re.compile(
 )
 
 
-def parse_tool_calls(response: str) -> list[ToolCall]:
+def parse_tool_calls(response: str | None) -> list[ToolCall]:
     """Extract [TOOL_CALL: name] { json } [/TOOL_CALL] blocks from LLM output."""
+    if not response or not isinstance(response, str):
+        return []
     calls: list[ToolCall] = []
 
     for match in _TOOL_CALL_RE.finditer(response):
@@ -421,13 +423,17 @@ def parse_tool_calls(response: str) -> list[ToolCall]:
     return calls[:MAX_TOOL_CALLS_PER_ITERATION]
 
 
-def has_tool_calls(response: str) -> bool:
+def has_tool_calls(response: str | None) -> bool:
     """Quick check whether response contains any tool call blocks."""
+    if not response or not isinstance(response, str):
+        return False
     return bool(_TOOL_CALL_RE.search(response))
 
 
-def response_is_done(response: str) -> bool:
+def response_is_done(response: str | None) -> bool:
     """Check if the LLM has signaled it's finished with tool calls."""
+    if not response or not isinstance(response, str):
+        return False
     return "[DONE]" in response
 
 

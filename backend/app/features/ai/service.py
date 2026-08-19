@@ -63,8 +63,8 @@ PROPOSAL_RE = re.compile(
 )
 
 
-def _strip_outer_fences(text: str) -> str:
-    if not text:
+def _strip_outer_fences(text: str | None) -> str:
+    if not text or not isinstance(text, str):
         return ""
     s = text.strip()
     # Strip any leading delimiter artifacts: '=', '==', '===', '<<<< ORIGINAL', '<<<<', '<< ORIGINAL'
@@ -91,7 +91,7 @@ _CODE_EXTENSIONS = frozenset({
 })
 
 
-def extract_proposals_robust(raw_text: str, planned_files: list[str] | None = None) -> list[FileChange]:
+def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | None = None) -> list[FileChange]:
     """Extract code proposals from LLM output across multiple formats:
     1. Standard [PROPOSAL: path] <<<< ORIGINAL ==== updated >>>>
     2. Relaxed [PROPOSAL path] / [FILE path]
@@ -99,6 +99,9 @@ def extract_proposals_robust(raw_text: str, planned_files: list[str] | None = No
     4. Code block with filename comment or tag (```python:notewatch.py)
     5. Single code block mapped to single planned file
     """
+    if not raw_text or not isinstance(raw_text, str):
+        return []
+
     proposals: list[FileChange] = []
     seen_paths: set[str] = set()
 
@@ -106,7 +109,7 @@ def extract_proposals_robust(raw_text: str, planned_files: list[str] | None = No
     for match in PROPOSAL_RE.finditer(raw_text):
         path = match.group("path").strip().strip("\"'")
         if path and path not in seen_paths:
-            orig = match.group("original")
+            orig = match.group("original") or ""
             updated = _strip_outer_fences(match.group("updated"))
             if updated:
                 proposals.append(FileChange(path=path, original=orig, updated=updated))
@@ -224,8 +227,10 @@ def extract_proposals_robust(raw_text: str, planned_files: list[str] | None = No
     return proposals
 
 
-def parse_proposals_from_llm(raw_text: str) -> tuple[list[FileChange], str]:
+def parse_proposals_from_llm(raw_text: str | None) -> tuple[list[FileChange], str]:
     """Parse raw LLM output for [PROPOSAL: ...] blocks and return FileChange list + summary."""
+    if not raw_text or not isinstance(raw_text, str):
+        return [], "Proposed code modifications"
     changes = extract_proposals_robust(raw_text)
     clean_summary = PROPOSAL_RE.sub("", raw_text).strip()
     if len(clean_summary) > 200:
@@ -283,14 +288,14 @@ async def provider_for(request: ChatRequest):
                 "openai": "gpt-4o",
                 "anthropic": "claude-3-5-sonnet-latest",
                 "gemini": "gemini-2.5-flash",
-                "groq": "openai/gpt-oss-120b",
+                "groq": "openai/gpt-oss-20b",
                 "deepseek": "deepseek-chat",
                 "mistral": "mistral-large-latest",
                 "openrouter": "openai/gpt-4o",
                 "nvidia-nim": "meta/llama-3.3-70b-instruct",
             }
-            if not request.model or (api_key_id == "groq" and request.model in ("llama3", "llama-3", "auto", "default", "gpt-4o", "llama-3.3-70b-versatile")):
-                request.model = settings.get(f"{api_key_id}.model") or _DEFAULT_MODELS.get(api_key_id, "openai/gpt-oss-120b" if api_key_id == "groq" else "gpt-4o")
+            if not request.model:
+                request.model = settings.get(f"{api_key_id}.model") or _DEFAULT_MODELS.get(api_key_id, "openai/gpt-oss-20b" if api_key_id == "groq" else "gpt-4o")
             else:
                 request.model = settings.get(f"{api_key_id}.model") or request.model
         else:
@@ -303,7 +308,7 @@ async def provider_for(request: ChatRequest):
         "openai": "gpt-4o",
         "anthropic": "claude-3-5-sonnet-latest",
         "gemini": "gemini-2.5-flash",
-        "groq": "openai/gpt-oss-120b",
+        "groq": "openai/gpt-oss-20b",
         "deepseek": "deepseek-chat",
         "mistral": "mistral-large-latest",
         "openrouter": "openai/gpt-4o",
@@ -341,8 +346,8 @@ async def provider_for(request: ChatRequest):
         else:
             base_url = settings.get(f"{key_id}.baseUrl") or _DEFAULT_URLS.get(key_id) or _DEFAULT_URLS.get(request.provider, "https://api.openai.com/v1")
 
-        if not request.model or (key_id == "groq" and request.model in ("llama3", "llama-3", "auto", "default", "gpt-4o", "llama-3.3-70b-versatile")):
-            request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "openai/gpt-oss-120b" if key_id == "groq" else "gpt-4o")
+        if not request.model or request.model in ("auto", "default"):
+            request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "openai/gpt-oss-20b" if key_id == "groq" else "gpt-4o")
         timeout, retries = _provider_resilience(settings, key_id)
         return OpenAICompatibleProvider(base_url, await get_api_key(key_id), timeout, retries)
 
@@ -512,10 +517,12 @@ async def ollama_models(base_url: str | None = None):
 def proposal_diff(changes: list[FileChange]) -> str:
     chunks: list[str] = []
     for change in changes:
+        orig = change.original or ""
+        upd = change.updated or ""
         chunks.extend(
             difflib.unified_diff(
-                change.original.splitlines(keepends=True),
-                change.updated.splitlines(keepends=True),
+                orig.splitlines(keepends=True),
+                upd.splitlines(keepends=True),
                 fromfile=f"a/{change.path}",
                 tofile=f"b/{change.path}",
             )
