@@ -889,7 +889,18 @@ export const useAIStore = create<AIState>((set, get) => ({
             }
           } else if (eventType === "error") {
             const errMsg = typeof data === "string" ? data : (data.message || "Agent error");
-            set({ error: errMsg, pendingApproval: null, pendingApprovals: [], pendingUserResponse: null });
+            set((state) => {
+              const messages = [...state.messages];
+              const last = messages[messages.length - 1];
+              if (last && last.role === "assistant" && !last.content) {
+                messages[messages.length - 1] = {
+                  ...last,
+                  content: `⚠️ **AI Provider Error (${state.provider || "API"}):**\n\n${errMsg}\n\n*Tip: Check if your API key quota is reached (e.g. Gemini rate limit). You can switch providers or update your API key in Settings.*`,
+                  agentStatus: { type: "error", message: "Provider Error" },
+                };
+              }
+              return { error: errMsg, messages, pendingApproval: null, pendingApprovals: [], pendingUserResponse: null };
+            });
           } else if (eventType === "done") {
             set((state) => {
               const messages = [...state.messages];
@@ -917,7 +928,19 @@ export const useAIStore = create<AIState>((set, get) => ({
       await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
-        set({ error: error instanceof Error ? error.message : "Agent request failed" });
+        const errMsg = error instanceof Error ? error.message : "Agent request failed";
+        set((state) => {
+          const messages = [...state.messages];
+          const last = messages[messages.length - 1];
+          if (last && last.role === "assistant" && !last.content) {
+            messages[messages.length - 1] = {
+              ...last,
+              content: `⚠️ **AI Provider Error (${state.provider || "API"}):**\n\n${errMsg}\n\n*Tip: Check if your API key quota is reached (e.g. Gemini/Groq rate limit). You can switch providers or update your API key in Settings.*`,
+              agentStatus: { type: "error", message: "Provider Error" },
+            };
+          }
+          return { error: errMsg, messages };
+        });
       }
     } finally {
       activeController = null;
