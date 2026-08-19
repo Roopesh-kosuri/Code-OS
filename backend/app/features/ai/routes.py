@@ -1,3 +1,4 @@
+from pathlib import Path
 from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -46,6 +47,14 @@ async def list_provider_models(
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+from .completion_service import CompletionRequest, CompletionResponse, generate_inline_completion
+
+@router.post("/completion", response_model=CompletionResponse)
+async def inline_completion(payload: CompletionRequest) -> CompletionResponse:
+    """Generate high-speed inline code completion at cursor for Monaco editor."""
+    return await generate_inline_completion(payload)
 
 
 @router.post("/chat/stream")
@@ -123,17 +132,22 @@ def _now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
 
 @router.get("/threads", response_model=list[ChatThreadDto])
-async def list_threads(workspace: str = Query(...)) -> list[ChatThreadDto]:
+async def list_threads(workspace: str | None = Query(None)) -> list[ChatThreadDto]:
     db = await get_db()
-    cur = await db.execute(
-        "SELECT * FROM chat_threads WHERE workspace = ? ORDER BY updated_at DESC",
-        (workspace,),
-    )
+    if workspace:
+        cur = await db.execute(
+            "SELECT * FROM chat_threads WHERE workspace = ? OR workspace = '' OR workspace IS NULL ORDER BY updated_at DESC",
+            (workspace,),
+        )
+    else:
+        cur = await db.execute(
+            "SELECT * FROM chat_threads ORDER BY updated_at DESC",
+        )
     rows = await cur.fetchall()
     return [
         ChatThreadDto(
             id=r["id"],
-            workspace=r["workspace"],
+            workspace=r["workspace"] or "",
             title=r["title"],
             created_at=r["created_at"],
             updated_at=r["updated_at"],
@@ -145,14 +159,20 @@ async def list_threads(workspace: str = Query(...)) -> list[ChatThreadDto]:
 async def create_thread(payload: ThreadCreateRequest) -> ChatThreadDto:
     db = await get_db()
     now = _now_iso()
+    if payload.workspace:
+        ws_name = Path(payload.workspace).name or "Workspace"
+        await db.execute(
+            "INSERT OR IGNORE INTO workspaces (path, name, is_active) VALUES (?, ?, 1)",
+            (payload.workspace, ws_name),
+        )
     await db.execute(
-        "INSERT INTO chat_threads (id, workspace, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-        (payload.id, payload.workspace, payload.title, now, now),
+        "INSERT OR REPLACE INTO chat_threads (id, workspace, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (payload.id, payload.workspace or "", payload.title, now, now),
     )
     await db.commit()
     return ChatThreadDto(
         id=payload.id,
-        workspace=payload.workspace,
+        workspace=payload.workspace or "",
         title=payload.title,
         created_at=now,
         updated_at=now,
@@ -210,6 +230,15 @@ async def sync_messages(thread_id: str, payload: MessageSyncRequest) -> dict:
     """Sync the full list of messages for a thread (handles edit/regenerate trashing)."""
     db = await get_db()
     now = _now_iso()
+    # Ensure thread exists in chat_threads table
+    cur = await db.execute("SELECT id FROM chat_threads WHERE id = ?", (thread_id,))
+    if not await cur.fetchone():
+        first_content = payload.messages[0].content if payload.messages else "New Conversation"
+        title = first_content.strip()[:32] + ("…" if len(first_content) > 32 else "") or "New Conversation"
+        await db.execute(
+            "INSERT OR IGNORE INTO chat_threads (id, workspace, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (thread_id, "", title, now, now),
+        )
     # Clear existing messages in the thread and overwrite
     await db.execute("DELETE FROM chat_messages WHERE thread_id = ?", (thread_id,))
     for msg in payload.messages:
