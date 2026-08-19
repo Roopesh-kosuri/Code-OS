@@ -45,15 +45,13 @@ Everything runs on your machine. Your code never leaves it, except to whichever 
 
 ## 📦 Download
 
-**[Latest Release: v1.0.0-beta.1](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v1.0.0-beta.1)**
-
-> The public release badge above reflects the last tagged installer build. Everything under [Rony Agent](#-rony-agent--the-chat-harness) below (the chat harness, capability phases, sandboxing, and the red-team hardening pass) is newer, verified-in-development work at internal version **v2.4.0**, not yet cut into a tagged public release. See [Project Status](#-project-status) for exactly what's shipped vs. queued.
+**[Latest Release: v2.4.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0)**
 
 | Platform | Installer | Unpacked |
 |---|---|---|
-| **Windows** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v1.0.0-beta.1) | [Code OS Windows (MediaFire)](https://www.mediafire.com/file/1cs2fx8jo42is92/Code+OS+Windows.zip/file) |
-| **Linux** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v1.0.0-beta.1) | [Code OS Linux (MediaFire)](https://www.mediafire.com/file/2j620ea5u2xcqy2/Code+OS+Linux.zip/file ) |
-| **macOS** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v1.0.0-beta.1) | [Code OS Mac OS (MediaFire)](https://www.mediafire.com/file/6czxm2s5ykufgm9/__appImage-x64.zip/file) |
+| **Windows** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) | [Code OS Windows (MediaFire)](https://www.mediafire.com/file/1cs2fx8jo42is92/Code+OS+Windows.zip/file) |
+| **Linux** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) | [Code OS Linux (MediaFire)](https://www.mediafire.com/file/2j620ea5u2xcqy2/Code+OS+Linux.zip/file ) |
+| **macOS** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) | [Code OS Mac OS (MediaFire)](https://www.mediafire.com/file/6czxm2s5ykufgm9/__appImage-x64.zip/file) |
 
 > Installers aren't code-signed yet — Windows SmartScreen or macOS Gatekeeper may warn on first run. This is expected for an unsigned build; see [Security](#-security) for details.
 
@@ -259,15 +257,13 @@ Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)** · *
 
 ## 📊 Project Status
 
-This is real, working software — the tagged public release is **v1.0.0-beta.1**; the current development version, verified through real-task testing and 100%-passing suites but not yet cut into a public release, is **v2.4.0**.
+This is real, working software, currently at **v2.4.0** — actively developed and hardened through iterative testing, not a mockup.
 
-✅ **Solid & verified (public release, v1.0.0-beta.1):** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent system + Duo Loop (including background job persistence), the Code Verification Agent, workspace trust enforcement swept across every route, session-token auth, OS-keychain-backed key encryption, a real automated test suite, CI/CD running on every push, multi-platform installer builds.
+✅ **Solid & verified:** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent Agent Console + Duo Loop (including background job persistence), the Code Verification Agent, workspace trust enforcement swept across every route, session-token auth, OS-keychain-backed key encryption, a real automated test suite, CI/CD running on every push, multi-platform installer builds.
 
-✅ **Solid & verified (development, v2.4.0 — pending public release):** the Rony Agent chat harness (tool loop, retrieval, task decomposition, visible thinking UI, Duo Loop escalation, strict command allowlisting) and its full bug-hunt pass (truncation/timeout handling, stuck-loop breakers, hang watchdogs, task-difficulty routing, UI state fixes); per-turn checkpoint/undo via scoped git commits; runtime-freshness detection; scoped approval memory; adaptive per-tier model routing with cost tracking; pre-proposal self-critique and a before/after regression test guard; a searchable activity timeline; a symbol indexer with find-references/go-to-definition; a background server-session tool; a structured git-diff reader; the secret scanner and prompt-injection filtering described in Security; codebase style learning; a dead-code detector; an agent-maintained architecture map; vision/screenshot capability; the full tiered sandboxing system; and the production-hardening + red-team fix pass.
+✅ **Also solid & verified, new in v2.4.0:** the Rony Agent chat harness (tool loop, retrieval, task decomposition, visible thinking UI, Duo Loop escalation, strict command allowlisting) and its full bug-hunt pass (truncation/timeout handling, stuck-loop breakers, hang watchdogs, task-difficulty routing, UI state fixes); per-turn checkpoint/undo via scoped git commits; runtime-freshness detection; scoped approval memory; adaptive per-tier model routing with cost tracking; pre-proposal self-critique and a before/after regression test guard; a searchable activity timeline; a symbol indexer with find-references/go-to-definition; a background server-session tool; a structured git-diff reader; the secret scanner and prompt-injection filtering described in Security; codebase style learning; a dead-code detector; an agent-maintained architecture map; vision/screenshot capability; the full tiered sandboxing system; the production-hardening + red-team fix pass; a multi-language Run button; and inline AI code completion (ghost-text suggestions, Tab to accept).
 
 🛠️ **In flight (built with strict no-refactor boundaries against the rest of the app, pending final verification):** GitHub commit/push integration, Python debugging via `debugpy` with Monaco breakpoint support.
-
-📋 **Prompted, not yet built:** multi-language Run button, inline AI code completion (ghost-text suggestions).
 
 🗺️ **Backlog:** command palette, file drag-drop upload, terminal split, workspace templates, markdown preview, git blame, find-all-references UI, minimap, a plugin/extension system, real-time collaboration, macOS installer support, code signing, MCP server security scanning integration, LSP-based live diagnostics, and a formal third-party security audit.
 
