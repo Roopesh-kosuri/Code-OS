@@ -1,57 +1,81 @@
-name: Release Packaging
+name: Multi-Platform Release Packaging
 
 on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v2.4.0)'
+        required: false
+        default: 'v2.4.0'
 
 permissions:
   contents: write
 
 jobs:
   build-release:
-    name: Build & Package Release
+    name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
 
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
 
-      - name: Install Frontend Dependencies
-        run: npm install
-
-      - name: Compile and Bundle Production Files
-        run: npm run build
-
-      - name: Setup Python
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # On Windows/Linux/macOS we just package the backend directory into extraResources
-      - name: Package App using Electron-Builder
-        run: npx electron-builder --publish never
+      - name: Install System Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools fpm rpm
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Compile Frontend & Electron Main
+        run: |
+          npm run build:vite
+          npm run build:electron
+
+      - name: Package with Electron-Builder
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            npx electron-builder --win nsis portable --publish never
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            npx electron-builder --mac dmg zip --publish never
+          else
+            npx electron-builder --linux AppImage deb tar.gz --publish never
+          fi
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Installer Binaries to GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
+          tag_name: ${{ github.ref_name || inputs.tag_name || 'v2.4.0' }}
           files: |
-            dist-release/*.exe
-            dist-release/*.dmg
-            dist-release/*.AppImage
-            dist-release/*.deb
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

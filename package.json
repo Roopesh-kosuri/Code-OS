@@ -117,6 +117,7 @@
       "icon": "build/icon.png",
       "target": [
         "dmg",
+        "zip",
         "dir"
       ],
       "category": "public.app-category.developer-tools",
@@ -128,11 +129,12 @@
       "target": [
         "AppImage",
         "deb",
+        "tar.gz",
         "dir"
       ],
       "category": "Development",
       "maintainer": "Roopesh Kosuri <roopesh@codeos.ai>"
     }
   }
-
 }
+
