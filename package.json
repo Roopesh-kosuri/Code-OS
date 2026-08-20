@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist-electron/main.js",
   "author": "Roopesh Kosuri",
-  "license": "MIT",
+  "license": "SEE LICENSE IN License.md",
   "repository": {
     "type": "git",
     "url": "https://github.com/Roopesh-kosuri/code-os.git"
