@@ -6,7 +6,7 @@ CODE OS takes application security seriously. This document outlines our vulnera
 
 If you discover a security vulnerability in CODE OS, please report it responsibly rather than opening a public issue on GitHub.
 
-- **Email**: `security@code-os.dev` (or contact the maintainers directly)
+- **Email**: `Roopeshramvarma@gmail.com` (or contact through my portfolio Roopesh.online)
 - **Response SLA**: We acknowledge receipt of vulnerability reports within **24 hours** and aim to provide an initial assessment and patch timeline within **72 hours**.
 - **Disclosure Policy**: We follow coordinated vulnerability disclosure. Please allow up to 30 days for a fix to be deployed before disclosing details publicly.
 
