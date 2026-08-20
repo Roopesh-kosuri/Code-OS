@@ -43,7 +43,6 @@ CODE OS implements defense-in-depth security measures across all layers:
 
 ## Known Limitations
 
-- **No OS-Level Shell Containerization**: Terminals run as local user processes; environment filtering is enforced, but operating system process isolation (cgroups/namespaces) is not applied.
 - **No Executable Code Signing**: Release binaries are not currently signed with Apple or Microsoft digital certificates.
 - **Third-Party AI Endpoint Exposure**: Outbound HTTP requests to external AI provider APIs (e.g. Anthropic, OpenAI) transmit prompt data to third-party endpoints as configured by the user.
 
