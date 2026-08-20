@@ -278,7 +278,7 @@ Built iteratively, hardened by actually testing behavior — not by assuming cod
 | **[ARCHITECTURE.md](./ARCHITECTURE.md)** | Full system design, data flow, and component breakdown |
 | **[SECURITY.md](./SECURITY.md)** | Security policy, reporting SLA, security controls summary |
 | **[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)** | Trust boundaries, threats, and mitigations |
-| **[FULL_README.md](./FULL_README.md)** | Complete technical specification and API documentation |
+| **[Documentation.md](./documentation.md)** | Complete technical specification and API documentation |
 | **[ROADMAP.md](./ROADMAP.md)** | What's shipped, what's in progress, what's next |
 | **[CONTRIBUTING.md](./CONTRIBUTING.md)** | How to set up, branch, and submit PRs |
 
