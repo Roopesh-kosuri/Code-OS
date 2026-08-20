@@ -114,7 +114,7 @@ uvicorn app.main:app --reload --port 8000
 # Terminal 2 — frontend only (browser mode, no Electron)
 npm run dev:web
 ```
-Then open `http://127.0.0.1:5173` in your browser.
+Then open `http://127.0.0.1:5176` in your browser.
 
 **Verify it's running:** visit `http://localhost:8000/health` — should return `{"status": "ok"}`.
 
