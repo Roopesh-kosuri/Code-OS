@@ -34,7 +34,6 @@
     "preview": "vite preview --host 127.0.0.1",
     "postinstall": "electron-builder install-app-deps"
   },
-
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@tailwindcss/forms": "^0.5.10",
@@ -80,13 +79,6 @@
       "package.json"
     ],
     "extraResources": [
-      {
-        "from": "backend",
-        "to": "backend",
-        "filter": [
-          "**/*"
-        ]
-      },
       {
         "from": "backend-dist/backend-server.exe",
         "to": "backend-server.exe"
@@ -140,4 +132,3 @@
     }
   }
 }
-
