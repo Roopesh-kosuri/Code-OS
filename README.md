@@ -69,7 +69,7 @@ cd code-os
 docker compose up
 ```
 
-→ Frontend at `http://localhost:5173` · Backend at `http://localhost:8000`
+→ Frontend at `http://localhost:5176` · Backend at `http://localhost:8000`
 → Verify it's healthy: visit `http://localhost:8000/health` — should return `{"status": "ok"}`
 
 > Docker runs CODE OS in browser mode — you get the full AI/agent experience, with a WebSocket-based terminal fallback instead of Electron's native PTY. For the complete desktop experience, use Option B or grab a prebuilt release above.
