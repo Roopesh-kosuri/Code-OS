@@ -64,6 +64,8 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
 
       - name: Upload Installer Binaries to GitHub Release
         uses: softprops/action-gh-release@v2
