@@ -47,11 +47,11 @@ Everything runs on your machine. Your code never leaves it, except to whichever 
 
 **[Latest Release: v2.4.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0)**
 
-| Platform | Installer |
-|---|---|---|
-| **Windows** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) |
-| **Linux** | [GitHub Release](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) |
-| **macOS** | comming soon |
+| Platform | Installer / Download |
+| :--- | :--- |
+| **Windows** | [GitHub Release v2.4.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) |
+| **Linux** | [GitHub Release v2.4.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) |
+| **macOS** | *Coming soon* |
 
 > Installers aren't code-signed yet — Windows SmartScreen or macOS Gatekeeper may warn on first run. This is expected for an unsigned build; see [Security](#-security) for details.
 
