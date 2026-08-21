@@ -5,8 +5,9 @@
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
 
 [![CI/CD](./docs/badges/cicd.svg)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/ci.yml)
-[![License: MIT](./docs/badges/license.svg)](./LICENSE)
+[![License: PolyForm Noncommercial 1.0.0](./docs/badges/license.svg)](./License.md)
 ![Platform](./docs/badges/platform.svg)
+
 ![Made with Electron](./docs/badges/electron.svg)
 ![FastAPI](./docs/badges/fastapi.svg)
 
@@ -291,7 +292,8 @@ Bug reports, feature ideas, and pull requests are genuinely welcome — particul
 
 ## 📄 License
 
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE.md) — free for personal, educational, and non-commercial use. For commercial use, please reach out first (see [Links](#-links) below).
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](./License.md) — free for personal, educational, and non-commercial use. For commercial use, please reach out first (see [Links](#-links) below).
+
 
 ---
 
