@@ -24,8 +24,10 @@ def main():
             home = os.path.expanduser('~')
             os.environ['CODE_OS_HOME'] = os.path.join(home, '.code-os')
 
+    from app.main import app as fastapi_app
+
     uvicorn.run(
-        "app.main:app",
+        fastapi_app,
         host="127.0.0.1",
         port=8000,
         log_level="info",
@@ -35,3 +37,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

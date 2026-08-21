@@ -37,6 +37,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyinstaller
 
       - name: Install System Dependencies (Linux)
         if: runner.os == 'Linux'
@@ -44,8 +50,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libarchive-tools fpm rpm
 
-      - name: Install Dependencies
+      - name: Install Node Dependencies
         run: npm install
+
+      - name: Compile Backend PyInstaller Standalone Binary
+        run: npm run build:backend-exe
 
       - name: Compile Frontend & Electron Main
         run: |
@@ -65,7 +74,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
-
 
       - name: Upload Installer Binaries to GitHub Release
         uses: softprops/action-gh-release@v2
