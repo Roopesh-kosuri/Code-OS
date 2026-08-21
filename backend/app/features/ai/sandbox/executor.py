@@ -213,8 +213,14 @@ async def _execute_command_async(
                         failure_reason="governor_kill",
                         failure_detail=limit_msg,
                     )
-
-            if communicate_task in done:
+                # gov finished without hitting limits (process has already exited).
+                # communicate_task should be nearly done — give it a short grace period.
+                if communicate_task not in done:
+                    try:
+                        extra_done, _ = await asyncio.wait([communicate_task], timeout=10.0)
+                        done = done | extra_done
+                    except Exception:
+                        pass
                 stdout, stderr = communicate_task.result()
             else:
                 for t in pending:

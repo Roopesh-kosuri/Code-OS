@@ -319,18 +319,23 @@ async def test_java_missing_jdk_run_stream(tmp_path):
     java_file = tmp_path / "SlidingPuzzle.java"
     java_file.write_text("public class SlidingPuzzle {}\n", encoding="utf-8")
 
-    # Simulate a machine where javac/java are not installed by patching shutil.which
-    # at the source module that uses it. The CI runner may have Java installed.
+    # Patch _find_executable at BOTH modules:
+    # - language_detector: where it's defined
+    # - run_service: which imports it with 'from ... import', creating its own binding
+    # This covers PATH lookup AND JAVA_HOME fallback on CI runners with Java installed.
     from unittest.mock import patch
+    from app.features.terminal import language_detector as _ld
+    from app.features.terminal import run_service as _rs
 
-    _real_which = shutil.which
+    _real_find = _ld._find_executable
 
-    def _mock_which(cmd, **kw):
-        if cmd in ("javac", "java"):
+    def _no_java(candidates):
+        if any(c in ("javac", "java") for c in candidates):
             return None
-        return _real_which(cmd)
+        return _real_find(candidates)
 
-    with patch("app.features.terminal.language_detector.shutil.which", side_effect=_mock_which):
+    with patch.object(_ld, "_find_executable", side_effect=_no_java), \
+         patch.object(_rs, "_find_executable", side_effect=_no_java):
         events = []
         async for packet in run_file_stream(ws, "SlidingPuzzle.java"):
             events.append(packet)
