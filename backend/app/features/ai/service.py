@@ -558,6 +558,13 @@ async def create_proposal(payload: EditProposalRequest) -> EditProposalDto:
         "test_results": payload.test_results,
     }
     db = await get_db()
+    # Ensure the workspace row exists so the FK constraint is satisfied.
+    # INSERT OR IGNORE is a no-op when the workspace was already registered via the UI.
+    _ws_name = Path(normalized_workspace).name or normalized_workspace
+    await db.execute(
+        "INSERT OR IGNORE INTO workspaces(path, name, last_opened_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+        (normalized_workspace, _ws_name),
+    )
     await db.execute(
         "INSERT INTO edit_proposals(id, workspace, status, payload) VALUES (?, ?, ?, ?)",
         (proposal_id, normalized_workspace, "pending", json.dumps(body)),

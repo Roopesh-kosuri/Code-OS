@@ -319,10 +319,21 @@ async def test_java_missing_jdk_run_stream(tmp_path):
     java_file = tmp_path / "SlidingPuzzle.java"
     java_file.write_text("public class SlidingPuzzle {}\n", encoding="utf-8")
 
-    # In our test environment, javac is not in PATH
-    events = []
-    async for packet in run_file_stream(ws, "SlidingPuzzle.java"):
-        events.append(packet)
+    # Simulate a machine where javac/java are not installed by patching shutil.which
+    # at the source module that uses it. The CI runner may have Java installed.
+    from unittest.mock import patch
+
+    _real_which = shutil.which
+
+    def _mock_which(cmd, **kw):
+        if cmd in ("javac", "java"):
+            return None
+        return _real_which(cmd)
+
+    with patch("app.features.terminal.language_detector.shutil.which", side_effect=_mock_which):
+        events = []
+        async for packet in run_file_stream(ws, "SlidingPuzzle.java"):
+            events.append(packet)
 
     full_stream = "".join(events)
     assert "error" in full_stream

@@ -275,6 +275,8 @@ async def _execute_command_async(
             or "commandnotfoundexception" in lower_out
             or "cannot find the path" in lower_out
             or "no such file or directory" in lower_out
+            or ": not found" in lower_out
+            or ": command not found" in lower_out
         )
         fail_reason = "not_found" if is_not_found else "exit_code"
         fail_detail = (
