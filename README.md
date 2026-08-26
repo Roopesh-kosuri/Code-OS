@@ -19,7 +19,7 @@
 
 🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/websitecodeos/)
 
-**[Getting Started](#-getting-started)** · **[Download](#-download)** · **[Features](#-what-it-can-do)** · **[Rony Agent](#-rony-agent--the-chat-harness)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
+**[Getting Started](#-getting-started)** · **[Download](#-download)** · **[Features](#-what-it-can-do)** · **[New in v3.0.0](#-new-in-v300)** · **[Rony Agent](#-rony-agent--the-chat-harness)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
 
 </div>
 
@@ -46,13 +46,15 @@ Everything runs on your machine. Your code never leaves it, except to whichever 
 
 ## 📦 Download
 
-**[Latest Release: v2.4.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0)**
+**[Latest Release: v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0)**
 
 | Platform | Installer / Download |
 | :--- | :--- |
-| **Windows** | [GitHub Release v2.4.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) |
-| **Linux** | [GitHub Release v2.4.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v2.4.0) |
-| **macOS** | *Coming soon* |
+| **Windows** | [GitHub Release v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0) |
+| **Linux** | [GitHub Release v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0) |
+| **macOS** | [GitHub Release v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0) |
+
+> **v3.0.0 installers are fully self-contained** — Python 3.11 and Node.js 20 are bundled inside. Install on a fresh machine with no prior setup and everything works.
 
 > Installers aren't code-signed yet — Windows SmartScreen or macOS Gatekeeper may warn on first run. This is expected for an unsigned build; see [Security](#-security) for details.
 
@@ -131,6 +133,54 @@ Builds a `.exe` (Windows), `.dmg` (macOS), or `.AppImage`/`.deb` (Linux) via `el
 
 ---
 
+## 🆕 New in v3.0.0
+
+This release adds a major production-hardening pass, three editor-facing feature groups, and full Model Context Protocol (MCP) support — all bundled into self-contained installers that work on a fresh machine with nothing else installed.
+
+### 🔐 Production Hardening (10 P0 Security Fixes)
+
+- **Arbitrary file execution blocked** — `run_service.py` now routes through `ensure_within_workspace`, no more uncontained absolute-path execution
+- **WebSocket authentication enforced** — removed the blanket exemption; terminal, debug, and agent-stream WS endpoints all require the session token at handshake
+- **Session token no longer in `ps` output** — moved from argv to stdin/env, invisible to other local users
+- **Silently-broken inline completion fixed** — `asyncio` and `httpx` imports restored where they were missing (silent `NameError`s for the whole release cycle)
+- **Circuit breaker wired and honest** — `is_circuit_open()` now returns real state with exponential backoff, fallback selection actually skips open circuits
+- **Sandbox genuinely fails closed** — `require_sandbox=True` + no Docker now raises `SandboxUnavailableError` instead of silently falling back to unsandboxed execution
+- **`server_manager.py` SSRF + command allowlist** — same `_is_command_safe` check as the chat harness now gates server sessions; host restricted to `127.0.0.1`/`localhost`
+- **Zip-slip hardened** — backup service uses `Path.relative_to()` instead of defeat-able string-prefix checks
+- **Debugger workspace containment** — `set_breakpoint` and session launch now enforce `ensure_within_workspace` (403 for paths outside the workspace)
+- **God class decomposition** — `chat_harness.py` split into focused submodules (`harness/plan_parser`, `tool_executor`, `approval_coordinator`, `sse_streamer`, `compaction_manager`, `activity_logger`, `failure_handler`) with 100% backward-compatible re-exports
+
+### ✨ Editor & Agent Features
+
+- **New File / New Folder that actually works** — fixed the `window.prompt()` breakage; clean in-app dialog, proper path normalization, server-side name validation (empty/chars/traversal/collision), Restricted Mode enforcement, tree refresh + auto-open + editor focus
+- **Agent URL context** — when you paste an `http(s)://` link in your message, the agent fetches readable content, strips scripts/styles, wraps it in `<untrusted_web_content>`, and injects it as context. Full SSRF defense: DNS pre-resolve, private/loopback/link-local/metadata IP rejection, 10s timeout, 5-redirect cap, 2MB/20k-char truncation. Settings toggle: **Allow agent to fetch links**
+- **VS Code-style code suggestions** — Monaco workers now load in Vite dev (was silently dead), plus custom `CompletionItemProvider`s for HTML/XML tags after `<`, workspace + system headers after `#include "`/`<`, and relative file paths in JS/TS import lines. Settings toggle: **Code suggestions (IntelliSense)**
+
+### 🛠️ Power Features
+
+- **Find & Replace across files** — multi-file with match-case / whole-word / regex options; 2-second timeout on regexes to block catastrophic backtracking; Restricted Mode blocks server-side; bulk confirmation above 20 files
+- **Error Lens** — inline squiggles + end-of-line annotations for pytest, tsc, gcc/clang errors parsed from Run output; stale markers cleared on edit
+- **Live Preview panel** — embed your running `server_session` in a webview tab; `src` locked to `127.0.0.1`/`localhost`; webview sandboxed with no `nodeIntegration`
+- **Markdown preview** — split-view + `Ctrl+Shift+V` via `react-markdown` + `remark-gfm`; raw HTML sanitized by default
+- **Inline git blame** — end-of-line author + relative date; hover for full commit; cached by file mtime + HEAD
+- **Recent files (`Ctrl+Tab`)** — MRU picker (capped at 20) with cycle navigation
+
+### 🔌 MCP (Model Context Protocol) Support
+
+- **Full server lifecycle** — settings-stored config (stdio and http transports), auto-start on boot, restart button, crash detection with capped auto-restart, 10s/100KB resource caps
+- **Protocol-conformant** — `initialize` handshake, `tools/list`, `tools/call`, proper error mapping; streamable-HTTP transport for url-type servers
+- **Agent integration** — MCP tools exposed as namespaced `mcp__<server>__<tool>` with descriptions + schemas; every call goes through the standard approval flow (fail-closed); tool output wrapped in `<untrusted_mcp_content>` tags; Restricted Mode blocks mutating MCP calls server-side
+- **MCP Discovery Scanner** — lightweight auto-detection from GitHub repos, JSON configs, command-line specs, and workspace `.mcp.json`/`.cursor-mcp.json`; discovery only, never auto-executes; rate-limited; all discoveries require explicit user approval before activation
+- **Settings UI** — server list with status dots, env var editor, per-server enable toggle, expandable tool list with names + descriptions, raw log viewer (last 200 lines)
+
+### 📦 Self-Contained Installers
+
+- Windows `.exe`, Linux `.AppImage` + `.deb`, macOS `.dmg`
+- Bundles Python 3.11 (indygreg standalone builds) and Node.js 20 LTS inside the installer
+- Fresh machine with nothing pre-installed → install → run. No external downloads required.
+
+---
+
 ## 💬 Rony Agent — the chat harness
 
 Agent Console (below) is CODE OS's original heavy-lifting system — five specialized agents, full DAG planning, built for large multi-step jobs you kick off and let run. **Rony Agent** is newer and solves a different problem: most coding requests aren't a 9-step project, they're "fix this function" or "add validation here" — and for those, you shouldn't need to leave chat.
@@ -147,6 +197,8 @@ Rony Agent turns the main chat panel into a fast, intelligent, autonomous coding
 - Checkpoints before every turn (a scoped git commit of just the files it touches) with one-click Undo — never a destructive `reset --hard`
 - Remembers your workspace's conventions (naming, import style, error handling) and its own architecture map across sessions, so it doesn't need to relearn your codebase every time
 - Warns you when the backend is running stale code after an update, instead of silently executing outdated logic
+- **Fetches URLs you paste in your message** for grounded context (SSRF-safe, see [New in v3.0.0](#-new-in-v300))
+- **Calls MCP tools** through the standard approval flow (see [New in v3.0.0](#-new-in-v300))
 
 **Trust & safety, specifically for this system:**
 - File edits go through the same diff-review approval flow as everything else in CODE OS — no auto-apply
@@ -176,6 +228,9 @@ A full generator/critic adversarial review — two models argue over the same co
 
 ### 🛡️ Code Verification Agent
 A dedicated security/production-readiness auditor — checks for SQL injection, exposed secrets, missing input validation, XSS, and other real vulnerability classes, then gives you a 0–100 readiness score and a downloadable, severity-ranked report.
+
+### 🔌 MCP Servers
+First-class Model Context Protocol support — configure stdio and HTTP MCP servers, call their tools through the same approval flow as shell commands, with full SSRF and prompt-injection defenses. Built-in discovery scanner auto-detects servers from GitHub repos, JSON configs, and workspace `.mcp.json` files.
 
 </td>
 <td width="50%" valign="top">
@@ -214,9 +269,10 @@ FastAPI Backend (Python)
 │ Agent Console (5-agent DAG)  ──┐
 │ Rony Agent (lightweight loop) ─┼─► shared tool layer (read/edit/terminal/test), zero cross-coupling
 │ Duo Loop (generator/critic)   ─┘
+│ MCP Manager (stdio + HTTP)
 │ aiosqlite
 ▼
-SQLite → workspaces · settings · encrypted keys · index · jobs · history · activity log
+SQLite → workspaces · settings · encrypted keys · index · jobs · history · activity log · MCP servers
 ```
 
 | Layer | Tech |
@@ -227,7 +283,8 @@ SQLite → workspaces · settings · encrypted keys · index · jobs · history 
 | Terminal | node-pty (Electron) / pywinpty on Windows + ptyprocess on macOS/Linux (WebSocket fallback) |
 | Sandboxing | Path/resource containment (all platforms) · Docker/WSL2 containers (auto-detected) · Windows Sandbox `.wsb` disposable VMs |
 | AI | Ollama · native Anthropic Messages API · OpenAI-compatible (OpenAI, Gemini, Groq, DeepSeek, Mistral, OpenRouter, NVIDIA NIM) · adaptive per-tier model routing |
-| Security | Fernet-encrypted keys backed by OS keychain (`keyring`) · server-side trust enforcement · session-token auth · rate limiting · CSP · secret scanning (regex + entropy) · prompt-injection filtering |
+| Extensions | MCP servers (stdio + streamable-HTTP) with approval-gated tool calls |
+| Security | Fernet-encrypted keys backed by OS keychain (`keyring`) · server-side trust enforcement · session-token auth · rate limiting · CSP · secret scanning (regex + entropy) · prompt-injection filtering · DNS-verified SSRF defense for URL fetching |
 | CI/CD | GitHub Actions — tests + build on every push, multi-platform installers on release |
 
 **Agent Console and Rony Agent are architecturally isolated on purpose** — separate modules, separate routes, separate frontend components, zero shared mutable state. This is a hard project boundary, verified with a file-level diff check after every change to either system, specifically so heavy-pipeline work and fast chat-agent work can evolve independently without one destabilizing the other.
@@ -238,35 +295,41 @@ SQLite → workspaces · settings · encrypted keys · index · jobs · history 
 
 Every untrusted workspace runs in **Restricted Mode**, blocked at the API layer — not just hidden buttons. Every mutating shell command needs explicit approval; read-only commands run from a strict, fail-closed allowlist.
 
-- **Session bearer-token authentication** on high-privilege endpoints
-- **Strict path sandboxing** — blocks `~` expansion, symlink escapes, and `..` traversal, plus absolute-path/drive-letter rejection on baseline read commands
+- **Session bearer-token authentication** on high-privilege endpoints (including WebSocket endpoints as of v3.0.0)
+- **Strict path sandboxing** — blocks `~` expansion, symlink escapes, and `..` traversal, plus absolute-path/drive-letter rejection on baseline read commands. Debugger sessions now fully contained as of v3.0.0.
 - **Terminal environment sanitization** — an explicit allowlist strips credentials (API keys, `AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, SSH/Git config, etc.) before any shell command runs
-- **Tiered sandboxed execution** — baseline process/resource governance everywhere, containerized execution (Docker/WSL2, no network, non-root, resource-capped) where available, disposable Windows Sandbox VMs for untrusted projects, with an explicit fail-closed prompt (never a silent fallback to unsandboxed execution) if isolation isn't available
+- **Tiered sandboxed execution** — baseline process/resource governance everywhere, containerized execution (Docker/WSL2, no network, non-root, resource-capped) where available, disposable Windows Sandbox VMs for untrusted projects, with an explicit fail-closed prompt (never a silent fallback to unsandboxed execution) if isolation isn't available — verified behavior as of v3.0.0
 - **API keys encrypted at rest** via Fernet, with the master key stored in your OS's native credential store (macOS Keychain, Windows Credential Manager, Linux Secret Service via `keyring`), falling back to a strictly-permissioned local file if unavailable
 - **Pre-proposal secret scanner** (key-prefix patterns + Shannon entropy) blocks likely credentials before they're ever written or committed
-- **Prompt-injection resistance** — all file contents fed to an agent are wrapped and explicitly marked as untrusted data, with a pre-execution filter blocking known injection/exfiltration command patterns
+- **Prompt-injection resistance** — all file contents fed to an agent are wrapped and explicitly marked as untrusted data, with a pre-execution filter blocking known injection/exfiltration command patterns. URL-fetched content wrapped in `<untrusted_web_content>` tags with the same directives. MCP tool output wrapped in `<untrusted_mcp_content>` tags.
+- **SSRF-safe URL fetching** — agent only fetches URLs the user pasted (never URLs found in tool output / file content); DNS pre-resolved and checked against private/loopback/link-local/metadata IP ranges; 10s timeout, 5 redirects, 2MB/20k-char caps
+- **Circuit breaker with exponential backoff** — failing providers are actually skipped by fallback selection; cooldowns scale 5min → 10min → 20min → cap
 - **Rate limiting** on mutating and AI streaming endpoints, plus monthly token budgets
 - **Content Security Policy** restricting network connectivity and script sources
 
 **A real red-team audit was run against Rony Agent** and found 6 issues — all fixed the same day, before further capability work continued: a git-staging path that could leak untracked credential files (now stages only the agent's own touched files, plus pre-commit validation against a sensitive-file list), a sandbox availability check that could silently fall back to unsandboxed execution (now fails closed with an explicit confirmation required), the prompt-injection filtering described above, unbounded activity-log growth (now rotated and paginated), a vision-capture window leak under repeated use (now pooled and cleaned up), and an oversized core module (now split into focused, independently testable files). This is the kind of thing we'll keep doing before any future release, not a one-time pass.
 
+**v3.0.0 added a second hardening pass** — 10 additional P0 security and correctness fixes: arbitrary file execution containment, WebSocket authentication, session token exposure, silent completion/import failures, a no-op circuit breaker, a silently-failing sandbox, SSRF in `server_manager.py`, zip-slip in backups, debugger path traversal, and the god-class decomposition of `chat_harness.py`.
+
 **Known limitations, stated plainly:** installers aren't code-signed yet; no formal third-party security audit has been performed yet — planned for a future release; container/VM sandbox tiers depend on Docker/WSL2/Windows Sandbox being available on your machine, with baseline (non-containerized) protection as the universal floor.
 
-Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)** · **[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)**
+Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)** · **[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)** · **[docs/RED_TEAM_AUDIT.md](./docs/RED_TEAM_AUDIT.md)**
 
 ---
 
 ## 📊 Project Status
 
-This is real, working software, currently at **v2.4.0** — actively developed and hardened through iterative testing, not a mockup.
+This is real, working software, currently at **v3.0.0** — actively developed and hardened through iterative testing, not a mockup.
 
-✅ **Solid & verified:** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent Agent Console + Duo Loop (including background job persistence), the Code Verification Agent, workspace trust enforcement swept across every route, session-token auth, OS-keychain-backed key encryption, a real automated test suite, CI/CD running on every push, multi-platform installer builds.
+✅ **Solid & verified:** core IDE (files, editor, Git, search, terminal), the full AI edit-proposal pipeline, the multi-agent Agent Console + Duo Loop (including background job persistence), the Code Verification Agent, workspace trust enforcement swept across every route, session-token auth (HTTP + WebSocket), OS-keychain-backed key encryption, a real automated test suite (500+ tests), CI/CD running on every push, multi-platform installer builds.
 
-✅ **Also solid & verified, new in v2.4.0:** the Rony Agent chat harness (tool loop, retrieval, task decomposition, visible thinking UI, Duo Loop escalation, strict command allowlisting) and its full bug-hunt pass (truncation/timeout handling, stuck-loop breakers, hang watchdogs, task-difficulty routing, UI state fixes); per-turn checkpoint/undo via scoped git commits; runtime-freshness detection; scoped approval memory; adaptive per-tier model routing with cost tracking; pre-proposal self-critique and a before/after regression test guard; a searchable activity timeline; a symbol indexer with find-references/go-to-definition; a background server-session tool; a structured git-diff reader; the secret scanner and prompt-injection filtering described in Security; codebase style learning; a dead-code detector; an agent-maintained architecture map; vision/screenshot capability; the full tiered sandboxing system; the production-hardening + red-team fix pass; a multi-language Run button; and inline AI code completion (ghost-text suggestions, Tab to accept).
+✅ **Also solid & verified, carried forward from v2.4.0:** the Rony Agent chat harness (tool loop, retrieval, task decomposition, visible thinking UI, Duo Loop escalation, strict command allowlisting); per-turn checkpoint/undo via scoped git commits; runtime-freshness detection; scoped approval memory; adaptive per-tier model routing with cost tracking; pre-proposal self-critique and a before/after regression test guard; a searchable activity timeline; a symbol indexer with find-references/go-to-definition; a background server-session tool; a structured git-diff reader; the secret scanner and prompt-injection filtering; codebase style learning; a dead-code detector; an agent-maintained architecture map; vision/screenshot capability; the full tiered sandboxing system; a multi-language Run button; and inline AI code completion (ghost-text suggestions, Tab to accept).
 
-🛠️ **In flight (built with strict no-refactor boundaries against the rest of the app, pending final verification):** GitHub commit/push integration, Python debugging via `debugpy` with Monaco breakpoint support.
+✅ **New & verified in v3.0.0:** the 10 P0 security hardening fixes (arbitrary file execution, WebSocket auth, token exposure, silent completion/import failures, honest circuit breaker, fail-closed sandbox, SSRF defense in `server_manager`, zip-slip, debugger containment, `chat_harness` decomposition); the New File/Folder in-app creation; agent URL context fetching with SSRF defense; VS Code-style IntelliSense with working Monaco workers and custom completion providers for HTML/XML tags, C/C++ `#include`, and JS/TS relative imports; Find & Replace across files; Error Lens inline diagnostics; Live Preview panel for `server_session`; Markdown preview pane; inline git blame; Recent files (`Ctrl+Tab`); full MCP support (server lifecycle, protocol conformance, agent integration with approval-gated tools, discovery scanner, settings UI); and self-contained cross-platform installers (bundled Python 3.11 + Node.js 20).
 
-🗺️ **Backlog:** command palette, file drag-drop upload, terminal split, workspace templates, markdown preview, git blame, find-all-references UI, minimap, a plugin/extension system, real-time collaboration, macOS installer support, code signing, MCP server security scanning integration, LSP-based live diagnostics, and a formal third-party security audit.
+🛠️ **In flight** (built with strict no-refactor boundaries against the rest of the app, pending final verification): Python debugging via `debugpy` with Monaco breakpoint support.
+
+🗺️ **Backlog:** file drag-drop upload, terminal split, workspace templates, find-all-references UI, minimap, a plugin/extension system, real-time collaboration, code signing, LSP-based live diagnostics, and a formal third-party security audit.
 
 Built iteratively, hardened by actually testing behavior — not by assuming code that compiles is code that works. Every capability above marked "solid & verified" was confirmed with real task runs, not just passing unit tests; several bugs in the list only surfaced that way and unit tests alone would have missed them.
 
@@ -279,6 +342,8 @@ Built iteratively, hardened by actually testing behavior — not by assuming cod
 | **[ARCHITECTURE.md](./ARCHITECTURE.md)** | Full system design, data flow, and component breakdown |
 | **[SECURITY.md](./SECURITY.md)** | Security policy, reporting SLA, security controls summary |
 | **[docs/THREAT_MODEL.md](./docs/THREAT_MODEL.md)** | Trust boundaries, threats, and mitigations |
+| **[docs/RED_TEAM_AUDIT.md](./docs/RED_TEAM_AUDIT.md)** | The 6 red-team findings and their fixes |
+| **[MCP_INTEGRATION.md](./MCP_INTEGRATION.md)** | MCP server configuration, security model, examples |
 | **[Documentation.md](./documentation.md)** | Complete technical specification and API documentation |
 | **[ROADMAP.md](./ROADMAP.md)** | What's shipped, what's in progress, what's next |
 | **[CONTRIBUTING.md](./CONTRIBUTING.md)** | How to set up, branch, and submit PRs |
@@ -287,7 +352,7 @@ Built iteratively, hardened by actually testing behavior — not by assuming cod
 
 ## 🤝 Contributing
 
-Bug reports, feature ideas, and pull requests are genuinely welcome — particularly around **plugin execution, macOS support, code signing, LSP integration, and testing improvements**, but any contribution counts. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** to get set up. PRs need to pass CI (typecheck, build, backend test suite) before merge.
+Bug reports, feature ideas, and pull requests are genuinely welcome — particularly around **plugin execution, code signing, LSP integration, and testing improvements**, but any contribution counts. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** to get set up. PRs need to pass CI (typecheck, build, backend test suite) before merge.
 
 
 ## 📄 License
