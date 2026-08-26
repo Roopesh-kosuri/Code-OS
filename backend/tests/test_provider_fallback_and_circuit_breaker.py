@@ -3,20 +3,23 @@ from app.features.ai.provider_health import ProviderHealthTracker
 
 
 def test_circuit_breaker_non_blocking_tracking():
+    """Circuit stays closed for < 5 failures; trips open and blocks on 5th (FIX 6)."""
     tracker = ProviderHealthTracker()
 
     for i in range(4):
         tracker.record_outcome("groq", success=False, error_msg=f"Error {i}")
         is_open, _, _ = tracker.is_circuit_open("groq")
-        assert is_open is False
+        assert is_open is False, f"Circuit should stay closed at {i+1} failures"
 
-    # 5th failure records metrics but stays non-blocking
+    # 5th failure trips the circuit breaker (FIX 6: circuit now actually opens)
     tracker.record_outcome("groq", success=False, error_msg="Error 5")
     is_open, remaining, msg = tracker.is_circuit_open("groq")
-    assert is_open is False
+    assert is_open is True, "Circuit must open after 5 consecutive failures (FIX 6)"
+    assert remaining > 0, "Cooldown remaining must be positive"
 
     health = tracker.get_health("groq")
     assert health["consecutive_failures"] == 5
+    assert health["circuit_open"] is True
 
 
 def test_fallback_provider_selection_skips_failed_and_unconfigured():

@@ -1,3 +1,4 @@
+import { McpServersSection } from "./McpServersSection";
 import React, { useState, useEffect, useCallback } from "react";
 import {
   X,
@@ -37,7 +38,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Category = "general" | "providers" | "editor" | "terminal" | "toolchains" | "git" | "agents" | "timeline" | "theme" | "security" | "about";
+type Category = "general" | "providers" | "editor" | "terminal" | "toolchains" | "git" | "mcp" | "agents" | "timeline" | "theme" | "security" | "about";
 
 interface ThemeSwatch {
   id: string;
@@ -84,6 +85,15 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   );
   const [editorInlineCompletion, setEditorInlineCompletion] = useState(
     () => localStorage.getItem("code-os:editor.inlineCompletion") !== "false"
+  );
+  const [editorIntellisense, setEditorIntellisense] = useState(
+    () => localStorage.getItem("code-os:editor.enableIntellisense") !== "false"
+  );
+  const [editorErrorLens, setEditorErrorLens] = useState(
+    () => localStorage.getItem("code-os:editor.enableErrorLens") !== "false"
+  );
+  const [allowLinkFetch, setAllowLinkFetch] = useState(
+    () => localStorage.getItem("code-os:ai.allow_link_fetch") !== "false"
   );
 
   // Terminal options (immediate auto-save)
@@ -566,6 +576,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     { id: "terminal", label: "Terminal", icon: "terminal" },
     { id: "toolchains", label: "Toolchains & Runtimes", icon: "code_blocks" },
     { id: "git", label: "Git & Source Control", icon: "account_tree" },
+    { id: "mcp", label: "MCP Servers", icon: "hub" },
     { id: "agents", label: "Agents & Approval Memory", icon: "psychology" },
     { id: "timeline", label: "Activity Timeline", icon: "history" },
     { id: "theme", label: "Theme & Palette", icon: "palette" },
@@ -912,17 +923,44 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                         onChange={(e) => {
                           setEditorInlineCompletion(e.target.checked);
                           localStorage.setItem("code-os:editor.inlineCompletion", String(e.target.checked));
-                          void saveSetting("editor.inlineCompletionEnabled", String(e.target.checked));
-                          showFeedback(`AI inline completion ${e.target.checked ? "enabled" : "disabled"}`);
-                        }}
-                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
-                      />
-                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
-                    </label>
+                            void saveSetting("editor.inlineCompletionEnabled", String(e.target.checked));
+                            showFeedback(`AI inline completion ${e.target.checked ? "enabled" : "disabled"}`);
+                          }}
+                          className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                        />
+                        <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                      <div>
+                        <div className="font-ui-label-reg text-ui-label-reg text-on-surface flex items-center gap-1.5">
+                          <span>Code suggestions (IntelliSense)</span>
+                          <span className="px-1.5 py-0.5 rounded text-[9.5px] font-bold bg-primary/20 text-primary border border-primary/30 font-mono">VS Code</span>
+                        </div>
+                        <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                          VS Code-style language completions, HTML/XML tag closures, C++ headers, and import path IntelliSense.
+                        </div>
+                      </div>
+                      <label className="relative inline-block w-10 h-6 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={editorIntellisense}
+                          onChange={(e) => {
+                            setEditorIntellisense(e.target.checked);
+                            localStorage.setItem("code-os:editor.enableIntellisense", String(e.target.checked));
+                            void saveSetting("editor.enableIntellisense", String(e.target.checked));
+                            window.dispatchEvent(new CustomEvent("code-os:toggle-intellisense", { detail: { enabled: e.target.checked } }));
+                            showFeedback(`IntelliSense ${e.target.checked ? "enabled" : "disabled"}`);
+                          }}
+                          className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                        />
+                        <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                      </label>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
             {/* ── Category: Terminal ───────────────────────────────────────── */}
             {activeCategory === "terminal" && (
@@ -1115,11 +1153,34 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                         const val = Math.max(1, Math.min(20, Number(e.target.value)));
                         setDuoMaxRounds(val);
                         localStorage.setItem("code-os:duo.maxRounds", String(val));
-                        showFeedback(`Duo max rounds: ${val}`);
-                      }}
-                      className="w-full bg-[#131318] border border-surface-container-high rounded-lg p-2.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none"
-                    />
-                  </div>
+                          showFeedback(`Duo max rounds: ${val}`);
+                        }}
+                        className="w-full bg-[#131318] border border-surface-container-high rounded-lg p-2.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                      <div>
+                        <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Allow agent to fetch links</div>
+                        <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                          Automatically fetch readable documentation and text from URLs you paste in chat.
+                        </div>
+                      </div>
+                      <label className="relative inline-block w-10 h-6 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={allowLinkFetch}
+                          onChange={(e) => {
+                            setAllowLinkFetch(e.target.checked);
+                            localStorage.setItem("code-os:ai.allow_link_fetch", String(e.target.checked));
+                            void saveSetting("ai.allow_link_fetch", String(e.target.checked));
+                            showFeedback(`Link fetching ${e.target.checked ? "enabled" : "disabled"}`);
+                          }}
+                          className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                        />
+                        <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                      </label>
+                    </div>
 
                   <div className="grid grid-cols-2 gap-4 border-t border-surface-container-high/40 pt-4">
                     <div>
@@ -1283,6 +1344,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             )}
 
             {/* ── Category: About ──────────────────────────────────────────── */}
+            {activeCategory === "mcp" && <McpServersSection />}
+
             {activeCategory === "about" && (
               <div className="space-y-6">
                 <div className="flex items-center gap-4">

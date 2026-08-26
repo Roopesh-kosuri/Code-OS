@@ -115,7 +115,7 @@ export function OpenFolderModal({ onClose }: OpenFolderModalProps) {
           </form>
 
           {/* Recent Workspaces section */}
-          {recentWorkspaces.length > 0 && (
+          {(recentWorkspaces || []).length > 0 && (
             <div className="space-y-2 border-t border-white/10 pt-4">
               <div className="text-[10px] text-on-surface-variant/70 font-bold uppercase tracking-wider select-none mb-1.5">
                 Recent Folders

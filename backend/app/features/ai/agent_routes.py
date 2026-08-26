@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import uuid
 from fastapi import APIRouter, Query, HTTPException
 from pydantic import BaseModel

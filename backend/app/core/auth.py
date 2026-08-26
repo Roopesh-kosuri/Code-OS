@@ -34,7 +34,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 from fastapi.responses import Response
 
 logger = logging.getLogger(__name__)
@@ -51,10 +51,6 @@ _UNAUTHENTICATED_PATHS = frozenset({
     "/api/health",
 })
 
-
-# HTTP methods that are always checked.  GET is checked only when the path is
-# NOT in the unauthenticated allowlist above.
-_ALWAYS_CHECK_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 def _token_file_path() -> Path:
@@ -119,8 +115,7 @@ def _is_exempt(request: Request) -> bool:
     path = request.url.path
     if path in _UNAUTHENTICATED_PATHS:
         return True
-    if request.headers.get("upgrade", "").lower() == "websocket":
-        return True
+    # WebSocket upgrades are NOT blanket-exempted from auth.
     return False
 
 

@@ -8,12 +8,7 @@ from ...db.database import get_db
 router = APIRouter()
 
 
-async def _ensure_trusted(workspace: str):
-    from fastapi import HTTPException
-    from ..workspaces.trust_service import get_workspace_trust
-    trust = await get_workspace_trust(workspace)
-    if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode.")
+from ...core.trust import ensure_workspace_trusted as _ensure_trusted
 
 
 @router.get("/semantic", response_model=list[SemanticSearchResult])
@@ -58,6 +53,7 @@ async def replace(payload: ReplaceRequest) -> list[ReplaceResult]:
             payload.regex,
             payload.case_sensitive,
             payload.whole_word,
+            payload.files,
         )
     ]
 

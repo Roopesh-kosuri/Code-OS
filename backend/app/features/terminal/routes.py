@@ -17,11 +17,9 @@ from .language_detector import get_all_toolchains
 router = APIRouter()
 
 
+from ...core.trust import ensure_workspace_trusted
 async def _ensure_trusted(workspace: str):
-    from ..workspaces.trust_service import get_workspace_trust
-    trust = await get_workspace_trust(workspace)
-    if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode. Terminal execution is disabled.")
+    await ensure_workspace_trusted(workspace, custom_message='Workspace is in Restricted Mode. Terminal execution is disabled.')
 
 
 @router.get("/sessions", response_model=list[TerminalSessionDto])
@@ -69,6 +67,19 @@ async def kill(session_id: str) -> dict[str, str]:
 
 @router.websocket("/ws")
 async def terminal_websocket(websocket: WebSocket) -> None:
+    # SECURITY: enforce session token before accepting the WebSocket.
+    from app.core.auth import get_token
+    import secrets as _secrets
+    _provided = websocket.query_params.get("token", "")
+    try:
+        _expected = get_token()
+    except Exception:
+        await websocket.close(code=4503)
+        return
+    if not _secrets.compare_digest(_provided, _expected):
+        await websocket.close(code=4401)
+        return
+
     cwd = websocket.query_params.get("cwd")
     # SECURITY: reject WebSocket connections that do not supply a workspace path.
     # Without a cwd we cannot determine trust, so granting a shell would be a

@@ -7,16 +7,14 @@ import json
 import socket
 import sys
 import time
-import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from ...core.auth import get_token
-from ...core.paths import normalize_path
+from ...core.paths import normalize_path, ensure_within_workspace
 from ..ai.sandbox.executor import MAX_COMMAND_MEMORY_BYTES, MAX_COMMAND_TIMEOUT_SECONDS, _monitor_process_governor
 
 router = APIRouter()
@@ -24,6 +22,7 @@ websocket_router = APIRouter()
 
 
 class DebugStartRequest(BaseModel):
+    workspace: str = ""  # SECURITY: required to enforce workspace containment
     file_path: str
     args: list[str] = Field(default_factory=list)
 
@@ -41,9 +40,11 @@ class DebugSession:
     governor_task: asyncio.Task[tuple[bool, str]]
     timeout_task: asyncio.Task[None]
     output_task: asyncio.Task[None]
+    workspace: str = ""  # SECURITY: stored to validate future breakpoint paths
     created_at: float = field(default_factory=time.monotonic)
 
 
+MAX_DEBUG_SESSIONS = 10
 _sessions: dict[int, DebugSession] = {}
 
 
@@ -78,7 +79,20 @@ async def _reap_session(process_id: int, session: DebugSession) -> None:
 
 
 async def start_debugger(payload: DebugStartRequest) -> dict[str, int]:
-    file_path = normalize_path(payload.file_path)
+    terminated_pids = [pid for pid, s in _sessions.items() if s.process.returncode is not None]
+    for pid in terminated_pids:
+        _sessions.pop(pid, None)
+
+    if len(_sessions) >= MAX_DEBUG_SESSIONS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Maximum concurrent debug sessions reached ({MAX_DEBUG_SESSIONS}). Terminate an existing session before starting a new one."
+        )
+
+    # SECURITY: enforce workspace containment before accepting any file_path
+    ws = payload.workspace or (str(normalize_path(payload.file_path).parent) if payload.file_path else "")
+    norm_workspace = normalize_path(ws)
+    file_path = ensure_within_workspace(str(norm_workspace), payload.file_path)
     if not file_path.is_file() or file_path.suffix.lower() != ".py":
         raise HTTPException(status_code=400, detail="Debugging requires an existing Python file")
 
@@ -96,6 +110,7 @@ async def start_debugger(payload: DebugStartRequest) -> dict[str, int]:
         governor_task=asyncio.create_task(_monitor_process_governor(process, max_memory_bytes=MAX_COMMAND_MEMORY_BYTES)),
         timeout_task=asyncio.create_task(_enforce_timeout(process)),
         output_task=asyncio.create_task(_discard_output(process.stdout)),
+        workspace=str(norm_workspace),
     )
     _sessions[process.pid] = session
     asyncio.create_task(_discard_output(process.stderr))
@@ -167,6 +182,7 @@ class DapClient:
 
 async def _connect_dap(port: int) -> DapClient:
     for _ in range(50):
+        writer = None
         try:
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
             client = DapClient(reader, writer)
@@ -174,6 +190,12 @@ async def _connect_dap(port: int) -> DapClient:
             await client.send_request("attach", {"justMyCode": True})
             return client
         except (ConnectionError, OSError):
+            if writer is not None:
+                try:
+                    writer.close()
+                    await writer.wait_closed()
+                except Exception:
+                    pass
             await asyncio.sleep(0.1)
     raise HTTPException(status_code=503, detail="Python debug adapter did not start")
 
@@ -197,7 +219,17 @@ async def _variables(client: DapClient) -> dict[str, Any]:
 async def _handle_command(client: DapClient, session: DebugSession, message: dict[str, Any]) -> dict[str, Any]:
     command = message.get("command")
     if command == "set_breakpoint":
-        result = await client.request("setBreakpoints", {"source": {"path": message["file_path"]}, "breakpoints": [{"line": int(line)} for line in message.get("lines", [])]})
+        raw_path = message.get("file_path")
+        if not raw_path or not isinstance(raw_path, str):
+            return {"error": "Missing or invalid 'file_path'"}
+        # SECURITY: breakpoint path is user-supplied and must be contained within the session workspace.
+        try:
+            norm_file_path = str(ensure_within_workspace(session.workspace or str(normalize_path(raw_path).parent), raw_path))
+        except Exception:
+            raise HTTPException(status_code=403, detail=f"Breakpoint path outside workspace: {raw_path}")
+        raw_lines = message.get("lines", [])
+        clean_lines = [int(line) for line in raw_lines if isinstance(line, (int, str)) and str(line).isdigit()]
+        result = await client.request("setBreakpoints", {"source": {"path": norm_file_path}, "breakpoints": [{"line": l} for l in clean_lines]})
         if not client.configured:
             await client.request("configurationDone")
             client.configured = True
@@ -255,3 +287,5 @@ async def debug_websocket(websocket: WebSocket, process_id: int) -> None:
         pass
     finally:
         await client.close()
+
+

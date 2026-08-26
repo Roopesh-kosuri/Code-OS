@@ -239,16 +239,20 @@ async def run_file_stream(
 
     try:
         # 1. Path containment and resolution check
+        # SECURITY: Always enforce workspace containment; reject any path outside.
+        norm_ws = normalize_workspace(workspace)
         if os.path.isabs(file_path):
             abs_fp = Path(file_path).resolve()
-            if not workspace or not str(abs_fp).startswith(str(Path(workspace).resolve())):
-                norm_ws = abs_fp.parent
-                full_path = abs_fp
-            else:
-                norm_ws = normalize_workspace(workspace)
-                full_path = ensure_within_workspace(str(norm_ws), file_path)
+            try:
+                abs_fp.relative_to(norm_ws)
+            except ValueError:
+                yield sse("error", {
+                    "error": f"Security violation: '{file_path}' is outside the workspace. Only files within the workspace may be executed.",
+                    "failure_reason": "security_violation",
+                })
+                return
+            full_path = abs_fp
         else:
-            norm_ws = normalize_workspace(workspace)
             full_path = ensure_within_workspace(str(norm_ws), file_path)
 
         if not full_path.is_file():

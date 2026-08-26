@@ -1,8 +1,8 @@
 /**
- * inlineCompletionProvider.ts — Monaco Inline AI Code Completion Provider
+ * inlineCompletionProvider.ts - Monaco Inline AI Code Completion Provider
  *
  * Implements ghost-text autocomplete with:
- * - 350ms debounce and AbortController cancellation on keystrokes
+ * - 250ms debounce and AbortController cancellation on keystrokes
  * - Budgeted context extraction (last 100 lines prefix, ~30 lines suffix)
  * - Safe Tab accept / Esc dismiss integration with Monaco
  * - Settings toggle check (persisted in settingsStore & localStorage)
@@ -47,11 +47,12 @@ export function registerInlineCompletionProvider(monaco: typeof monacoType): mon
     { pattern: "**" },
     {
       provideInlineCompletions: async (model, position, _context, token) => {
-        // 1. Check if inline completions are enabled in settings
+        // 1. Check if inline completions are enabled in settings / localStorage
         const settings = useSettingsStore.getState().settings;
         const isEnabled =
+          settings["editor.inlineCompletion"] !== "false" &&
           settings["editor.inlineCompletionEnabled"] !== "false" &&
-          localStorage.getItem("code-os:editor.inlineCompletion") !== "false";
+          (typeof localStorage !== "undefined" ? localStorage.getItem("code-os:editor.inlineCompletion") !== "false" : true);
 
         if (!isEnabled) {
           return { items: [] };
@@ -66,10 +67,10 @@ export function registerInlineCompletionProvider(monaco: typeof monacoType): mon
         const abortController = new AbortController();
         activeAbortController = abortController;
 
-        // 3. Debounce typing by 350ms before dispatching LLM request
+        // 3. Debounce typing by 250ms before dispatching LLM request
         try {
           await new Promise<void>((resolve, reject) => {
-            const timer = setTimeout(resolve, 350);
+            const timer = setTimeout(resolve, 250);
 
             token.onCancellationRequested(() => {
               clearTimeout(timer);
@@ -118,7 +119,8 @@ export function registerInlineCompletionProvider(monaco: typeof monacoType): mon
 
         // 5. Send completion request with active indicator
         useInlineCompletionStore.getState().setFetching(true);
-        const workspace = useWorkspaceStore.getState().currentWorkspace || "";
+        const workspaceObj = useWorkspaceStore.getState().currentWorkspace;
+        const workspace = typeof workspaceObj === "string" ? workspaceObj : workspaceObj?.path || "";
         const filePath = model.uri.fsPath || model.uri.path || "";
         const language = model.getLanguageId() || "plaintext";
 
@@ -143,7 +145,7 @@ export function registerInlineCompletionProvider(monaco: typeof monacoType): mon
 
           useInlineCompletionStore.getState().setLastLatencyMs(res.latency_ms || null);
 
-          if (res.completion && res.completion.trim()) {
+          if (res.completion && res.completion.length > 0) {
             return {
               items: [
                 {

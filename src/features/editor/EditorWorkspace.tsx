@@ -1,9 +1,32 @@
-import { lazy, Suspense, useEffect, useState } from "react";
-import { Columns2, Replace, Save, SaveAll, Search, X, FolderOpen, Loader2, Sparkles, ChevronRight, FileCode, Check, Play, Square, Bug } from "lucide-react";
+import { lazy, Suspense, useEffect, useState, useRef, useCallback } from "react";
+import {
+  Columns2,
+  Replace,
+  Save,
+  SaveAll,
+  Search,
+  X,
+  FolderOpen,
+  Loader2,
+  Sparkles,
+  ChevronRight,
+  FileCode,
+  Check,
+  Play,
+  Square,
+  Bug,
+  Eye,
+  GitBranch,
+} from "lucide-react";
 import * as monaco from "monaco-editor";
 import Editor, { loader } from "@monaco-editor/react";
 
 loader.config({ monaco });
+
+import "./monacoWorkers";
+import { registerIntellisenseProviders, disposeIntellisenseProviders } from "./intellisenseProviders";
+import { parseDiagnostics, type ParsedDiagnostic } from "./errorLensParser";
+import { MarkdownPreview } from "./MarkdownPreview";
 
 import { Button } from "../../components/ui/Button";
 import { FileIcon } from "../../components/ui/FileIcon";
@@ -16,6 +39,19 @@ import { installDebugDecorations } from "../../components/editor/MonacoPane";
 import { debugClient } from "../../components/debug/debugClient";
 import { DebugPanel } from "../../components/debug/DebugPanel";
 import { DebugToolbar } from "../../components/debug/DebugToolbar";
+import { api } from "../../lib/api";
+
+function formatRelativeTime(timestamp: number): string {
+  if (!timestamp) return "";
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - timestamp;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  if (diff < 2592000) return `${Math.floor(diff / 86400)}d ago`;
+  if (diff < 31536000) return `${Math.floor(diff / 2592000)}mo ago`;
+  return `${Math.floor(diff / 31536000)}y ago`;
+}
 
 function getLanguageFromPath(filePath: string | null): string {
   if (!filePath) return "plaintext";
@@ -43,6 +79,7 @@ function getLanguageFromPath(filePath: string | null): string {
     less: "less",
     json: "json",
     md: "markdown",
+    markdown: "markdown",
     sql: "sql",
     sh: "shell",
     bash: "shell",
@@ -66,11 +103,28 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
   const updateContent = useEditorStore((state) => state.updateContent);
   const fontSize = useEditorStore((state) => state.fontSize);
   const tabSize = useEditorStore((state) => state.tabSize);
-  const theme = useSettingsStore((state) => state.settings.theme);
+  const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
+
+  const runLogs = useRunStore((state) => state.logs);
+  const runStatus = useRunStore((state) => state.status);
 
   const [editorInstance, setEditorInstance] = useState<any>(null);
+  const [monacoInstance, setMonacoInstance] = useState<any>(null);
   const [showInline, setShowInline] = useState(false);
   const [inlinePrompt, setInlinePrompt] = useState("");
+  const [isIntellisenseActive, setIsIntellisenseActive] = useState(() =>
+    typeof localStorage !== "undefined" ? localStorage.getItem("code-os:editor.enableIntellisense") !== "false" : true
+  );
+  const [isErrorLensActive, setIsErrorLensActive] = useState(() =>
+    typeof localStorage !== "undefined" ? localStorage.getItem("code-os:editor.enableErrorLens") !== "false" : true
+  );
+  const [isGitBlameActive, setIsGitBlameActive] = useState(() =>
+    typeof localStorage !== "undefined" ? localStorage.getItem("code-os:editor.enableGitBlame") === "true" : false
+  );
+
+  const [blameMap, setBlameMap] = useState<Record<number, any>>({});
+  const errorLensDecorationsRef = useRef<string[]>([]);
+  const blameDecorationsRef = useRef<string[]>([]);
 
   if (!file) {
     return (
@@ -83,6 +137,115 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
   const effectiveLanguage = (!file.language || file.language === "plaintext")
     ? getLanguageFromPath(file.path)
     : file.language;
+
+  // Fetch Git Blame data
+  const fetchBlame = useCallback(async () => {
+    if (!currentWorkspace || !file?.path || !isGitBlameActive) {
+      setBlameMap({});
+      return;
+    }
+    try {
+      const res = await api.get<{ git: boolean; lines: any[] }>("/api/git/blame", {
+        workspace: currentWorkspace.path,
+        file_path: file.path,
+      });
+      if (res?.git && Array.isArray(res.lines)) {
+        const map: Record<number, any> = {};
+        for (const item of res.lines) {
+          map[item.line] = item;
+        }
+        setBlameMap(map);
+      } else {
+        setBlameMap({});
+      }
+    } catch {
+      setBlameMap({});
+    }
+  }, [currentWorkspace?.path, file?.path, isGitBlameActive]);
+
+  useEffect(() => {
+    void fetchBlame();
+  }, [fetchBlame]);
+
+  // Error Lens: parse diagnostics & render markers + inline decorations
+  useEffect(() => {
+    if (!editorInstance || !monacoInstance || !file || !currentWorkspace) return;
+    const model = editorInstance.getModel();
+    if (!model) return;
+
+    if (runStatus === "compiling" || runStatus === "running") {
+      monacoInstance.editor.setModelMarkers(model, "error-lens", []);
+      errorLensDecorationsRef.current = editorInstance.deltaDecorations(errorLensDecorationsRef.current, []);
+      return;
+    }
+
+    if ((runStatus === "completed" || runStatus === "failed") && isErrorLensActive) {
+      const fullLog = runLogs.map((l) => l.text).join("\n");
+      const allDiags = parseDiagnostics(fullLog, currentWorkspace.path);
+      const normFilePath = file.path.replace(/\\/g, "/").toLowerCase();
+      const fileDiags = allDiags.filter((d) => {
+        const dPath = d.filePath.replace(/\\/g, "/").toLowerCase();
+        return normFilePath.endsWith(dPath) || dPath.endsWith(normFilePath);
+      });
+
+      const markers = fileDiags.map((d) => ({
+        severity: d.severity === "error" ? monacoInstance.MarkerSeverity.Error : monacoInstance.MarkerSeverity.Warning,
+        message: d.message,
+        startLineNumber: d.line,
+        startColumn: d.column || 1,
+        endLineNumber: d.line,
+        endColumn: 1000,
+        source: `Error Lens (${d.source})`,
+      }));
+      monacoInstance.editor.setModelMarkers(model, "error-lens", markers);
+
+      const decorations = fileDiags.map((d) => ({
+        range: new monacoInstance.Range(d.line, 1, d.line, 1000),
+        options: {
+          isWholeLine: true,
+          after: {
+            contentText: `   ■ ${d.message}`,
+            inlineClassName: d.severity === "error"
+              ? "text-error/80 text-[11px] font-mono italic select-none pl-3"
+              : "text-warning/80 text-[11px] font-mono italic select-none pl-3",
+          },
+        },
+      }));
+      errorLensDecorationsRef.current = editorInstance.deltaDecorations(errorLensDecorationsRef.current, decorations);
+    }
+  }, [runLogs, runStatus, isErrorLensActive, editorInstance, monacoInstance, file?.path, currentWorkspace?.path]);
+
+  // Update Git Blame inline annotation on active line
+  const updateBlameAnnotation = useCallback((lineNum: number) => {
+    if (!editorInstance || !monacoInstance || !isGitBlameActive) {
+      if (editorInstance) {
+        blameDecorationsRef.current = editorInstance.deltaDecorations(blameDecorationsRef.current, []);
+      }
+      return;
+    }
+    const info = blameMap[lineNum];
+    if (!info) {
+      blameDecorationsRef.current = editorInstance.deltaDecorations(blameDecorationsRef.current, []);
+      return;
+    }
+
+    const relTime = formatRelativeTime(info.author_time);
+    const annotationText = `   ${info.author}${relTime ? `, ${relTime}` : ""} • ${info.summary}`;
+
+    const decorations = [
+      {
+        range: new monacoInstance.Range(lineNum, 1, lineNum, 1000),
+        options: {
+          isWholeLine: true,
+          after: {
+            contentText: annotationText,
+            inlineClassName: "text-on-surface-variant/40 text-[11px] font-mono select-none pl-4 hover:text-on-surface-variant transition-colors",
+          },
+        },
+      },
+    ];
+    blameDecorationsRef.current = editorInstance.deltaDecorations(blameDecorationsRef.current, decorations);
+  }, [editorInstance, monacoInstance, isGitBlameActive, blameMap]);
 
   const handleBeforeMount = (monaco: any) => {
     monaco.editor.defineTheme("vs-stitch-dark", {
@@ -116,18 +279,97 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
 
   const handleEditorDidMount = (editor: any, monaco: any) => {
     setEditorInstance(editor);
+    setMonacoInstance(monaco);
+    editor.focus();
+
+    if (isIntellisenseActive) {
+      registerIntellisenseProviders(monaco);
+    }
+
+    const intellisenseToggleListener = (e: Event) => {
+      const enabled = (e as CustomEvent)?.detail?.enabled ?? true;
+      setIsIntellisenseActive(enabled);
+      if (enabled) {
+        registerIntellisenseProviders(monaco);
+        editor.updateOptions({
+          quickSuggestions: { other: true, comments: false, strings: true },
+          suggestOnTriggerCharacters: true,
+          parameterHints: { enabled: true },
+          snippetSuggestions: "inline",
+        });
+      } else {
+        disposeIntellisenseProviders();
+        editor.updateOptions({
+          quickSuggestions: false,
+          suggestOnTriggerCharacters: false,
+          parameterHints: { enabled: false },
+          snippetSuggestions: "none",
+        });
+      }
+    };
+    window.addEventListener("code-os:toggle-intellisense", intellisenseToggleListener);
+
+    const errorLensToggleListener = (e: Event) => {
+      const enabled = (e as CustomEvent)?.detail?.enabled ?? true;
+      setIsErrorLensActive(enabled);
+      if (!enabled) {
+        const model = editor.getModel();
+        if (model) monaco.editor.setModelMarkers(model, "error-lens", []);
+        errorLensDecorationsRef.current = editor.deltaDecorations(errorLensDecorationsRef.current, []);
+      }
+    };
+    window.addEventListener("code-os:toggle-error-lens", errorLensToggleListener);
+
+    const blameToggleListener = (e: Event) => {
+      const enabled = (e as CustomEvent)?.detail?.enabled ?? false;
+      setIsGitBlameActive(enabled);
+      if (!enabled) {
+        blameDecorationsRef.current = editor.deltaDecorations(blameDecorationsRef.current, []);
+      }
+    };
+    window.addEventListener("code-os:toggle-git-blame", blameToggleListener);
+
+    editor.onDidDispose(() => {
+      window.removeEventListener("code-os:toggle-intellisense", intellisenseToggleListener);
+      window.removeEventListener("code-os:toggle-error-lens", errorLensToggleListener);
+      window.removeEventListener("code-os:toggle-git-blame", blameToggleListener);
+    });
+
+    const focusHandler = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      if (!detail?.path || detail.path === file.path) {
+        editor.focus();
+      }
+    };
+    window.addEventListener("code-os:focus-editor", focusHandler);
+    editor.onDidDispose(() => {
+      window.removeEventListener("code-os:focus-editor", focusHandler);
+    });
+
     monaco.editor.setTheme("vs-stitch-dark");
     registerInlineCompletionProvider(monaco);
     installDebugDecorations(editor, monaco, file.path);
+
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI, () => {
       setShowInline(true);
     });
 
+    // On file edit: clear stale error lens diagnostics for this file
+    editor.onDidChangeModelContent(() => {
+      const model = editor.getModel();
+      if (model) {
+        monaco.editor.setModelMarkers(model, "error-lens", []);
+      }
+      errorLensDecorationsRef.current = editor.deltaDecorations(errorLensDecorationsRef.current, []);
+    });
+
+    // On cursor move: update cursor status & blame annotation
     editor.onDidChangeCursorPosition((e: any) => {
       useEditorStore.getState().setCursorPosition({
         line: e.position.lineNumber,
         col: e.position.column,
       });
+      updateBlameAnnotation(e.position.lineNumber);
     });
 
     const updateMarkers = () => {
@@ -155,7 +397,7 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
         <div className="h-full flex items-center justify-center bg-[#0a0a0c]">
           <div className="flex flex-col items-center gap-2">
             <Loader2 size={20} className="text-primary-container animate-spin" />
-            <span className="text-[11px] text-on-surface-variant font-mono">Loading editor…</span>
+            <span className="text-[11px] text-on-surface-variant font-mono">Loading editor.</span>
           </div>
         </div>
       }>
@@ -194,7 +436,7 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
             hideCursorInOverviewRuler: true,
             inlineSuggest: {
               enabled: true,
-              mode: "prefix",
+              mode: "subwordSmart",
             },
             suggest: {
               preview: true,
@@ -245,10 +487,13 @@ export function EditorWorkspace() {
   const [findText, setFindText] = useState("");
   const [replaceText, setReplaceText] = useState("");
   const [showSearch, setShowSearch] = useState(false);
+  const [showMarkdownPreview, setShowMarkdownPreview] = useState(false);
+
   const openFiles = useEditorStore((state) => state.openFiles);
   const activePath = useEditorStore((state) => state.activePath);
   const splitPath = useEditorStore((state) => state.splitPath);
   const autoSave = useEditorStore((state) => state.autoSave);
+  const tabSize = useEditorStore((state) => state.tabSize);
   const closeFile = useEditorStore((state) => state.closeFile);
   const saveFile = useEditorStore((state) => state.saveFile);
   const saveAll = useEditorStore((state) => state.saveAll);
@@ -270,7 +515,23 @@ export function EditorWorkspace() {
   const isRunning = runStatus === "running" || runStatus === "compiling";
   const [isDebugging, setIsDebugging] = useState(debugClient.snapshot().active);
 
+  const isMarkdown = activeFile?.path?.toLowerCase().endsWith(".md") || activeFile?.path?.toLowerCase().endsWith(".markdown");
+
   useEffect(() => debugClient.subscribe((state) => setIsDebugging(state.active)), []);
+
+  // Ctrl+Shift+V Markdown Preview shortcut
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "V" || e.key === "v")) {
+        if (isMarkdown) {
+          e.preventDefault();
+          setShowMarkdownPreview((v) => !v);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isMarkdown]);
 
   const handleRunOrStop = async () => {
     if (isRunning) {
@@ -346,7 +607,7 @@ export function EditorWorkspace() {
 
   return (
     <section data-testid="editor-panel" className="flex flex-col h-full min-h-0 w-full bg-[#0a0a0c] overflow-hidden select-none">
-      {/* ── File Tabs Header Row (Sleek Modern Tabs) ───────────────────── */}
+      {/* File Tabs Header Row */}
       <div className="h-9 min-h-[36px] flex items-center justify-between px-2 bg-[#0e1014] border-b border-surface-variant/50 overflow-hidden shrink-0">
         {/* Tabs List */}
         <div className="flex items-center h-full overflow-x-auto no-scrollbar flex-1 min-w-0" role="tablist">
@@ -358,13 +619,10 @@ export function EditorWorkspace() {
                 key={file.path}
                 role="tab"
                 aria-selected={isActive}
-                onClick={() => {
-                  useWorkspaceStore.getState().selectWorkspaceForPath(file.path);
-                  useEditorStore.setState({ activePath: file.path });
-                }}
-                className={`h-full flex items-center gap-2 px-3 cursor-pointer group transition-all duration-150 shrink-0 text-xs border-r border-white/[0.06] ${
+                onClick={() => useEditorStore.setState({ activePath: file.path })}
+                className={`group flex items-center gap-2 px-3 h-full cursor-pointer border-r border-surface-variant/30 text-xs transition-all relative ${
                   isActive
-                    ? "bg-[#0a0a0c] text-white border-t-2 border-t-primary shadow-xs font-medium"
+                    ? "bg-[#0a0a0c] text-on-surface font-medium border-t-2 border-t-primary"
                     : "bg-[#0e1014] hover:bg-[#13151b] text-on-surface-variant/75 hover:text-on-surface"
                 }`}
               >
@@ -394,6 +652,22 @@ export function EditorWorkspace() {
 
         {/* Toolbar Controls */}
         <div className="flex items-center gap-1 pl-2 shrink-0 text-on-surface-variant">
+          {/* Markdown Preview toggle */}
+          {isMarkdown && (
+            <button
+              title="Toggle Markdown Preview (Ctrl+Shift+V)"
+              onClick={() => setShowMarkdownPreview((v) => !v)}
+              className={`h-7 px-2 flex items-center gap-1 rounded-lg text-xs font-mono transition-colors cursor-pointer ${
+                showMarkdownPreview
+                  ? "bg-primary-container/20 text-primary border border-primary/30"
+                  : "hover:text-on-surface hover:bg-white/5"
+              }`}
+            >
+              <Eye size={13} />
+              <span className="text-[10.5px]">Preview</span>
+            </button>
+          )}
+
           {/* Find toggle */}
           <button
             title="Toggle Find/Replace"
@@ -425,7 +699,7 @@ export function EditorWorkspace() {
                 onChange={(e) => setFindText(e.target.value)}
                 placeholder="Find"
               />
-              <span className="text-outline-variant text-[10px]">→</span>
+              <span className="text-outline-variant text-[10px]"> </span>
               <input
                 className="w-20 bg-transparent border-none text-[11px] text-on-surface placeholder:text-outline-variant focus:outline-none"
                 value={replaceText}
@@ -443,127 +717,99 @@ export function EditorWorkspace() {
             </div>
           )}
 
-          {/* ── Run / Stop Action Button ── */}
+          {/* Run / Stop Action Button */}
           <button
             data-testid="editor-run-btn"
-            title={isRunning ? "Stop Execution (Ctrl+Shift+R / F5)" : `Run ${activeFile ? getLanguageFromPath(activeFile.path).toUpperCase() : "File"} (Ctrl+Shift+R / F5)`}
+            title={isRunning ? "Stop execution" : "Run file in terminal"}
             onClick={() => void handleRunOrStop()}
-            disabled={!activePath}
-            className={`h-7 px-2.5 flex items-center gap-1.5 rounded-lg text-xs font-mono font-medium transition-all cursor-pointer shadow-xs disabled:opacity-30 mr-1 ${
+            className={`h-7 px-3 flex items-center gap-1.5 rounded-lg text-xs font-mono font-bold transition-all shadow-sm cursor-pointer ${
               isRunning
-                ? "bg-red-500/20 text-red-400 hover:bg-red-500/30 border border-red-500/30 animate-pulse"
-                : "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/20 hover:border-emerald-500/40"
+                ? "bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 animate-pulse"
+                : "bg-primary-container text-[#001f24] hover:brightness-110 active:scale-95"
             }`}
           >
             {isRunning ? (
               <>
-                <Loader2 size={12} className="animate-spin text-red-400" />
-                <span className="text-[11px]">Stop</span>
+                <Square size={11} className="fill-red-400" />
+                <span>Stop</span>
               </>
             ) : (
               <>
-                <Play size={11} className="fill-emerald-400 text-emerald-400" />
-                <span className="text-[11px]">Run</span>
+                <Play size={11} className="fill-current" />
+                <span>Run</span>
               </>
             )}
           </button>
 
-          <label className="flex items-center gap-1 text-[10px] text-on-surface-variant/60 cursor-pointer select-none px-1" title="Auto Save">
-            <input
-              type="checkbox"
-              checked={autoSave}
-              onChange={(e) => setAutoSave(e.target.checked)}
-              className="rounded accent-primary w-3 h-3 cursor-pointer"
-            />
-            <span>Auto</span>
-          </label>
-
+          {/* Split View Toggle */}
           <button
-            title="Save File (Ctrl+S)"
-            onClick={() => activePath && void saveFile(activePath)}
-            disabled={!activePath}
-            className="w-7 h-7 flex items-center justify-center rounded-lg hover:text-on-surface hover:bg-white/5 disabled:opacity-30 transition-colors cursor-pointer"
-          >
-            <Save size={13} />
-          </button>
-
-          <button
-            title="Save All"
-            onClick={() => void saveAll()}
-            disabled={!openFiles.length}
-            className="w-7 h-7 flex items-center justify-center rounded-lg hover:text-on-surface hover:bg-white/5 disabled:opacity-30 transition-colors cursor-pointer"
-          >
-            <SaveAll size={13} />
-          </button>
-
-          <button
-            title={splitPath ? "Close Split View" : "Split Editor"}
+            title="Split Editor"
             onClick={handleToggleSplit}
-            disabled={!activePath}
-            className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors disabled:opacity-30 cursor-pointer ${
-              splitPath ? "text-primary bg-primary/15" : "hover:text-on-surface hover:bg-white/5"
+            className={`w-7 h-7 flex items-center justify-center rounded-lg transition-colors cursor-pointer ${
+              splitPath ? "bg-primary-container/15 text-primary" : "hover:text-on-surface hover:bg-white/5"
             }`}
           >
-            {splitPath ? <X size={13} /> : <Columns2 size={13} />}
+            <Columns2 size={13} />
           </button>
         </div>
       </div>
 
-      {/* ── Breadcrumbs Row (Path Navigation) ───────────────────────── */}
-      {activeFile && (
-        <div className="h-6 min-h-[24px] px-3.5 bg-[#0a0a0c] border-b border-surface-variant/30 flex items-center gap-1.5 text-[11px] font-mono text-on-surface-variant/60 select-none shrink-0">
-          <span className="material-symbols-outlined text-[13px] text-primary/70">folder</span>
-          <span className="hover:text-on-surface transition-colors cursor-default truncate max-w-[120px]">
-            {activeWorkspaces[0]?.name || "workspace"}
-          </span>
-          <span className="text-white/20">›</span>
-          <FileIcon filename={activeFile.name} size={13} />
-          <span className="text-on-surface/90 font-medium truncate">
-            {activeFile.name}
-          </span>
-        </div>
-      )}
-
-      {/* ── Editor Canvas Area ──────────────────────────────────────────────── */}
-      <div className={`flex-1 min-h-0 relative ${splitPath ? "grid grid-cols-2 divide-x divide-surface-variant" : "flex flex-col"}`}>
+      {/* Editor Canvas Area (with Markdown Preview Split Support) */}
+      <div
+        className={`flex-1 min-h-0 relative ${
+          showMarkdownPreview && isMarkdown
+            ? "grid grid-cols-2 divide-x divide-surface-variant"
+            : splitPath
+            ? "grid grid-cols-2 divide-x divide-surface-variant"
+            : "flex flex-col"
+        }`}
+      >
         <MonacoPane filePath={activePath} />
-        {splitPath ? <MonacoPane filePath={splitPath} /> : null}
+        {showMarkdownPreview && isMarkdown ? (
+          <MarkdownPreview content={activeFile?.content ?? ""} />
+        ) : splitPath ? (
+          <MonacoPane filePath={splitPath} />
+        ) : null}
       </div>
 
       {isDebugging && <DebugPanel />}
 
-      {/* ── Editor Status Bar ─────────────────────────────────────────────── */}
-      <div className="h-6 min-h-[24px] bg-[#0e1014] border-t border-surface-variant/40 flex items-center justify-between px-3 font-mono text-[10.5px] text-on-surface-variant select-none shrink-0">
+      {/* Editor Status Bar */}
+      <div className="h-6 flex items-center justify-between px-3 bg-[#0a0a0c] border-t border-surface-variant/30 text-[10.5px] font-mono text-on-surface-variant/70 shrink-0 select-none">
         <div className="flex items-center gap-3">
-          <span>UTF-8</span>
-          <span>LF</span>
-          <span>{activeFile ? getLanguageFromPath(activeFile.path).toUpperCase() : "PLAINTEXT"}</span>
-          <div className="h-2.5 w-[1px] bg-white/10" />
-          {/* AI Autocomplete Status Indicator */}
-          {isFetchingCompletion ? (
-            <span className="flex items-center gap-1 text-primary animate-pulse font-mono">
-              <Loader2 size={10} className="animate-spin" />
-              <span>AI completion…</span>
-            </span>
-          ) : (
-            <span
-              className="flex items-center gap-1 text-on-surface-variant/60 hover:text-on-surface-variant transition-colors font-mono cursor-default"
-              title="AI Ghost-text Autocomplete active. Press Tab to accept suggestion, Esc to dismiss."
-            >
-              <Sparkles size={10} className="text-primary/70" />
-              <span>AI Tab</span>
-              {lastLatencyMs && <span className="text-[9px] opacity-60">({lastLatencyMs}ms)</span>}
+          <div className="flex items-center gap-1 hover:text-on-surface transition-colors">
+            <span className="text-red-400 font-bold">{markerStats.errors}</span> errors
+            <span className="text-amber-400 font-bold ml-1">{markerStats.warnings}</span> warnings
+          </div>
+
+          {activeFile && (
+            <span className="text-on-surface-variant/40">|</span>
+          )}
+
+          {activeFile && (
+            <span className="text-cyan-400 font-medium">
+              {getLanguageFromPath(activeFile.path)}
             </span>
           )}
         </div>
+
         <div className="flex items-center gap-3">
+          {isFetchingCompletion && (
+            <div className="flex items-center gap-1 text-primary-container animate-pulse">
+              <Sparkles size={11} />
+              <span>AI Generating...</span>
+            </div>
+          )}
+
+          {!isFetchingCompletion && lastLatencyMs !== null && (
+            <span className="text-on-surface-variant/50 text-[9.5px]">
+              AI: {lastLatencyMs}ms
+            </span>
+          )}
+
           <span>Ln {cursorPosition.line}, Col {cursorPosition.col}</span>
-          <span className="flex items-center gap-1" title={`${markerStats.errors} error(s)`}>
-            <span className="material-symbols-outlined text-[12px] text-error">error</span> {markerStats.errors}
-          </span>
-          <span className="flex items-center gap-1" title={`${markerStats.warnings} warning(s)`}>
-            <span className="material-symbols-outlined text-[12px] text-tertiary">warning</span> {markerStats.warnings}
-          </span>
+          <span>Spaces: {tabSize}</span>
+          <span>UTF-8</span>
         </div>
       </div>
     </section>

@@ -1,4 +1,4 @@
-"""
+﻿"""
 code_intelligence.py — Workspace Symbol Indexing & Code Intelligence Engine for CODE OS.
 
 Provides:
@@ -13,6 +13,7 @@ Provides:
 from __future__ import annotations
 
 import ast
+from collections import Counter
 import json
 import logging
 import math
@@ -41,6 +42,25 @@ def _build_symbol_index(workspace: str, max_files: int = 250) -> dict[str, Any]:
     ws_path = Path(workspace)
     if not ws_path.is_dir():
         return {"definitions": {}, "references": {}}
+
+    idx_file = ws_path / ".code_os" / "symbol_index.json"
+    if idx_file.is_file():
+        try:
+            cached = json.loads(idx_file.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and "definitions" in cached and "references" in cached and "files_mtime" in cached:
+                cached_files_mtime = cached.get("files_mtime", {})
+                indexed_at = cached.get("indexed_at", 0)
+                if time.time() - indexed_at < 300:
+                    cache_valid = True
+                    for rel_p, saved_mtime in cached_files_mtime.items():
+                        full_p = ws_path / rel_p
+                        if not full_p.is_file() or full_p.stat().st_mtime != saved_mtime:
+                            cache_valid = False
+                            break
+                    if cache_valid:
+                        return cached
+        except Exception:
+            pass
 
     definitions: dict[str, list[dict]] = {}
     references: dict[str, list[dict]] = {}
@@ -166,9 +186,18 @@ def _build_symbol_index(workspace: str, max_files: int = 250) -> dict[str, Any]:
                         "line_content": line.strip()[:140],
                     })
 
+    files_mtime: dict[str, float] = {}
+    for p in all_files:
+        try:
+            rel = p.relative_to(ws_path).as_posix()
+            files_mtime[rel] = p.stat().st_mtime
+        except Exception:
+            pass
+
     index_data = {
         "definitions": definitions,
         "references": references,
+        "files_mtime": files_mtime,
         "indexed_at": time.time(),
         "total_files": len(all_files),
     }
@@ -194,13 +223,14 @@ def _handle_go_to_definition(workspace: str, arguments: dict) -> ToolResult:
     if not defs:
         # Direct search fallback
         ws_path = Path(workspace)
+        esc_sym = re.escape(symbol)
         matches = []
         for p in ws_path.rglob("*.py"):
             if ".git" in p.parts or ".venv" in p.parts or "node_modules" in p.parts:
                 continue
             try:
                 for idx, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
-                    if re.search(rf"\b(def|class|{symbol}\s*=)\s+{symbol}\b", line) or re.search(rf"^{symbol}\s*=", line):
+                    if re.search(rf"\b(def|class|{esc_sym}\s*=)\s+{esc_sym}\b", line) or re.search(rf"^{esc_sym}\s*=", line):
                         rel = str(p.relative_to(ws_path)).replace("\\", "/")
                         matches.append(f"- **{symbol}** defined in `{rel}:{idx}`: `{line.strip()}`")
             except Exception:
@@ -572,14 +602,16 @@ SECRET_PATTERNS = [
 
 
 def _calculate_shannon_entropy(data: str) -> float:
-    """Compute Shannon entropy in bits per character."""
+    """Compute Shannon entropy in bits per character in O(n) time."""
     if not data:
         return 0.0
+    n = len(data)
+    counts = Counter(data)
     entropy = 0.0
-    for x in set(data):
-        p_x = float(data.count(x)) / len(data)
+    for count in counts.values():
+        p_x = count / n
         if p_x > 0:
-            entropy += - p_x * math.log2(p_x)
+            entropy -= p_x * math.log2(p_x)
     return entropy
 
 

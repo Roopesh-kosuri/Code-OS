@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 import { IconButton } from "../../components/ui/IconButton";
+import { LivePreviewPanel } from "../preview/LivePreviewPanel";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useRunStore } from "../../stores/runStore";
 
@@ -220,7 +221,7 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
   // Create or re-attach terminal when workspace changes
   useEffect(() => {
     const container = terminalContainerRef.current;
-    if (!container || !workspace) return;
+    if (!container || !workspace || !workspace.path) return;
     const normPath = workspace.path.toLowerCase().replace(/\\/g, "/");
     const existing = Array.from(sessions.values()).find(
       (s) => s.cwd.toLowerCase().replace(/\\/g, "/") === normPath
@@ -273,7 +274,7 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
 
   const handleNew = () => {
     const container = terminalContainerRef.current;
-    if (!container || !workspace) return;
+    if (!container || !workspace || !workspace.path) return;
     const current = activeSessionId ? sessions.get(activeSessionId) : undefined;
     if (current) detachSession(current);
     activeSessionId = null;
@@ -294,7 +295,7 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
   const sessionList = Array.from(sessions.values());
 
   const restrictedMode = useWorkspaceStore((state) => state.restrictedMode);
-  const [activeTab, setActiveTab] = useState<"terminal" | "output" | "problems">("terminal");
+  const [activeTab, setActiveTab] = useState<"terminal" | "output" | "problems" | "preview">("terminal");
   const runLogs = useRunStore((state) => state.logs);
   const runStatus = useRunStore((state) => state.status);
   const runLang = useRunStore((state) => state.detectedLanguage);
@@ -384,7 +385,9 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
         </div>
 
         <div className="flex items-center gap-2">
-          {activeTab === "output" ? (
+          {activeTab === "preview" ? (
+          <LivePreviewPanel isServerRunning={runStatus === "running" || runStatus === "compiling" || true} />
+        ) : activeTab === "output" ? (
             <>
               {runStatus === "running" || runStatus === "compiling" ? (
                 <button
@@ -432,7 +435,9 @@ export function TerminalPanel({ onClose }: { onClose?: () => void }) {
           </div>
         )}
 
-        {activeTab === "output" ? (
+        {activeTab === "preview" ? (
+          <LivePreviewPanel isServerRunning={runStatus === "running" || runStatus === "compiling" || true} />
+        ) : activeTab === "output" ? (
           <div
             ref={outputScrollRef}
             className="h-full w-full p-3 font-mono text-[11.5px] leading-relaxed overflow-y-auto bg-[#0a0a0c] select-text no-scrollbar"

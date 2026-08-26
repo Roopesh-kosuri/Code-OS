@@ -8,11 +8,13 @@ type EditorState = {
   openFiles: OpenFile[];
   activePath: string | null;
   splitPath: string | null;
+  recentFiles: string[];
   autoSave: boolean;
   fontSize: number;
   tabSize: number;
   openFile: (filePath: string) => Promise<void>;
   closeFile: (filePath: string) => void;
+  addToRecentFiles: (filePath: string) => void;
   updateContent: (filePath: string, content: string) => Promise<void>;
   saveFile: (filePath: string) => Promise<void>;
   saveAll: () => Promise<void>;
@@ -32,10 +34,22 @@ function filename(filePath: string): string {
   return filePath.split(/[\\/]/).pop() ?? filePath;
 }
 
+function getInitialRecentFiles(): string[] {
+  try {
+    const raw = localStorage.getItem("code-os:recent-files");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.slice(0, 20);
+    }
+  } catch {}
+  return [];
+}
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   openFiles: [],
   activePath: null,
   splitPath: null,
+  recentFiles: getInitialRecentFiles(),
   autoSave: localStorage.getItem("code-os:auto-save") !== "false",
   fontSize: Number(localStorage.getItem("code-os:font-size") ?? "14"),
   tabSize: Number(localStorage.getItem("code-os:tab-size") ?? "2"),
@@ -43,6 +57,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   markerStats: { errors: 0, warnings: 0 },
   setCursorPosition: (pos) => set({ cursorPosition: pos }),
   setMarkerStats: (stats) => set({ markerStats: stats }),
+
+  addToRecentFiles: (filePath: string) => {
+    if (!filePath) return;
+    const current = get().recentFiles || [];
+    const filtered = current.filter((p) => p !== filePath);
+    const updated = [filePath, ...filtered].slice(0, 20);
+    set({ recentFiles: updated });
+    try {
+      localStorage.setItem("code-os:recent-files", JSON.stringify(updated));
+    } catch {}
+  },
+
   openFile: async (filePath) => {
     console.info("[editor.open] requested", filePath);
     useWorkspaceStore.getState().selectWorkspaceForPath(filePath);
@@ -50,6 +76,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     if (!workspace) {
       return;
     }
+    get().addToRecentFiles(filePath);
     const existing = get().openFiles.find((file) => file.path === filePath);
     if (existing) {
       set({ activePath: filePath });
@@ -122,7 +149,6 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setAutoSave: async (autoSave) => {
     localStorage.setItem("code-os:auto-save", String(autoSave));
     set({ autoSave });
-    // Persist to backend
     try {
       await api.post("/api/settings", { key: "editor.autoSave", value: String(autoSave) });
     } catch (error) {

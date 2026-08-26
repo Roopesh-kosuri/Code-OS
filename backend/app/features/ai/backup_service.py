@@ -131,7 +131,10 @@ def restore_workspace_backup(workspace: str, backup_filename: str | None = None)
             for member in zipf.infolist():
                 # Avoid zip-slip security risk
                 member_path = (code_os_dir / member.filename).resolve()
-                if not str(member_path).startswith(str(code_os_dir.resolve())):
+                try:
+                    member_path.relative_to(code_os_dir.resolve())
+                except ValueError:
+                    # Zip-slip: path escapes target directory — skip silently.
                     continue
                 zipf.extract(member, path=code_os_dir)
 

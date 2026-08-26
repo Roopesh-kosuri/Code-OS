@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 from pydantic import BaseModel
+# D2: hoisted from function-level to avoid repeated inline import (no circular import risk)
+from ..providers.constants import PRESET_TO_PROVIDER as _PRESET_TO_PROVIDER
 
 
 class AgentOutput(BaseModel):
@@ -50,22 +52,6 @@ class BaseAgent(ABC):
             "anthropic": "https://api.anthropic.com/v1",
         }
 
-        _PRESET_TO_PROVIDER = {
-            "local_reasoning": "ollama",
-            "local_fast": "ollama",
-            "api_fast": "openai-compatible",
-            "api_reasoning": "openai-compatible",
-            "auto": "ollama",
-            # Named cloud providers → all use openai-compatible wire protocol
-            "groq": "openai-compatible",
-            "openai": "openai-compatible",
-            "gemini": "openai-compatible",
-            "deepseek": "openai-compatible",
-            "mistral": "openai-compatible",
-            "openrouter": "openai-compatible",
-            "nvidia-nim": "openai-compatible",
-            "nvidia": "openai-compatible",
-        }
         
         cfg = self.provider_config or {}
         raw_provider = cfg.get("provider") or cfg.get("preset", "auto")

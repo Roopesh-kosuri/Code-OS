@@ -2,6 +2,8 @@ import difflib
 import json
 import logging
 import uuid
+
+import httpx
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -24,6 +26,18 @@ KNOWN_PLACEHOLDERS = {
     "create a new file", "n/a", "none", "file does not exist", "new file creation",
     "# empty file", "// empty file", "<!-- empty file -->",
 }
+
+def _is_known_placeholder(text: str) -> bool:
+    cleaned = text.strip().lower()
+    if not cleaned:
+        return True
+    for p in KNOWN_PLACEHOLDERS:
+        if cleaned == p:
+            return True
+        pattern = rf'(?:^|[\s#/;<\-]){re.escape(p)}(?:[\s#/;>\-]|$)'
+        if re.search(pattern, cleaned) and len(cleaned) <= len(p) + 6:
+            return True
+    return False
 
 
 
@@ -587,6 +601,7 @@ async def get_proposal(proposal_id: str) -> EditProposalDto:
     db = await get_db()
     cursor = await db.execute("SELECT * FROM edit_proposals WHERE id = ?", (proposal_id,))
     row = await cursor.fetchone()
+    await cursor.close()
     if not row:
         raise HTTPException(status_code=404, detail="Proposal not found")
     payload = json.loads(row["payload"])
@@ -654,7 +669,7 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
             original_normalized = raw_original.replace("\r\n", "\n")
             # Find the original snippet
 
-            if not original_stripped or not current_normalized.strip() or any(p in original_stripped.lower() for p in KNOWN_PLACEHOLDERS):
+            if not original_stripped or not current_normalized.strip() or _is_known_placeholder(original_stripped):
                 target_snippet = None
                 merged = updated_clean
             elif original_normalized in current_normalized:
@@ -677,24 +692,22 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
                             break
 
             if target_snippet is None:
-                if not original_stripped or not current_normalized.strip() or any(p in original_stripped.lower() for p in KNOWN_PLACEHOLDERS):
+                if not original_stripped or not current_normalized.strip() or _is_known_placeholder(original_stripped):
                     merged = updated_clean
                 else:
-                    curr_stripped_lines = {l.strip() for l in current_normalized.splitlines() if l.strip()}
-                    orig_stripped_lines = [l.strip() for l in original_stripped.splitlines() if l.strip()]
-                    matching_lines = sum(1 for line in orig_stripped_lines if line in curr_stripped_lines)
-                    
-                    is_full_file = (
-                        len(updated_clean.splitlines()) >= 3 or
-                        updated_clean.strip().startswith(("import ", "from ", '"""', "'''", "#!")) or
-                        "def " in updated_clean or "class " in updated_clean
-                    )
+                    curr_lines = [l.strip() for l in current_normalized.splitlines() if l.strip()]
+                    orig_lines = [l.strip() for l in original_stripped.splitlines() if l.strip()]
+                    sm = difflib.SequenceMatcher(None, orig_lines, curr_lines)
+                    match_ratio = sm.ratio()
 
-                    if (orig_stripped_lines and (matching_lines / len(orig_stripped_lines)) >= 0.2) or is_full_file:
+                    if orig_lines and match_ratio >= 0.8:
                         merged = updated_clean.replace("\r\n", "\n")
                     else:
-                        logger.warning("apply_proposal: proposed original block not cleanly matched in %s; applying updated replacement", change.path)
-                        merged = updated_clean.replace("\r\n", "\n")
+                        logger.warning("apply_proposal: proposed original block not cleanly matched in %s (similarity %.2f)", change.path, match_ratio)
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Merge conflict in {change.path}: proposed original block could not be matched with sufficient confidence to safely apply."
+                        )
             else:
                 if not target_snippet.strip():
                     merged = updated_clean
@@ -732,6 +745,7 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
     # 3. Check if this proposal belongs to a pending task permission event and resume it
     cursor = await db.execute("SELECT payload FROM edit_proposals WHERE id = ?", (proposal_id,))
     row = await cursor.fetchone()
+    await cursor.close()
     if row and row["payload"]:
         payload = json.loads(row["payload"])
         task_id = payload.get("task_id")
@@ -752,6 +766,7 @@ async def reject_proposal(proposal_id: str, feedback: str | None = None) -> Edit
     # Check if this proposal belongs to a pending task permission event and resume it
     cursor = await db.execute("SELECT payload FROM edit_proposals WHERE id = ?", (proposal_id,))
     row = await cursor.fetchone()
+    await cursor.close()
     if row and row["payload"]:
         payload = json.loads(row["payload"])
         task_id = payload.get("task_id")
@@ -768,14 +783,19 @@ async def reject_proposal(proposal_id: str, feedback: str | None = None) -> Edit
 
 async def list_proposals(workspace: str) -> list[EditProposalDto]:
     from ...core.paths import normalize_path
-    normalized_workspace = str(normalize_path(workspace)).lower().replace("\\", "/").rstrip("/")
-    
+    norm_path = str(normalize_path(workspace))
+    norm_fwd = norm_path.replace("\\", "/").rstrip("/")
+    norm_back = norm_path.replace("/", "\\").rstrip("\\")
+    ws_raw = str(workspace).rstrip("/\\")
+    candidates = list({norm_fwd, norm_fwd.lower(), norm_back, norm_back.lower(), ws_raw, ws_raw.lower()})
+    placeholders = ",".join("?" for _ in candidates)
     db = await get_db()
-    all_rows = await db.execute_fetchall("SELECT * FROM edit_proposals ORDER BY created_at DESC")
-    rows = [
-        r for r in all_rows 
-        if str(r["workspace"]).lower().replace("\\", "/").rstrip("/") == normalized_workspace
-    ]
+    cursor = await db.execute(
+        f"SELECT * FROM edit_proposals WHERE workspace IN ({placeholders}) ORDER BY created_at DESC",
+        tuple(candidates),
+    )
+    rows = await cursor.fetchall()
+    await cursor.close()
     
     results = []
     for row in rows:

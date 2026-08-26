@@ -13,6 +13,8 @@ from ..schemas import ChatRequest, ChatMessage, FileChange, EditProposalRequest
 from ..job_service import add_job_log
 from ..event_bus import event_bus
 from ....db.database import get_db
+# D2: hoisted from function-level to avoid repeated inline imports (no circular import risk)
+from ..providers.constants import RECOVERY_URLS as _RECOVERY_URLS, PRESET_TO_PROVIDER as _PRESET_TO_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -396,17 +398,6 @@ class CoderAgent(BaseAgent):
                         parsed_delay = (val / 1000.0) if unit == 'ms' else ((val * 60.0) if unit == 'm' else val)
 
                 # Canonical base URLs for all cloud providers
-                _RECOVERY_URLS = {
-                    "groq": "https://api.groq.com/openai/v1",
-                    "openai": "https://api.openai.com/v1",
-                    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
-                    "deepseek": "https://api.deepseek.com/v1",
-                    "mistral": "https://api.mistral.ai/v1",
-                    "openrouter": "https://openrouter.ai/api/v1",
-                    "nvidia-nim": "https://integrate.api.nvidia.com/v1",
-                    "nvidia": "https://integrate.api.nvidia.com/v1",
-                    "anthropic": "https://api.anthropic.com/v1",
-                }
 
                 effective_prov = (req.api_key_provider or req.provider or "groq").lower()
 
@@ -795,8 +786,24 @@ class CoderAgent(BaseAgent):
             try:
               grounding_context = await self._ground_files(workspace, [file_to_touch], is_context_reference=False, timing_recorder=record_timing)
             except Exception as exc:
-              grounding_context = f"(grounding failed: {exc})"
-              logger.warning("CoderAgent grounding failed for %s: %s", file_to_touch, exc)
+              err_msg = f"Grounding failed for {file_to_touch}: {exc}. Refusing to proceed with blind edits to prevent code hallucination."
+              logger.error("CoderAgent grounding failure: %s", err_msg)
+              logs.append(f"❌ [FAILED] {err_msg}")
+              await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+              try:
+                from ..job_service import update_task_status
+                await update_task_status(task_id, "failed", reasoning_summary=err_msg, structured_data=structured_data)
+              except Exception:
+                pass
+              return AgentOutput(
+                agent_role=self.role,
+                task_id=task_id,
+                status="failure",
+                confidence=0.0,
+                reasoning_summary=err_msg,
+                logs=logs,
+                structured_data=structured_data,
+              )
 
             logs.append(f"✍️ [EDITING] {file_to_touch}")
             await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
@@ -941,8 +948,24 @@ class CoderAgent(BaseAgent):
           try:
             grounding_context = await self._ground_files(workspace, plan.files_to_touch, timing_recorder=record_timing)
           except Exception as exc:
-            grounding_context = f"(grounding failed: {exc})"
-            logger.warning("CoderAgent grounding failed: %s", exc)
+            err_msg = f"Grounding failed for planned file(s) {plan.files_to_touch}: {exc}. Refusing to proceed with blind edits to prevent code hallucination."
+            logger.error("CoderAgent grounding failure: %s", err_msg)
+            logs.append(f"❌ [FAILED] {err_msg}")
+            await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+            try:
+              from ..job_service import update_task_status
+              await update_task_status(task_id, "failed", reasoning_summary=err_msg, structured_data=structured_data)
+            except Exception:
+              pass
+            return AgentOutput(
+              agent_role=self.role,
+              task_id=task_id,
+              status="failure",
+              confidence=0.0,
+              reasoning_summary=err_msg,
+              logs=logs,
+              structured_data=structured_data,
+            )
           grounding_end = time.time()
 
           context_section = ""
@@ -1098,8 +1121,25 @@ class CoderAgent(BaseAgent):
               system_instruction = self.get_system_prompt()
               try:
                 grounding_context = await self._ground_files(workspace, plan.files_to_touch, timing_recorder=record_timing)
-              except Exception:
-                grounding_context = "(grounding unavailable)"
+              except Exception as exc:
+                err_msg = f"Grounding failed during self-review refinement: {exc}. Refusing to proceed with blind edits."
+                logger.error("CoderAgent grounding failure: %s", err_msg)
+                logs.append(f"❌ [FAILED] {err_msg}")
+                await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+                try:
+                  from ..job_service import update_task_status
+                  await update_task_status(task_id, "failed", reasoning_summary=err_msg, structured_data=structured_data)
+                except Exception:
+                  pass
+                return AgentOutput(
+                  agent_role=self.role,
+                  task_id=task_id,
+                  status="failure",
+                  confidence=0.0,
+                  reasoning_summary=err_msg,
+                  logs=logs,
+                  structured_data=structured_data,
+                )
               feedback_prompt = (
                 f"Goal: {plan.goal}\n\n"
                 f"Previous proposals failed reviewer checks:\n{self_review_verdict['issues']}\n\n"

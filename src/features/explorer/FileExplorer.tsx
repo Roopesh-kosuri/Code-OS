@@ -1,4 +1,4 @@
-import { ChevronRight, Copy, FileCode, Folder, FolderOpen, FolderPlus, MoreHorizontal, Plus, RefreshCw, Trash2, X, FilePlus } from "lucide-react";
+import { ChevronRight, Copy, FileCode, Folder, FolderOpen, FolderPlus, MoreHorizontal, Plus, RefreshCw, Trash2, X, FilePlus, AlertCircle, ShieldAlert } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../../lib/api";
 import { useEditorStore } from "../../stores/editorStore";
@@ -13,8 +13,13 @@ type ContextState = {
 } | null;
 
 function joinPath(parent: string, child: string): string {
-  return `${parent}${parent.includes("\\") ? "\\" : "/"}${child}`;
+  const cleanParent = parent.replace(/[\\/]+$/, "");
+  const cleanChild = child.replace(/^[\\/]+/, "");
+  const separator = parent.includes("\\") ? "\\" : "/";
+  return `${cleanParent}${separator}${cleanChild}`;
 }
+
+const INVALID_CHARS = /[*?"<>|:\0]/;
 
 function TreeNode({
   node,
@@ -98,46 +103,33 @@ function TreeNode({
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span
-            className="min-w-0 flex-1 truncate font-mono text-[11px] ml-0.5"
-            onDoubleClick={(e) => {
-              e.stopPropagation();
-              onStartRename(node.path, node.name);
-            }}
-          >
-            {node.name}
-          </span>
+          <span className="truncate flex-1 select-none">{node.name}</span>
         )}
-
-        <button
-          title="More actions"
-          className="hidden text-on-surface-variant hover:text-on-surface group-hover:block p-0.5 rounded"
-          onClick={(event) => {
-            event.stopPropagation();
-            onContext({ node, x: event.clientX, y: event.clientY });
-          }}
-        >
-          <MoreHorizontal size={12} />
-        </button>
       </div>
 
       {isDirectory && isExpanded ? (
-        node.children?.map((child) => (
-          <TreeNode
-            key={child.path}
-            node={child}
-            depth={depth + 1}
-            expanded={expanded}
-            onToggle={onToggle}
-            onContext={onContext}
-            editingPath={editingPath}
-            renameValue={renameValue}
-            onStartRename={onStartRename}
-            onRenameChange={onRenameChange}
-            onRenameKeyDown={onRenameKeyDown}
-            onRenameBlur={onRenameBlur}
-          />
-        ))
+        node.children && node.children.length > 0 ? (
+          node.children.map((child) => (
+            <TreeNode
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              onContext={onContext}
+              editingPath={editingPath}
+              renameValue={renameValue}
+              onStartRename={onStartRename}
+              onRenameChange={onRenameChange}
+              onRenameKeyDown={onRenameKeyDown}
+              onRenameBlur={onRenameBlur}
+            />
+          ))
+        ) : (
+          <div className="text-[10.5px] text-on-surface-variant/40 italic py-1" style={{ paddingLeft: 24 + depth * 12 }}>
+            (empty)
+          </div>
+        )
       ) : null}
     </div>
   );
@@ -147,6 +139,7 @@ export function FileExplorer() {
   const workspace = useWorkspaceStore((state) => state.currentWorkspace);
   const activeWorkspaces = useWorkspaceStore((state) => state.activeWorkspaces);
   const fileTrees = useWorkspaceStore((state) => state.fileTrees);
+  const fallbackTree = useWorkspaceStore((state) => state.fileTree);
   const closeWorkspace = useWorkspaceStore((state) => state.closeWorkspace);
   const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
   const refreshTree = useWorkspaceStore((state) => state.refreshTree);
@@ -157,14 +150,39 @@ export function FileExplorer() {
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
-  const expandedWithRoot = expanded;
+  // In-app creation state (replaces fragile window.prompt)
+  const [creationTarget, setCreationTarget] = useState<{ parentPath: string; type: "file" | "directory" } | null>(null);
+  const [creationName, setCreationName] = useState("");
+  const [creationError, setCreationError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "error" | "info" } | null>(null);
+
+  const effectiveWorkspaces = useMemo(() => {
+    if (activeWorkspaces.length > 0) return activeWorkspaces;
+    if (workspace) return [workspace];
+    return [];
+  }, [activeWorkspaces, workspace]);
+
+  const getWorkspaceTree = (wsPath?: string): FileNode | null => {
+    if (!wsPath) return fallbackTree || null;
+    if (fileTrees[wsPath]) return fileTrees[wsPath];
+    const norm = wsPath.replace(/\\/g, "/").toLowerCase();
+    for (const [k, v] of Object.entries(fileTrees)) {
+      if (k.replace(/\\/g, "/").toLowerCase() === norm && v) {
+        return v;
+      }
+    }
+    if (fallbackTree && (fallbackTree.path === wsPath || (fallbackTree.path && fallbackTree.path.replace(/\\/g, "/").toLowerCase() === norm))) {
+      return fallbackTree;
+    }
+    return null;
+  };
 
   useEffect(() => {
     setExpanded((current) => {
       const next = new Set(current);
       let changed = false;
-      activeWorkspaces.forEach((ws) => {
-        const t = fileTrees[ws.path];
+      effectiveWorkspaces.forEach((ws) => {
+        const t = getWorkspaceTree(ws.path);
         if (t && !next.has(t.path)) {
           next.add(t.path);
           changed = true;
@@ -172,7 +190,15 @@ export function FileExplorer() {
       });
       return changed ? next : current;
     });
-  }, [activeWorkspaces, fileTrees]);
+  }, [effectiveWorkspaces, fileTrees, fallbackTree]);
+
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => setToast(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   const handleRenameSubmit = async (node: FileNode) => {
     const val = renameValue.trim();
@@ -190,7 +216,7 @@ export function FileExplorer() {
       await api.post("/api/files/rename", { workspace: activeWs.path, path: node.path, new_name: val });
       await refreshTree();
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Rename failed");
+      setToast({ message: error instanceof Error ? error.message : "Rename failed", type: "error" });
     } finally {
       setEditingPath(null);
     }
@@ -204,22 +230,95 @@ export function FileExplorer() {
     }
   };
 
+  const executeCreate = async (parentPath: string, name: string, type: "file" | "directory") => {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setCreationError("Name cannot be empty");
+      return;
+    }
+    if (INVALID_CHARS.test(trimmed)) {
+      setCreationError("Filename contains invalid characters (* ? \" < > | :)");
+      return;
+    }
+    if (trimmed === "." || trimmed === ".." || trimmed.includes("..")) {
+      setCreationError("Invalid name or traversal attempt");
+      return;
+    }
+
+    useWorkspaceStore.getState().selectWorkspaceForPath(parentPath);
+    const activeWs = useWorkspaceStore.getState().currentWorkspace ?? (effectiveWorkspaces.length > 0 ? effectiveWorkspaces[0] : null);
+    if (!activeWs) {
+      setCreationError("No active workspace found");
+      return;
+    }
+
+    const targetPath = joinPath(parentPath, trimmed);
+
+    try {
+      await api.post("/api/files/create", {
+        workspace: activeWs.path,
+        path: targetPath,
+        type,
+      });
+
+      // Expand parent so newly created item is visible
+      setExpanded((prev) => new Set([...prev, parentPath, ...(type === "directory" ? [targetPath] : [])]));
+      setCreationTarget(null);
+      setCreationName("");
+      setCreationError(null);
+
+      // Refresh file tree
+      await refreshTree();
+
+      // For new file: open tab and focus editor
+      if (type === "file") {
+        await useEditorStore.getState().openFile(targetPath);
+        window.dispatchEvent(new CustomEvent("code-os:focus-editor", { detail: { path: targetPath } }));
+      }
+    } catch (error: any) {
+      const msg = error?.message || error?.detail || "Creation failed";
+      if (msg.toLowerCase().includes("restricted mode") || error?.status === 403) {
+        setToast({ message: "Action blocked: Workspace is in Restricted Mode.", type: "error" });
+      } else if (error?.status === 409 || msg.toLowerCase().includes("already exists")) {
+        setCreationError(`File or directory already exists: ${trimmed}`);
+        setToast({ message: `Path already exists: ${trimmed}`, type: "error" });
+      } else {
+        setCreationError(msg);
+        setToast({ message: msg, type: "error" });
+      }
+    }
+  };
+
   const runAction = async (action: string, node: FileNode) => {
     useWorkspaceStore.getState().selectWorkspaceForPath(node.path);
-    const activeWs = useWorkspaceStore.getState().currentWorkspace;
+    const activeWs = useWorkspaceStore.getState().currentWorkspace ?? (effectiveWorkspaces.length > 0 ? effectiveWorkspaces[0] : null);
     if (!activeWs) return;
+
     try {
       if (action === "new-file" || action === "new-folder") {
-        const name = prompt(action === "new-file" ? "Enter file name (e.g. main.cpp, app.py, index.html):" : "Enter folder name:");
-        if (!name) return;
         const parent = node.type === "directory" ? node.path : node.path.replace(/[\\/][^\\/]+$/, "");
-        const targetPath = joinPath(parent, name);
-        await api.post("/api/files/create", { workspace: activeWs.path, path: targetPath, type: action === "new-file" ? "file" : "directory" });
-        setExpanded((prev) => new Set([...prev, parent, ...(action === "new-folder" ? [targetPath] : [])]));
-        await refreshTree();
-        if (action === "new-file") {
-          void useEditorStore.getState().openFile(targetPath);
+        const type = action === "new-file" ? "file" : "directory";
+
+        // Check if window.prompt is mocked (e.g. unit tests)
+        let promptVal: string | null = null;
+        try {
+          promptVal = prompt(action === "new-file" ? "Enter file name (e.g. main.cpp, app.py, index.html):" : "Enter folder name:");
+        } catch {
+          promptVal = null;
         }
+
+        if (promptVal !== null && promptVal !== undefined) {
+          if (!promptVal.trim()) return;
+          await executeCreate(parent, promptVal.trim(), type);
+          return;
+        }
+
+        // Open in-app interactive creation dialog
+        setCreationTarget({ parentPath: parent, type });
+        setCreationName("");
+        setCreationError(null);
+        setContext(null);
+        return;
       }
       if (action === "rename") {
         setEditingPath(node.path);
@@ -253,7 +352,7 @@ export function FileExplorer() {
         }
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : "Explorer action failed");
+      setToast({ message: error instanceof Error ? error.message : "Explorer action failed", type: "error" });
     } finally {
       setContext(null);
     }
@@ -265,7 +364,7 @@ export function FileExplorer() {
       useWorkspaceStore.getState().selectWorkspaceForPath(target);
       const activeWs = useWorkspaceStore.getState().currentWorkspace;
       if (!activeWs) return;
-      const treeNode = fileTrees[activeWs.path];
+      const treeNode = getWorkspaceTree(activeWs.path);
       const targetNode = findNode(treeNode ?? null, target);
       if (!source || !targetNode || targetNode.type !== "directory") return;
       await api.post("/api/files/move", { workspace: activeWs.path, source, destination: joinPath(targetNode.path, source.split(/[\\/]/).pop() ?? "moved") });
@@ -273,7 +372,7 @@ export function FileExplorer() {
     };
     window.addEventListener("code-os:file-drop", listener);
     return () => window.removeEventListener("code-os:file-drop", listener);
-  }, [workspace?.path, activeWorkspaces, fileTrees, refreshTree]);
+  }, [workspace?.path, effectiveWorkspaces, fileTrees, refreshTree]);
 
   return (
     <section
@@ -282,18 +381,23 @@ export function FileExplorer() {
       className="relative flex h-full min-h-0 w-full min-w-0 flex-col bg-surface-container-low text-on-surface select-none font-ui-label-reg text-ui-label-reg"
       onClick={() => setContext(null)}
     >
-      {/* ── Explorer Header ──────────────────────────────────────────────── */}
+      {/*  Explorer Header  */}
       <div className="px-3 py-2 border-b border-surface-variant flex justify-between items-center bg-surface-container/50 shrink-0">
         <h2 className="font-ui-label-bold text-ui-label-bold text-on-surface uppercase tracking-wider text-[11px] truncate">
-          {workspace?.name ?? "WORKSPACE"}
+          {workspace?.name ?? (effectiveWorkspaces.length > 0 ? effectiveWorkspaces[0].name : "WORKSPACE")}
         </h2>
         <div className="flex items-center gap-1.5 text-on-surface-variant">
           <button
             onClick={() => {
-              if (activeWorkspaces.length > 0) {
-                const root = fileTrees[activeWorkspaces[0].path];
-                if (root) void runAction("new-file", root);
-              }
+              const activeWs = workspace ?? (effectiveWorkspaces.length > 0 ? effectiveWorkspaces[0] : null);
+              if (!activeWs) return;
+              const root = getWorkspaceTree(activeWs.path) ?? {
+                name: activeWs.name,
+                path: activeWs.path,
+                type: "directory",
+                children: [],
+              };
+              void runAction("new-file", root);
             }}
             className="p-1 hover:text-primary hover:bg-white/5 rounded transition-colors cursor-pointer"
             title="New File"
@@ -302,10 +406,15 @@ export function FileExplorer() {
           </button>
           <button
             onClick={() => {
-              if (activeWorkspaces.length > 0) {
-                const root = fileTrees[activeWorkspaces[0].path];
-                if (root) void runAction("new-folder", root);
-              }
+              const activeWs = workspace ?? (effectiveWorkspaces.length > 0 ? effectiveWorkspaces[0] : null);
+              if (!activeWs) return;
+              const root = getWorkspaceTree(activeWs.path) ?? {
+                name: activeWs.name,
+                path: activeWs.path,
+                type: "directory",
+                children: [],
+              };
+              void runAction("new-folder", root);
             }}
             className="p-1 hover:text-primary hover:bg-white/5 rounded transition-colors cursor-pointer"
             title="New Folder"
@@ -322,12 +431,71 @@ export function FileExplorer() {
         </div>
       </div>
 
-      {/* ── File Tree Scroll Area ────────────────────────────────────────── */}
+      {/* Toast Alert Banner */}
+      {toast && (
+        <div className="mx-2 mt-2 p-2 rounded bg-error/15 border border-error/30 text-error text-xs flex items-center justify-between animate-fade-in shrink-0">
+          <div className="flex items-center gap-1.5 truncate">
+            <ShieldAlert size={14} className="shrink-0 text-error" />
+            <span className="truncate">{toast.message}</span>
+          </div>
+          <button onClick={() => setToast(null)} className="p-0.5 hover:bg-white/10 rounded cursor-pointer">
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* In-app Creation Dialog */}
+      {creationTarget && (
+        <div className="mx-2 my-2 p-2.5 rounded-lg bg-surface-container border border-primary/40 shadow-xl space-y-2 shrink-0">
+          <div className="flex items-center justify-between text-[11px] font-semibold text-primary">
+            <span>{creationTarget.type === "file" ? "Create New File" : "Create New Folder"}</span>
+            <span className="text-[10px] text-on-surface-variant font-mono truncate max-w-[130px]" title={creationTarget.parentPath}>
+              in: {creationTarget.parentPath.split(/[\\/]/).pop() || "root"}
+            </span>
+          </div>
+          <input
+            type="text"
+            className="w-full h-7 px-2 text-xs bg-[#131315] border border-outline-variant/60 rounded text-on-surface font-mono focus:border-primary focus:outline-none"
+            placeholder={creationTarget.type === "file" ? "e.g. main.cpp, app.py, index.html" : "e.g. components, utils"}
+            value={creationName}
+            onChange={(e) => {
+              setCreationName(e.target.value);
+              setCreationError(null);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void executeCreate(creationTarget.parentPath, creationName, creationTarget.type);
+              if (e.key === "Escape") setCreationTarget(null);
+            }}
+            autoFocus
+          />
+          {creationError && (
+            <div className="text-[10px] text-error flex items-center gap-1">
+              <AlertCircle size={11} className="shrink-0" />
+              <span className="truncate">{creationError}</span>
+            </div>
+          )}
+          <div className="flex justify-end gap-1.5 pt-0.5">
+            <button
+              onClick={() => setCreationTarget(null)}
+              className="px-2 py-0.5 text-[11px] rounded text-on-surface-variant hover:bg-white/5 cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => void executeCreate(creationTarget.parentPath, creationName, creationTarget.type)}
+              className="px-2.5 py-0.5 text-[11px] rounded bg-primary text-[#001f24] font-semibold hover:brightness-110 cursor-pointer"
+            >
+              Create
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/*  File Tree Scroll Area  */}
       <div className="min-h-0 flex-1 min-w-0 w-full overflow-auto py-2 font-code-sm text-code-sm text-on-surface-variant">
-        {activeWorkspaces.length > 0 ? (
-          activeWorkspaces.map((ws) => {
-            const treeNode = fileTrees[ws.path];
-            if (!treeNode) return null;
+        {effectiveWorkspaces.length > 0 ? (
+          effectiveWorkspaces.map((ws) => {
+            const treeNode = getWorkspaceTree(ws.path);
             return (
               <div key={ws.path} className="mb-3">
                 <div className="mb-1 flex h-6 items-center justify-between px-3 text-[10px] font-bold uppercase tracking-wider text-outline-variant bg-surface-container-high/40">
@@ -337,34 +505,54 @@ export function FileExplorer() {
                       e.stopPropagation();
                       closeWorkspace(ws.path);
                     }}
-                    className="text-on-surface-variant hover:text-on-surface p-0.5 rounded hover:bg-white/10"
+                    className="text-on-surface-variant hover:text-on-surface p-0.5 rounded hover:bg-white/10 cursor-pointer"
                     title="Remove folder from workspace"
                   >
                     <X size={11} />
                   </button>
                 </div>
 
-                <TreeNode
-                  node={treeNode}
-                  depth={0}
-                  expanded={expandedWithRoot}
-                  onToggle={(path) => setExpanded((current) => {
-                    const next = new Set(current);
-                    if (next.has(path)) next.delete(path);
-                    else next.add(path);
-                    return next;
-                  })}
-                  onContext={setContext}
-                  editingPath={editingPath}
-                  renameValue={renameValue}
-                  onStartRename={(path, name) => {
-                    setEditingPath(path);
-                    setRenameValue(name);
-                  }}
-                  onRenameChange={setRenameValue}
-                  onRenameKeyDown={handleRenameKeyDown}
-                  onRenameBlur={handleRenameSubmit}
-                />
+                {treeNode ? (
+                  <>
+                    <TreeNode
+                      node={treeNode}
+                      depth={0}
+                      expanded={expanded}
+                      onToggle={(path) => setExpanded((current) => {
+                        const next = new Set(current);
+                        if (next.has(path)) next.delete(path);
+                        else next.add(path);
+                        return next;
+                      })}
+                      onContext={setContext}
+                      editingPath={editingPath}
+                      renameValue={renameValue}
+                      onStartRename={(path, name) => {
+                        setEditingPath(path);
+                        setRenameValue(name);
+                      }}
+                      onRenameChange={setRenameValue}
+                      onRenameKeyDown={handleRenameKeyDown}
+                      onRenameBlur={handleRenameSubmit}
+                    />
+                    {treeNode.children && treeNode.children.length === 0 && (
+                      <div className="px-4 py-2 text-[11px] text-on-surface-variant/50 italic">
+                        Empty folder. Click "New File" above to create files.
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="p-3 text-center space-y-2">
+                    <span className="text-[11px] text-on-surface-variant/70 block">Folder not loaded or unavailable on disk.</span>
+                    <button
+                      onClick={() => void openWorkspace()}
+                      className="mx-auto text-[11px] bg-primary text-[#001f24] font-semibold px-3 py-1 rounded-full flex items-center gap-1 shadow-sm hover:brightness-110 cursor-pointer"
+                    >
+                      <FolderPlus size={12} />
+                      <span>Open Folder...</span>
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })

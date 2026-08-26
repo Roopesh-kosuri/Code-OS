@@ -28,7 +28,7 @@ from app.features.ai.schemas import ChatMessage, EditProposalRequest, FileChange
 
 
 @pytest.mark.asyncio
-async def test_structured_failure_reason_not_found(tmp_path):
+async def test_structured_failure_reason_not_found(tmp_path, temp_db):
     """Verify that a nonexistent command returns structured not_found failure reason."""
     result = await _execute_command_async(str(tmp_path), "nonexistent_custom_binary_123456xyz")
     assert not result.success
@@ -40,7 +40,7 @@ async def test_structured_failure_reason_not_found(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_structured_failure_reason_exit_code(tmp_path):
+async def test_structured_failure_reason_exit_code(tmp_path, temp_db):
     """Verify that a failing command returns structured exit_code failure reason."""
     cmd = "python -c \"import sys; sys.exit(42)\""
     result = await _execute_command_async(str(tmp_path), cmd)
@@ -52,7 +52,7 @@ async def test_structured_failure_reason_exit_code(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_structured_failure_reason_execution_timeout(tmp_path):
+async def test_structured_failure_reason_execution_timeout(tmp_path, temp_db):
     """Verify that a timed-out command returns structured execution_timeout failure reason."""
     cmd = "python -c \"import time; time.sleep(10)\""
     result = await _execute_command_async(str(tmp_path), cmd, timeout=0.5)
@@ -64,7 +64,7 @@ async def test_structured_failure_reason_execution_timeout(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_parent_directory_creation_via_edit_file(tmp_path):
+async def test_parent_directory_creation_via_edit_file(tmp_path, temp_db):
     """Verify that edit_file with subfolder automatically creates parent directory on disk."""
     workspace = str(tmp_path)
     rel_path = "nigropo puzzle game/NigropoPuzzleGame.java"
@@ -100,7 +100,7 @@ async def test_parent_directory_creation_via_edit_file(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_approval_timeout_reissue_and_structured_error(tmp_path):
+async def test_approval_timeout_reissue_and_structured_error(tmp_path, temp_db):
     """Verify that approval timeout re-issues approval once, then reports structured approval_timeout."""
     workspace = str(tmp_path)
     cmd = "mkdir \"nigropo puzzle game\""
@@ -140,7 +140,7 @@ async def test_approval_timeout_reissue_and_structured_error(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_zero_tool_retry_question_interceptor(tmp_path):
+async def test_zero_tool_retry_question_interceptor(tmp_path, temp_db):
     """Verify that asking 'Would you like me to try again?' with 0 tool calls triggers auto-recovery."""
     workspace = str(tmp_path)
 
@@ -175,7 +175,7 @@ async def test_zero_tool_retry_question_interceptor(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_full_task_nigropo_puzzle_game_execution(tmp_path):
+async def test_full_task_nigropo_puzzle_game_execution(tmp_path, temp_db):
     """Full task test: create folder 'nigropo puzzle game' + Java game inside it."""
     workspace = str(tmp_path)
     cmd = "mkdir \"nigropo puzzle game\""
@@ -215,7 +215,7 @@ async def test_full_task_nigropo_puzzle_game_execution(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_give_up_statement_interceptor_and_auto_recovery(tmp_path):
+async def test_give_up_statement_interceptor_and_auto_recovery(tmp_path, temp_db):
     """Verify that when an agent attempts to give up on folder creation, the harness intercepts and directs file creation."""
     workspace = str(tmp_path)
     java_file = "nigropo puzzle game/NigropoPuzzleGame.java"
@@ -260,7 +260,7 @@ async def test_give_up_statement_interceptor_and_auto_recovery(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_permission_and_environmental_question_interceptor(tmp_path):
+async def test_permission_and_environmental_question_interceptor(tmp_path, temp_db):
     """Verify that asking permission or asking user to diagnose environment is intercepted and redirected."""
     workspace = str(tmp_path)
     java_file = "nigropo_game/NigropoGame.java"

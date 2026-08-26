@@ -21,6 +21,7 @@ class ReplaceRequest(BaseModel):
     regex: bool = False
     case_sensitive: bool = False
     whole_word: bool = False
+    files: list[str] | None = None
 
 
 class ReplaceResult(BaseModel):

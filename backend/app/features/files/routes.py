@@ -27,12 +27,7 @@ from .service import (
 router = APIRouter()
 
 
-async def _ensure_trusted(workspace: str):
-    from fastapi import HTTPException
-    from ..workspaces.trust_service import get_workspace_trust
-    trust = await get_workspace_trust(workspace)
-    if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode.")
+from ...core.trust import ensure_workspace_trusted as _ensure_trusted
 
 
 
@@ -52,8 +47,8 @@ async def read(workspace: str = Query(...), path: str = Query(...)) -> FileReadR
 @router.post("/create")
 async def create(payload: CreateRequest) -> dict[str, str]:
     await _ensure_trusted(payload.workspace)
-    create_entry(payload.workspace, payload.path, payload.type)
-    return {"status": "created"}
+    created_target = create_entry(payload.workspace, payload.path, payload.type)
+    return {"status": "created", "path": str(created_target)}
 
 
 @router.post("/delete")
@@ -98,5 +93,3 @@ async def reveal(payload: RevealRequest) -> dict[str, str]:
     await _ensure_trusted(payload.workspace)
     reveal_entry(payload.workspace, payload.path)
     return {"status": "revealed"}
-
-

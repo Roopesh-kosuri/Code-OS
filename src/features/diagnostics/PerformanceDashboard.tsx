@@ -197,7 +197,7 @@ export function PerformanceDashboard() {
             <div className="mt-4 z-10">
               <div className="flex items-baseline gap-2">
                 <span className="font-display-lg text-display-lg text-primary-container font-black">
-                  {metrics ? `${metrics.system.cpu_usage_percent.toFixed(1)}%` : "--"}
+                  {metrics?.system ? `${metrics.system.cpu_usage_percent.toFixed(1)}%` : "--"}
                 </span>
                 <span className="font-code-sm text-code-sm text-on-surface-variant">
                   {metrics ? `${metrics.system.active_threads} threads` : "connecting…"}
@@ -219,24 +219,24 @@ export function PerformanceDashboard() {
                 Memory Allocation
               </span>
               <span className="font-ui-label-bold text-ui-label-bold text-secondary">
-                {metrics ? `${metrics.system.memory_usage_percent.toFixed(1)}%` : "--"}
+                {metrics?.system ? `${metrics.system.memory_usage_percent.toFixed(1)}%` : "--"}
               </span>
             </div>
             <div className="mt-4">
               <div className="font-code-main text-code-main text-on-surface mb-3 flex items-end gap-1 font-bold">
                 <span className="text-2xl font-bold">
-                  {metrics ? (metrics.system.memory_used_mb / 1024).toFixed(1) : "--"}
+                  {metrics?.system ? (metrics.system.memory_used_mb / 1024).toFixed(1) : "--"}
                 </span>{" "}
                 GB{" "}
                 <span className="text-on-surface-variant text-sm font-normal">
-                  / {metrics ? (metrics.system.memory_total_mb / 1024).toFixed(1) : "--"} GB
+                  / {metrics?.system ? (metrics.system.memory_total_mb / 1024).toFixed(1) : "--"} GB
                 </span>
               </div>
               {/* Progress Bar */}
               <div className="w-full h-2 bg-surface-container-highest rounded-full overflow-hidden">
                 <div
                   className="h-full bg-secondary-container rounded-full relative transition-all duration-500 shadow-[0_0_8px_rgba(0,218,243,0.3)]"
-                  style={{ width: `${metrics ? metrics.system.memory_usage_percent : 0}%` }}
+                  style={{ width: `${metrics?.system ? metrics.system.memory_usage_percent : 0}%` }}
                 >
                   <div className="absolute inset-0 bg-white/20 w-full animate-pulse rounded-full" />
                 </div>
@@ -253,14 +253,14 @@ export function PerformanceDashboard() {
               <div className="px-2.5 py-0.5 rounded-full bg-primary-container/10 border border-primary-container/30 flex items-center gap-1.5">
                 <div className={`w-1.5 h-1.5 rounded-full ${metrics ? "bg-primary-container animate-pulse" : "bg-outline"}`} />
                 <span className="text-[10px] font-bold text-primary-container tracking-wider">
-                  {metrics ? `${metrics.ai.total_requests} REQUESTS` : "STANDBY"}
+                  {metrics?.ai ? `${metrics.ai.total_requests} REQUESTS` : "STANDBY"}
                 </span>
               </div>
             </div>
             <div className="mt-4">
               <div className="flex items-baseline gap-2 mb-2">
                 <span className="font-display-lg text-display-lg text-on-surface font-black">
-                  {metrics ? metrics.ai.total_tokens.toLocaleString() : "--"}
+                  {metrics?.ai ? metrics.ai.total_tokens.toLocaleString() : "--"}
                 </span>
                 <span className="font-code-sm text-code-sm text-on-surface-variant">total tokens</span>
               </div>

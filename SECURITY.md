@@ -59,3 +59,4 @@ CODE OS implements defense-in-depth security measures across all layers:
 - **Out-of-Scope**:
   - Physical access or root-level privilege escalation on the host OS.
   - Vulnerabilities in user-installed third-party OS packages or local LLM runtimes (Ollama).
+

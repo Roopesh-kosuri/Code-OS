@@ -17,6 +17,7 @@ import { CodeVerifierPanel } from "../../features/verifier/CodeVerifierPanel";
 import { WorkspaceTrustDialog } from "../../components/workspace/WorkspaceTrustDialog";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { SettingsModal } from "../settings/SettingsModal";
+import { RecentFilesModal } from "../../features/editor/RecentFilesModal";
 import { OpenFolderModal } from "../workspace/OpenFolderModal";
 import { WelcomeScreen } from "../workspace/WelcomeScreen";
 
@@ -200,6 +201,22 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
     };
   }, [isResizing]);
 
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+Shift+H / Cmd+Shift+H -> Find & Replace Across Files
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "H" || e.key === "h")) {
+        e.preventDefault();
+        setActiveSidebar("search");
+        setShowSidebar(true);
+        localStorage.setItem("code-os:layout-show-sidebar", "true");
+        localStorage.setItem("code-os:layout-active-sidebar", "search");
+        window.dispatchEvent(new CustomEvent("code-os:focus-search-replace"));
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, []);
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-background text-on-surface font-ui-label-reg text-ui-label-reg select-none antialiased">
       {/* ── Top Bar ────────────────────────────────────────────────────────── */}
@@ -330,16 +347,16 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                     style={{ width: `${sidebarWidth}px` }}
                   >
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
-                      {activeSidebar === "explorer" && <FileExplorer />}
-                      {activeSidebar === "git" && <GitPanel />}
-                      {activeSidebar === "search" && <SearchPanel />}
-                      {activeSidebar === "repo" && <RepoUnderstanding />}
-                      {activeSidebar === "diff" && <DiffViewer />}
-                      {activeSidebar === "memory" && <MemoryPanel />}
-                      {activeSidebar === "context" && <ContextPanel />}
-                      {activeSidebar === "agent" && <AgentConsole compact />}
-                      {activeSidebar === "diagnostics" && <PerformanceDashboard />}
-                      {activeSidebar === "duo" && <DuoPanel compact />}
+                      {activeSidebar === "git" ? <GitPanel />
+                        : activeSidebar === "search" ? <SearchPanel />
+                        : activeSidebar === "repo" ? <RepoUnderstanding />
+                        : activeSidebar === "diff" ? <DiffViewer />
+                        : activeSidebar === "memory" ? <MemoryPanel />
+                        : activeSidebar === "context" ? <ContextPanel />
+                        : activeSidebar === "agent" ? <AgentConsole compact />
+                        : activeSidebar === "diagnostics" ? <PerformanceDashboard />
+                        : activeSidebar === "duo" ? <DuoPanel compact />
+                        : <FileExplorer />}
                     </div>
                   </aside>
 
@@ -401,6 +418,7 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
 
       {/* ── Modals & Dialogs ────────────────────────────────────────────────── */}
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      <RecentFilesModal />
       {isOpeningFolder && <OpenFolderModal onClose={() => setOpeningFolder(false)} />}
       {pendingWorkspacePath && (
         <WorkspaceTrustDialog

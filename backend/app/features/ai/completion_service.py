@@ -9,6 +9,7 @@ Provides fast, cost-controlled ghost-text suggestions at cursor position with:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time

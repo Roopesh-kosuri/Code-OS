@@ -1,4 +1,9 @@
+import fnmatch
 import logging
+import os
+import re
+import subprocess
+from pathlib import Path
 
 from fastapi import HTTPException
 from git import GitCommandError, Repo
@@ -45,13 +50,9 @@ def diff(workspace: str, path: str | None = None) -> str:
     return repo.git.diff(*args)
 
 
-import fnmatch
-from pathlib import Path
-
 DANGEROUS_PATTERNS = [
     ".env*", "*.pem", "*.key", "*secret*", "*credential*", "*credentials*", "id_rsa*", "id_ed25519*"
 ]
-
 
 
 def is_dangerous_file(filepath: str) -> bool:
@@ -103,7 +104,6 @@ def commit(workspace: str, message: str, files: list[str] | None = None) -> str:
         return commit_obj.hexsha
     except GitCommandError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
 
 
 def pull(workspace: str) -> str:
@@ -165,3 +165,119 @@ def history(workspace: str, limit: int = 30) -> list[dict[str, str]]:
         }
         for commit in repo.iter_commits(max_count=limit)
     ]
+
+
+def parse_porcelain_blame(output: str) -> list[dict[str, object]]:
+    """Parse git blame --line-porcelain output into structured line annotations."""
+    lines_blame = []
+    lines = output.splitlines()
+    i = 0
+    while i < len(lines):
+        header_match = re.match(r"^([0-9a-f]{40})\s+(\d+)\s+(\d+)", lines[i])
+        if not header_match:
+            i += 1
+            continue
+        commit_sha = header_match.group(1)
+        orig_line = int(header_match.group(2))
+        final_line = int(header_match.group(3))
+        author = "Unknown"
+        author_mail = ""
+        author_time = 0
+        summary = ""
+        i += 1
+        while i < len(lines):
+            line = lines[i]
+            if line.startswith("\t"):
+                # End of porcelain block for this line
+                i += 1
+                break
+            if line.startswith("author "):
+                author = line[7:]
+            elif line.startswith("author-mail "):
+                author_mail = line[12:].strip("<>")
+            elif line.startswith("author-time "):
+                try:
+                    author_time = int(line[12:])
+                except ValueError:
+                    pass
+            elif line.startswith("summary "):
+                summary = line[8:]
+            i += 1
+        lines_blame.append({
+            "line": final_line,
+            "commit": commit_sha,
+            "commit_short": commit_sha[:7],
+            "author": author,
+            "author_mail": author_mail,
+            "author_time": author_time,
+            "summary": summary,
+        })
+    return lines_blame
+
+
+_BLAME_CACHE: dict[tuple[str, str, int, str], dict[str, object]] = {}
+
+
+def blame(workspace: str, file_path: str) -> dict[str, object]:
+    """Execute git blame --line-porcelain with path validation and mtime+head caching."""
+    norm_ws = Path(normalize_path(workspace)).resolve()
+
+    # Strict path escape validation: target must be inside workspace
+    try:
+        if os.path.isabs(file_path):
+            target = Path(normalize_path(file_path)).resolve()
+        else:
+            target = (norm_ws / file_path).resolve()
+        target.relative_to(norm_ws)
+    except (ValueError, Exception) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path escape rejected: {file_path} is outside workspace"
+        ) from exc
+
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Target file not found")
+
+    # Check if workspace is a valid git repository
+    try:
+        repo = Repo(norm_ws, search_parent_directories=True)
+        if not repo.head.is_valid():
+            return {"git": False, "lines": []}
+        head_commit = repo.head.commit.hexsha
+    except Exception:
+        # Non-git workspace -> silently return without crashing
+        return {"git": False, "lines": []}
+
+    try:
+        mtime = int(target.stat().st_mtime)
+    except OSError:
+        mtime = 0
+
+    cache_key = (str(norm_ws), str(target), mtime, head_commit)
+    if cache_key in _BLAME_CACHE:
+        return _BLAME_CACHE[cache_key]
+
+    # Run git blame --line-porcelain with arguments as a safe list (NO shell=True)
+    try:
+        rel_target = str(target.relative_to(norm_ws))
+        proc = subprocess.run(
+            ["git", "blame", "--line-porcelain", rel_target],
+            cwd=str(norm_ws),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return {"git": True, "lines": []}
+
+        parsed_lines = parse_porcelain_blame(proc.stdout)
+        result = {"git": True, "lines": parsed_lines}
+
+        # LRU cache cap
+        if len(_BLAME_CACHE) > 500:
+            _BLAME_CACHE.clear()
+        _BLAME_CACHE[cache_key] = result
+        return result
+    except Exception as exc:
+        logger.warning("git.blame error: %s", exc)
+        return {"git": False, "lines": []}

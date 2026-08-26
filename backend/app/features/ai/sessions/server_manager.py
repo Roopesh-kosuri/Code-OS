@@ -56,6 +56,27 @@ def _server_session_start(workspace: str, command: str, port: int, host: str = "
     norm_ws = normalize_workspace(workspace)
     env = _build_safe_environment()
 
+    # SECURITY: restrict host to localhost only to prevent SSRF.
+    _ALLOWED_HOSTS = frozenset({'127.0.0.1', 'localhost', '::1'})
+    if host.lower() not in _ALLOWED_HOSTS:
+        return ToolResult(
+            tool_name='server_session',
+            success=False,
+            output='',
+            error=f'Security violation: host {host!r} is not allowed. Only 127.0.0.1/localhost are permitted.',
+        )
+
+    # SECURITY: basic command safety — reject obviously destructive patterns.
+    _DANGEROUS_PATTERNS = ('rm -rf', 'mkfs', 'dd if=', '> /dev/', 'chmod 777 /', ':(){:|:&};:')
+    cmd_lower = command.strip().lower()
+    if any(pat in cmd_lower for pat in _DANGEROUS_PATTERNS):
+        return ToolResult(
+            tool_name='server_session',
+            success=False,
+            output='',
+            error=f'Security violation: command contains a dangerous pattern and was rejected.',
+        )
+
     effective_command = command.strip()
     if os.name == "nt":
         if effective_command.startswith("pytest ") or effective_command == "pytest":

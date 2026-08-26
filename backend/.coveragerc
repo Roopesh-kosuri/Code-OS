@@ -1,0 +1,17 @@
+[run]
+source = app
+omit =
+    app/**/__init__.py
+    app/__init__.py
+    app/features/ai/providers/constants.py
+    app/features/*/schemas.py
+    app/features/ai/schemas.py
+
+[report]
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    if __name__ == .__main__.:

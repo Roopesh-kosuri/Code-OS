@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
 import path from "node:path";
 
@@ -226,6 +227,31 @@ function buildSafeEnv(): NodeJS.ProcessEnv {
       safe[key] = value;
     }
   }
+
+  // Inject bundled standalone Node and Python runtimes to PATH in packaged app
+  if (!isDev) {
+    const platformFolder = process.platform === "win32" ? "win" : process.platform;
+    const nodeDir = path.join(process.resourcesPath, "node-runtime", platformFolder, "node");
+    const pythonDir = path.join(process.resourcesPath, "python-runtime", platformFolder, "python");
+    const extraPaths: string[] = [];
+    if (fs.existsSync(nodeDir)) {
+      extraPaths.push(nodeDir);
+      if (process.platform !== "win32") {
+        extraPaths.push(path.join(nodeDir, "bin"));
+      }
+    }
+    if (fs.existsSync(pythonDir)) {
+      extraPaths.push(pythonDir);
+      if (process.platform !== "win32") {
+        extraPaths.push(path.join(pythonDir, "bin"));
+      }
+    }
+    if (extraPaths.length > 0) {
+      const currentPath = safe["PATH"] || process.env.PATH || "";
+      safe["PATH"] = extraPaths.join(path.delimiter) + path.delimiter + currentPath;
+    }
+  }
+
   // Always inject a sane TERM value so TUI programs (vim, htop, etc.) work.
   safe["TERM"] = "xterm-256color";
   return safe;

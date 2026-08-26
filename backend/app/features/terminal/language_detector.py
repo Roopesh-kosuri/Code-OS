@@ -208,7 +208,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 name=spec.name,
                 installed=True,
                 version=ver or "Python 3 (detected)",
-                command_path=shutil.which(exe),
+                command_path=exe,
                 install_hint=spec.install_hint,
             )
         return ToolchainStatus(
@@ -228,7 +228,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 name=spec.name,
                 installed=True,
                 version=f"Node.js {ver}" if ver else "Node.js (detected)",
-                command_path=shutil.which(exe),
+                command_path=exe,
                 install_hint=spec.install_hint,
             )
         return ToolchainStatus(
@@ -250,7 +250,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 name=spec.name,
                 installed=True,
                 version=f"{exe} ({ver})" if ver else f"{exe} (detected)",
-                command_path=shutil.which(exe),
+                command_path=exe,
                 install_hint=spec.install_hint,
             )
         elif node_exe:
@@ -259,7 +259,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 name=spec.name,
                 installed=True,
                 version="npx tsx (fallback via Node.js)",
-                command_path=shutil.which(node_exe),
+                command_path=node_exe,
                 install_hint=spec.install_hint,
             )
         return ToolchainStatus(
@@ -281,8 +281,8 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 name=spec.name,
                 installed=True,
                 version=f"{comp} ({ver})" if ver else f"{comp} (detected)",
-                command_path=shutil.which(comp),
-                compile_command_path=shutil.which(comp),
+                command_path=comp,
+                compile_command_path=comp,
                 install_hint=spec.install_hint,
             )
         return ToolchainStatus(
@@ -332,7 +332,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 name=spec.name,
                 installed=True,
                 version=ver or "Go (detected)",
-                command_path=shutil.which(go_exe),
+                command_path=go_exe,
                 install_hint=spec.install_hint,
             )
         return ToolchainStatus(
@@ -354,8 +354,8 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
                 name=spec.name,
                 installed=True,
                 version=ver or "Rust toolchain",
-                command_path=shutil.which(cargo_exe) if cargo_exe else shutil.which(rustc_exe),
-                compile_command_path=shutil.which(rustc_exe) if rustc_exe else None,
+                command_path=cargo_exe if cargo_exe else rustc_exe,
+                compile_command_path=rustc_exe if rustc_exe else None,
                 install_hint=spec.install_hint,
             )
         return ToolchainStatus(
@@ -374,7 +374,7 @@ def check_toolchain_status(lang_id: str) -> ToolchainStatus:
             name=spec.name,
             installed=True,
             version="System Shell",
-            command_path=shutil.which(sh_exe) if sh_exe else "built-in",
+            command_path=sh_exe if sh_exe else "built-in",
             install_hint=spec.install_hint,
         )
 

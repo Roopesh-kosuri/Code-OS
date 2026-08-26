@@ -1,18 +1,31 @@
 from fastapi import APIRouter, Query, HTTPException
 
-from .schemas import BranchCreateRequest, BranchSwitchRequest, CommitHistoryItem, CommitRequest, DiffResponse, GitHubAuthRequest, GitStatusResponse
+from .schemas import (
+    BranchCreateRequest,
+    BranchSwitchRequest,
+    CommitHistoryItem,
+    CommitRequest,
+    DiffResponse,
+    GitHubAuthRequest,
+    GitStatusResponse,
+)
 from .github_auth import validate_and_store_token
 from .github_service import commit_selected_files, push_current_branch, remotes
-from .service import commit, create_branch, diff, history, pull, push, status, switch_branch
+from .service import (
+    blame,
+    commit,
+    create_branch,
+    diff,
+    history,
+    pull,
+    push,
+    status,
+    switch_branch,
+)
 
 router = APIRouter()
 
-
-async def _ensure_trusted(workspace: str):
-    from ..workspaces.trust_service import get_workspace_trust
-    trust = await get_workspace_trust(workspace)
-    if not trust.get("trusted", False):
-        raise HTTPException(status_code=403, detail="Workspace is in Restricted Mode.")
+from ...core.trust import ensure_workspace_trusted as _ensure_trusted
 
 
 @router.get("/status", response_model=GitStatusResponse)
@@ -31,7 +44,6 @@ async def git_diff(workspace: str = Query(...), path: str | None = Query(default
 async def git_commit(payload: CommitRequest) -> dict[str, str]:
     await _ensure_trusted(payload.workspace)
     return {"sha": commit_selected_files(payload.workspace, payload.message, payload.files)}
-
 
 
 @router.post("/pull")
@@ -73,3 +85,9 @@ async def branch_create(payload: BranchCreateRequest) -> dict[str, str]:
 async def git_history(workspace: str = Query(...), limit: int = Query(30, ge=1, le=100)) -> list[CommitHistoryItem]:
     await _ensure_trusted(workspace)
     return [CommitHistoryItem(**item) for item in history(workspace, limit)]
+
+
+@router.get("/blame")
+async def git_blame(workspace: str = Query(...), file_path: str = Query(...)) -> dict[str, object]:
+    await _ensure_trusted(workspace)
+    return blame(workspace, file_path)

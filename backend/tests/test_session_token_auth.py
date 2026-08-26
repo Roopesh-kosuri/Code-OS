@@ -178,7 +178,7 @@ class TestAuthMiddleware(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status_code, 200)
 
     async def test_websocket_upgrade_is_exempt(self):
-        """WebSocket upgrades carry no Authorization header in the HTTP handshake."""
+        """WebSocket upgrades are NOT blanket-exempted from auth; middleware returns 401 (per FIX 2)."""
         from app.core.auth import require_token
         from fastapi import Request
 
@@ -193,7 +193,8 @@ class TestAuthMiddleware(unittest.IsolatedAsyncioTestCase):
 
         call_next = AsyncMock(return_value=MagicMock(status_code=101))
         result = await require_token(req, call_next)
-        call_next.assert_awaited_once()
+        # After FIX 2: WS upgrades are NOT exempt from middleware; they get 401.
+        self.assertEqual(result.status_code, 401)
 
 
 class TestTerminalEnvAllowlist(unittest.TestCase):
@@ -242,3 +243,6 @@ class TestTerminalEnvAllowlist(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ═══════════════════════════════════════════════════════

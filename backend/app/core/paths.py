@@ -41,7 +41,7 @@ def normalize_workspace(raw_path: str) -> Path:
     """
     try:
         return Path(raw_path).expanduser().resolve()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid workspace path") from exc
 
 
@@ -53,7 +53,7 @@ def normalize_path(raw_path: str) -> Path:
     _reject_tilde(raw_path)
     try:
         return Path(raw_path).resolve()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="Invalid path") from exc
 
 

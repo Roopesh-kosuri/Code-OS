@@ -36,7 +36,24 @@ function isVersionSupported(versionStr: string): boolean {
   return false;
 }
 
+function getBundledPythonPath(): string | null {
+  if (isDev) return null;
+  const platformFolder = process.platform === "win32" ? "win" : process.platform;
+  const exeName = process.platform === "win32" ? "python.exe" : "bin/python3";
+  const candidatePath = path.join(process.resourcesPath, "python-runtime", platformFolder, "python", exeName);
+  if (fs.existsSync(candidatePath)) {
+    console.log(`[backend] Found bundled standalone Python runtime at: ${candidatePath}`);
+    return candidatePath;
+  }
+  return null;
+}
+
 function findPythonCommand(): string | null {
+  const bundled = getBundledPythonPath();
+  if (bundled) {
+    return bundled;
+  }
+
   const candidates = ["python3", "python"];
   for (const cmd of candidates) {
     const version = getPythonVersion(cmd);

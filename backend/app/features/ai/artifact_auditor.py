@@ -79,12 +79,6 @@ class _HTMLStructuralParser(html.parser.HTMLParser):
         self.script_count = 0
         self.doctype_count = 0
         self.html_tag_count = 0
-        self.head_tag_count = 0
-        self.body_tag_count = 0
-        self.title_text: str = ""
-        self.h1_texts: list[str] = []
-        self._in_title = False
-        self._in_h1 = False
         self.interactive_elements: list[tuple[str, dict, int]] = []
 
     def handle_decl(self, decl: str):
@@ -103,14 +97,6 @@ class _HTMLStructuralParser(html.parser.HTMLParser):
             self.script_count += 1
         elif tag_lower == "html":
             self.html_tag_count += 1
-        elif tag_lower == "head":
-            self.head_tag_count += 1
-        elif tag_lower == "body":
-            self.body_tag_count += 1
-        elif tag_lower == "title":
-            self._in_title = True
-        elif tag_lower == "h1":
-            self._in_h1 = True
 
         # Track IDs
         if "id" in attr_dict and attr_dict["id"].strip():
@@ -131,11 +117,6 @@ class _HTMLStructuralParser(html.parser.HTMLParser):
 
     def handle_endtag(self, tag: str):
         tag_lower = tag.lower()
-        if tag_lower == "title":
-            self._in_title = False
-        elif tag_lower == "h1":
-            self._in_h1 = False
-
         if tag_lower in self.VOID_TAGS:
             return
 
@@ -158,13 +139,7 @@ class _HTMLStructuralParser(html.parser.HTMLParser):
             self.stray_closing_tags.append((tag_lower, self.getpos()[0]))
 
     def handle_data(self, data: str):
-        if self._in_title:
-            self.title_text += data
-        if self._in_h1:
-            if not self.h1_texts or len(self.h1_texts[-1]) > 50:
-                self.h1_texts.append(data.strip())
-            else:
-                self.h1_texts[-1] += " " + data.strip()
+        pass
 
 
 # ── Main Audit Function ──────────────────────────────────────────────────────
@@ -365,14 +340,6 @@ def _audit_css_and_styling(content: str, lines: list[str], findings: list[AuditF
     elif has_media_queries:
         passed.append("Responsive mobile media queries detected")
 
-
-COMMON_HTML_TAGS = {
-    "html", "body", "head", "main", "nav", "footer", "header", "button",
-    "form", "section", "div", "a", "p", "span", "ul", "ol", "li", "input",
-    "textarea", "select", "h1", "h2", "h3", "h4", "h5", "h6", "img", "canvas",
-    "svg", "path", "article", "aside", "details", "summary", "figure",
-    "figcaption", "table", "thead", "tbody", "tr", "th", "td", "label", "option"
-}
 
 
 def _audit_javascript_and_interactivity(content: str, lines: list[str], findings: list[AuditFinding], passed: list[str]):

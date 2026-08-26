@@ -8,6 +8,13 @@ async def list_settings() -> dict[str, str]:
     return {row["key"]: row["value"] for row in rows}
 
 
+async def get_setting(key: str) -> str | None:
+    db = await get_db()
+    cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = await cursor.fetchone()
+    return row["value"] if row else None
+
+
 async def set_setting(key: str, value: str) -> None:
     db = await get_db()
     await db.execute(

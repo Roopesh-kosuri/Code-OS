@@ -20,6 +20,7 @@ async def update_job_status(job_id: str, status: str, errors: str = "") -> None:
     db = await get_db()
     cursor = await db.execute("SELECT started_at FROM agent_jobs WHERE id = ?", (job_id,))
     row = await cursor.fetchone()
+    await cursor.close()
     duration = 0.0
     now_str = datetime.now(timezone.utc).isoformat()
     if row and row["started_at"]:
@@ -40,6 +41,7 @@ async def add_job_log(job_id: str, log_message: str) -> None:
     db = await get_db()
     cursor = await db.execute("SELECT logs FROM agent_jobs WHERE id = ?", (job_id,))
     row = await cursor.fetchone()
+    await cursor.close()
     logs = json.loads(row["logs"]) if row and row["logs"] else []
     logs.append(log_message)
     await db.execute("UPDATE agent_jobs SET logs = ? WHERE id = ?", (json.dumps(logs), job_id))
@@ -54,6 +56,7 @@ async def add_job_modified_file(job_id: str, file_path: str) -> None:
     db = await get_db()
     cursor = await db.execute("SELECT files_modified FROM agent_jobs WHERE id = ?", (job_id,))
     row = await cursor.fetchone()
+    await cursor.close()
     files = json.loads(row["files_modified"]) if row and row["files_modified"] else []
     if file_path not in files:
         files.append(file_path)
@@ -65,6 +68,7 @@ async def get_job_manifest(job_id: str) -> str:
     db = await get_db()
     cursor = await db.execute("SELECT workspace_manifest FROM agent_jobs WHERE id = ?", (job_id,))
     row = await cursor.fetchone()
+    await cursor.close()
     return row["workspace_manifest"] if row and row["workspace_manifest"] else "{}"
 
 async def update_job_manifest(job_id: str, manifest_json: str) -> None:
@@ -121,11 +125,13 @@ async def get_job(job_id: str) -> dict | None:
     db = await get_db()
     job_cursor = await db.execute("SELECT * FROM agent_jobs WHERE id = ?", (job_id,))
     job_row = await job_cursor.fetchone()
+    await job_cursor.close()
     if not job_row:
         return None
         
     task_cursor = await db.execute("SELECT * FROM agent_tasks WHERE job_id = ?", (job_id,))
     task_rows = await task_cursor.fetchall()
+    await task_cursor.close()
     
     tasks = [
         {

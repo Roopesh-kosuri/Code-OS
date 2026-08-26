@@ -18,7 +18,9 @@ HEALTH_WINDOW_SECONDS = 3600.0
 # Circuit breaker trip threshold
 CIRCUIT_BREAKER_FAILURES = 5
 # Circuit breaker cooldown (5 minutes)
-CIRCUIT_BREAKER_COOLDOWN = 300.0
+# Circuit breaker cooldown base (5 minutes). Doubles on each successive trip, capped at 2 hours.
+CIRCUIT_BREAKER_COOLDOWN_BASE = 300.0
+CIRCUIT_BREAKER_COOLDOWN_MAX = 7200.0
 
 DEFAULT_FALLBACK_ORDER = [
     "groq",
@@ -62,6 +64,7 @@ class ProviderHealthTracker:
         self._history: dict[str, list[tuple[float, bool, str]]] = defaultdict(list)
         self._consecutive_failures: dict[str, int] = defaultdict(int)
         self._circuit_opened_at: dict[str, float] = {}
+        self._circuit_trip_count: dict[str, int] = defaultdict(int)
         self._lock = RLock()
 
     def record_outcome(
@@ -91,26 +94,44 @@ class ProviderHealthTracker:
             else:
                 self._consecutive_failures[prov_key] += 1
                 if self._consecutive_failures[prov_key] >= CIRCUIT_BREAKER_FAILURES:
+                    self._circuit_trip_count[prov_key] += 1
                     self._circuit_opened_at[prov_key] = now
                     logger.warning(
                         "Circuit breaker TRIPPED for provider '%s' after %d consecutive failures. Cooldown for %.0fs.",
                         prov_key,
                         self._consecutive_failures[prov_key],
-                        CIRCUIT_BREAKER_COOLDOWN,
+                        CIRCUIT_BREAKER_COOLDOWN_BASE,
                     )
 
     def is_circuit_open(self, provider_id: str) -> tuple[bool, float, str]:
         """
-        Circuit breakers are non-blocking: always returns False.
+        Return (True, seconds_remaining, reason) if the circuit is open.
+        Cooldown uses exponential backoff: base * 2^(trip_count-1), capped at CIRCUIT_BREAKER_COOLDOWN_MAX.
         """
-        return False, 0.0, ""
-
+        prov_key = provider_id.lower()
+        with self._lock:
+            opened_at = self._circuit_opened_at.get(prov_key)
+            if opened_at is None:
+                return False, 0.0, ''
+            trip = max(1, self._circuit_trip_count.get(prov_key, 1))
+            cooldown = min(CIRCUIT_BREAKER_COOLDOWN_BASE * (2 ** (trip - 1)), CIRCUIT_BREAKER_COOLDOWN_MAX)
+            elapsed = time.time() - opened_at
+            if elapsed < cooldown:
+                remaining = cooldown - elapsed
+                msg = (f'Circuit open for {prov_key!r}: {self._consecutive_failures[prov_key]} consecutive failures. '
+                       f'Retry in {int(remaining)}s (cooldown #{trip}: {int(cooldown)}s).')
+                return True, remaining, msg
+            # Cooldown expired — auto-close and allow a probe
+            del self._circuit_opened_at[prov_key]
+            logger.info('Circuit breaker HALF-OPEN for %r: cooldown expired, allowing probe.', prov_key)
+            return False, 0.0, ''
     def reset_all(self) -> None:
         """Reset all circuit breakers, failure history, and metrics to clean healthy state."""
         with self._lock:
             self._history.clear()
             self._consecutive_failures.clear()
             self._circuit_opened_at.clear()
+            self._circuit_trip_count.clear()
             logger.info("All provider health counters and circuit breakers reset to clean state.")
 
     def get_health(self, provider_id: str) -> dict[str, Any]:
@@ -199,6 +220,7 @@ class ProviderHealthTracker:
             self._history.clear()
             self._consecutive_failures.clear()
             self._circuit_opened_at.clear()
+            self._circuit_trip_count.clear()
 
 
 provider_health_tracker = ProviderHealthTracker()

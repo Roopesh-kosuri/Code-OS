@@ -2,6 +2,8 @@ import json
 import logging
 from ..service import provider_for
 from ..schemas import ChatRequest, ChatMessage
+# D2: hoisted from function-level to avoid repeated inline imports (no circular import risk)
+from ..providers.constants import RECOVERY_URLS as _RECOVERY_URLS, PRESET_TO_PROVIDER as _PRESET_TO_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +69,6 @@ class PlannerAgent:
 
         prompt = f"User Request: {user_request}\n\nWorkspace Context:\n{workspace_context}"
         
-        _PRESET_TO_PROVIDER = {
-            "local_reasoning": "ollama",
-            "local_fast": "ollama",
-            "api_fast": "groq",
-            "api_reasoning": "openai-compatible",
-            "auto": "auto",
-        }
         raw_provider = (self.provider_config or {}).get("provider") or (self.provider_config or {}).get("preset", "auto")
         provider_name = _PRESET_TO_PROVIDER.get(raw_provider, raw_provider)
         model_name = self.provider_config.get("model", "") if self.provider_config else ""
@@ -141,17 +136,6 @@ class PlannerAgent:
                         fb = provider_health_tracker.find_fallback_provider(effective_prov, configured_keys)
                         if fb:
                             fb_prov, fb_model, fb_url = fb
-                            _RECOVERY_URLS = {
-                                "groq": "https://api.groq.com/openai/v1",
-                                "openai": "https://api.openai.com/v1",
-                                "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
-                                "deepseek": "https://api.deepseek.com/v1",
-                                "mistral": "https://api.mistral.ai/v1",
-                                "openrouter": "https://openrouter.ai/api/v1",
-                                "nvidia-nim": "https://integrate.api.nvidia.com/v1",
-                                "nvidia": "https://integrate.api.nvidia.com/v1",
-                                "anthropic": "https://api.anthropic.com/v1",
-                            }
                             chat_req.base_url = fb_url
                             chat_req.provider = "openai-compatible" if fb_prov in _RECOVERY_URLS else fb_prov
                             chat_req.model = fb_model

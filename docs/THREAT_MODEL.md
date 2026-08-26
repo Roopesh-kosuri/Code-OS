@@ -45,6 +45,7 @@ This document outlines the architectural trust boundaries, threat scenarios, imp
   - **Path Normalization**: Client paths checked with `ensure_within_workspace`. `Path.resolve()` resolves all symlinks before checking `is_relative_to(workspace)`.
   - **Tilde Rejection**: `_reject_tilde()` throws HTTP 400 if client-supplied path starts with `~`.
   - **Workspace Trust Enforcement**: Restricted mode blocks file creation, modification, move, delete, and git mutations until user marks workspace as trusted.
+  - **Debugger Workspace Containment**: `start_debugger` and `set_breakpoint` handlers validate file and breakpoint targets against `ensure_within_workspace`, blocking arbitrary subprocess spawning and breakpoint setting outside the active workspace.
 - **Unmitigated Risks**:
   - Hard links pointing to files outside workspace are not explicitly blocked if `Path.resolve()` resolves inside workspace.
 
@@ -76,3 +77,4 @@ This document outlines the architectural trust boundaries, threat scenarios, imp
   - **Trust Gate**: Terminal creation in untrusted workspace returns HTTP 403.
 - **Unmitigated Risks**:
   - Processes run with user OS privileges; no hardware-level container or sandbox (Docker/jail) is enforced around the terminal process.
+

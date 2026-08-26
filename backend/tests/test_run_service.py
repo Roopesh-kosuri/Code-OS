@@ -75,7 +75,7 @@ def test_missing_toolchain_error_message():
 
 
 @pytest.mark.asyncio
-async def test_run_file_stream_python(tmp_path):
+async def test_run_file_stream_python(tmp_path, temp_db):
     """Test real Python execution via SSE stream."""
     ws = str(tmp_path)
     py_file = tmp_path / "hello.py"
@@ -92,7 +92,7 @@ async def test_run_file_stream_python(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_file_stream_unsupported_file(tmp_path):
+async def test_run_file_stream_unsupported_file(tmp_path, temp_db):
     """Test error event when running unsupported file types."""
     ws = str(tmp_path)
     txt_file = tmp_path / "data.xyz"
@@ -108,7 +108,7 @@ async def test_run_file_stream_unsupported_file(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_kill_run_process(tmp_path):
+async def test_kill_run_process(tmp_path, temp_db):
     """Test terminating a running process via kill_run_process."""
     # Test killing nonexistent
     ok, msg = kill_run_process("fake_run_id_123")
@@ -139,7 +139,7 @@ async def test_kill_run_process(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_api_toolchains_endpoint(async_client):
+async def test_api_toolchains_endpoint(async_client, temp_db):
     """Test GET /api/terminal/toolchains."""
     res = await async_client.get("/api/terminal/toolchains")
     assert res.status_code == 200
@@ -149,7 +149,7 @@ async def test_api_toolchains_endpoint(async_client):
 
 
 @pytest.mark.asyncio
-async def test_api_run_and_kill_endpoints(async_client, tmp_path):
+async def test_api_run_and_kill_endpoints(async_client, tmp_path, temp_db):
     """Test POST /api/terminal/run and POST /api/terminal/run/kill."""
     ws = str(tmp_path / "trusted_run_ws")
     Path(ws).mkdir(parents=True, exist_ok=True)
@@ -197,7 +197,7 @@ def test_java_toolchain_status_missing_and_installed():
 
 
 @pytest.mark.asyncio
-async def test_java_compilation_and_execution_with_package_and_space_path(tmp_path):
+async def test_java_compilation_and_execution_with_package_and_space_path(tmp_path, temp_db):
     """Verify compiling and executing Java with package declaration and path with spaces."""
     from unittest.mock import patch, AsyncMock, MagicMock
     from app.features.terminal.language_detector import ToolchainStatus
@@ -273,7 +273,7 @@ async def test_java_compilation_and_execution_with_package_and_space_path(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_java_compilation_syntax_error_reporting(tmp_path):
+async def test_java_compilation_syntax_error_reporting(tmp_path, temp_db):
     """Verify compilation failure captures line numbers and error detail."""
     from unittest.mock import patch, AsyncMock
     from app.features.terminal.language_detector import ToolchainStatus
@@ -313,7 +313,7 @@ async def test_java_compilation_syntax_error_reporting(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_java_missing_jdk_run_stream(tmp_path):
+async def test_java_missing_jdk_run_stream(tmp_path, temp_db):
     """Verify running a Java file without JDK emits not_found failure and installation guide."""
     ws = str(tmp_path)
     java_file = tmp_path / "SlidingPuzzle.java"
@@ -345,3 +345,67 @@ async def test_java_missing_jdk_run_stream(tmp_path):
     assert "Java compiler (javac) not found" in full_stream
     assert '"failure_reason": "not_found"' in full_stream
     assert "adoptium.net" in full_stream
+
+# ===================================================================
+# FIX 1: P0-1 Security tests -- Arbitrary File Execution Bypass
+# ===================================================================
+
+@pytest.mark.asyncio
+async def test_run_file_rejects_outside_workspace_absolute(tmp_path, tmp_path_factory, temp_db):
+    """run_file_stream must reject absolute paths that escape the workspace."""
+    # Create a file that exists, but is outside the workspace directory
+    outside_dir = tmp_path_factory.mktemp("outside_ws")
+    outside_file = outside_dir / "secret.py"
+    outside_file.write_text("print('secret')\n", encoding="utf-8")
+
+    workspace = str(tmp_path)  # different from outside_dir
+
+    events = []
+    async for packet in run_file_stream(workspace, str(outside_file)):
+        events.append(packet)
+    full = "".join(events)
+
+    assert "error" in full, f"Expected error SSE, got: {full}"
+    assert "security_violation" in full or "Security violation" in full, (
+        f"Expected security_violation in: {full}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_file_rejects_dotdot_traversal(tmp_path, tmp_path_factory, temp_db):
+    """run_file_stream must reject relative paths that escape via ../ traversal."""
+    ws = str(tmp_path)
+    events = []
+    # relative path that would escape workspace
+    async for packet in run_file_stream(ws, "../../some_file.py"):
+        events.append(packet)
+    full = "".join(events)
+    assert "error" in full, f"Expected error SSE for traversal attempt, got: {full}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    __import__("sys").platform == "win32",
+    reason="Symlink creation requires admin privileges on Windows"
+)
+async def test_run_file_rejects_symlink_escape(tmp_path, tmp_path_factory, temp_db):
+    """run_file_stream must reject a symlink whose target is outside the workspace."""
+    ws_dir = tmp_path / "workspace"
+    ws_dir.mkdir()
+    target_dir = tmp_path_factory.mktemp("outside")
+    target_file = target_dir / "secret.py"
+    target_file.write_text("print('secret')\n", encoding="utf-8")
+    link = ws_dir / "evil_link.py"
+    link.symlink_to(target_file)
+
+    events = []
+    async for packet in run_file_stream(str(ws_dir), "evil_link.py"):
+        events.append(packet)
+    full = "".join(events)
+    assert "error" in full, f"Expected error for symlink escape, got: {full}"
+
+
+@pytest.mark.asyncio
+async def test_run_file_rejects_outside_workspace(tmp_path, tmp_path_factory, temp_db):
+    """Alias matching Phase 4 specification for path escape rejection."""
+    await test_run_file_rejects_outside_workspace_absolute(tmp_path, tmp_path_factory, temp_db)

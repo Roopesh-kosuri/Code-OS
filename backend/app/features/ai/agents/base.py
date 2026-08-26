@@ -7,6 +7,8 @@ from ..schemas import ChatRequest, ChatMessage, FileChange
 from ..job_service import update_task_status, update_task_pending_action, add_job_log
 from ..event_bus import event_bus
 from .agent_interface import BaseAgent as NewBaseAgent, AgentOutput as NewAgentOutput
+# D2: hoisted from function-level to avoid repeated inline imports (no circular import risk)
+from ..providers.constants import RECOVERY_URLS as _RECOVERY_URLS, PRESET_TO_PROVIDER as _PRESET_TO_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +35,6 @@ class BaseAgent(NewBaseAgent):
         # 2. Call LLM
         # Resolve provider: 'provider' key takes priority, then fall back to 'preset'
         # with a mapping table so legacy 'local_reasoning'/'api_fast' presets still work.
-        _PRESET_TO_PROVIDER = {
-            "local_reasoning": "ollama",
-            "local_fast": "ollama",
-            "api_fast": "groq",
-            "api_reasoning": "openai-compatible",
-            "auto": "auto",
-        }
         raw_provider = (self.provider_config or {}).get("provider") or (self.provider_config or {}).get("preset", "auto")
         provider_name = _PRESET_TO_PROVIDER.get(raw_provider, raw_provider)  # pass-through if already a real name
         model_name = self.provider_config.get("model", "") if self.provider_config else ""
@@ -109,17 +104,6 @@ class BaseAgent(NewBaseAgent):
                                 fb_prov, fb_model, fb_url = fb
                                 logs.append(f"[FAILOVER] Rate limit on [{effective_prov}] {chat_req.model}. Automatically falling back to [{fb_prov}] {fb_model}...")
                                 await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
-                                _RECOVERY_URLS = {
-                                    "groq": "https://api.groq.com/openai/v1",
-                                    "openai": "https://api.openai.com/v1",
-                                    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
-                                    "deepseek": "https://api.deepseek.com/v1",
-                                    "mistral": "https://api.mistral.ai/v1",
-                                    "openrouter": "https://openrouter.ai/api/v1",
-                                    "nvidia-nim": "https://integrate.api.nvidia.com/v1",
-                                    "nvidia": "https://integrate.api.nvidia.com/v1",
-                                    "anthropic": "https://api.anthropic.com/v1",
-                                }
                                 new_base_url = fb_url
                                 new_provider = "openai-compatible" if fb_prov in _RECOVERY_URLS else fb_prov
                                 new_key_provider = fb_prov

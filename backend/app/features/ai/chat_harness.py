@@ -38,6 +38,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ...core.paths import ensure_within_workspace, normalize_workspace
+from .harness import (
+    log_and_flag_failure,
+    SSEStreamer,
+    ApprovalCoordinator,
+    ActivityLogger,
+    CompactionManager,
+    PlanParser,
+    ToolExecutor,
+)
 from ..settings.service import get_api_key
 from .schemas import ChatMessage, ChatRequest, EditProposalRequest, FileChange
 from .service import provider_for, create_proposal, PROPOSAL_RE
@@ -167,7 +176,7 @@ MALICIOUS_COMMAND_PATTERNS = [
     r"wget\s+.*\|\s*(bash|sh|zsh|powershell|pwsh|cmd)",
     r"eval\s+\$\(.*\)",
     r"curl\s+.*-o\s+(/tmp/|C:\\Windows\\Temp\\|%TEMP%|[A-Za-z]:\\[^ \t\n\r]+\.exe)",
-    r"Invoke-Expression\s*\(?.*(?:Invoke-WebRequest|iwr|curl|wget)",
+    r"(?i)\b(?:Invoke-Expression|iex)\b[^;\r\n|&]{0,250}\b(?:Invoke-WebRequest|iwr|curl|wget)\b",
     r"powershell.*-enc\s+[A-Za-z0-9+/=]{20,}",
 ]
 
@@ -670,50 +679,22 @@ def clear_all_pending() -> int:
 
 # ── SSE Event Formatting ─────────────────────────────────────────────────────
 
-def _sse_event(event_type: str, data: dict) -> str:
-    """Format a typed Server-Sent Event."""
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+# ── SSE helpers (canonical definitions in harness/sse_streamer.py) ──────────
+# These names are re-exported here for backward-compat with external imports.
+# DO NOT add new SSE helpers here; add them in harness/sse_streamer.py.
+from .harness.sse_streamer import (
+    _sse_event,
+    _sse_status,
+    _sse_checkpoint,
+    _sse_token,
+    _sse_tier_routing as _streamer_sse_tier_routing,
+    _sse_ask_user,
+    _sse_memory_updated,
+)
 
-
-def _sse_status(status_type: str, message: str, **kwargs) -> str:
-    payload = {"type": status_type, "message": message}
-    payload.update(kwargs)
-    return _sse_event("status", payload)
-
-
-def _sse_checkpoint(turn_number: int, commit_hash: str, touched_files: list[str]) -> str:
-    return _sse_event("checkpoint", {
-        "turn_number": turn_number,
-        "commit_hash": commit_hash,
-        "touched_files": touched_files,
-    })
-
-
-def _sse_token(content: str) -> str:
-    return _sse_event("token", {"content": content})
-
-
-def _sse_tier_routing(tier: int, label: str, reason: str = "") -> str:
-    return _sse_event("tier_routing", {
-        "tier": tier,
-        "label": label,
-        "reason": reason,
-    })
-
-
-def _sse_ask_user(action_id: str, question: str, options: list[str]) -> str:
-    return _sse_event("ask_user", {
-        "action_id": action_id,
-        "question": question,
-        "options": options,
-    })
-
-
-def _sse_memory_updated(fact: str) -> str:
-    return _sse_event("memory_updated", {
-        "fact": fact,
-    })
-
+def _sse_tier_routing(tier: Any, label: str = "", reason: str = "") -> str:
+    """Delegated to canonical implementation in sse_streamer."""
+    return _streamer_sse_tier_routing(tier, label, reason)
 
 def _sse_plan(steps: list[str | dict | DAGPlanStep], current: int = 0, **kwargs) -> str:
     formatted_steps: list[dict] = []
@@ -798,12 +779,6 @@ def _sse_done(success: bool, message: str = "", **kwargs) -> str:
     return _sse_event("done", payload)
 
 
-def _sse_tier_routing(tier: int, label: str, reason: str = "") -> str:
-    return _sse_event("tier_routing", {
-        "tier": tier,
-        "label": label,
-        "reason": reason,
-    })
 
 
 def _sse_error(message: str, **kwargs) -> str:
@@ -1560,12 +1535,12 @@ def _find_mismatch_context(current_content: str, original: str) -> str:
 
 def _should_audit_staged_changes(staged_changes: list[FileChange], user_query: str) -> bool:
     """Determine if staged changes require structural quality auditing (generation/creation tasks)."""
+    if not staged_changes:
+        return False
     if any(c.original == "" for c in staged_changes):
         return True
     q_lower = user_query.lower()
-    if any(term in q_lower for term in ("build", "create", "generate", "portfolio", "html", "website", "app")):
-        return True
-    return False
+    return any(term in q_lower for term in ("build", "create", "generate", "write", "portfolio", "html", "website", "app", "make", "new file"))
 
 
 def _validate_smart_edit(
@@ -2355,7 +2330,7 @@ You have direct, sandboxed access to the workspace through tools.
 7. **Targeted Test Execution**: Use `list_tests` to discover test node IDs and `run_single_test(node_id)` to run specific tests rather than running the entire test suite.
 8. **Verify with Evidence & Post-Edit Verification**: Run tests or commands to verify results. If tests fail, read the assertion traceback and repair the code based on real evidence. Your final answer must confirm whether disk verification passed ('✓ change verified on disk').
 9. **Project Memory**: When the user states a preference or convention ("use stdlib only", "surgical edits", "ask before running tests"), save it via `memory_write`.
-10. **Path Quoting & Implicit Directory Creation**: ALWAYS wrap every path and directory argument in double quotes when running commands (e.g. `mkdir "nigropo puzzle game"` or `dir "folder name"`). Never leave paths with spaces unquoted. Remember: file-creation tools (`edit_file` with original="") automatically create parent directories on disk. A failed or timed-out `mkdir` is NEVER blocking — you can create `"nigropo puzzle game/NigropoPuzzleGame.java"` directly and the folder will be created.
+10. **Path Quoting & Implicit Directory Creation**: ALWAYS wrap every path and directory argument in double quotes when running commands (e.g. `mkdir "my project"` or `dir "folder name"`). Never leave paths with spaces unquoted. Remember: file-creation tools (`edit_file` with original="") automatically create parent directories on disk. A failed or timed-out `mkdir` is NEVER blocking — you can create `"src/example/App.java"` directly and the folder will be created.
 11. **Auto-Recovery & Task Continuation (Never Ask to Retry)**: If a command or tool fails (approval timeout, exit code, unquoted path), NEVER ask "Would you like me to try again?" or "Shall I retry?". Immediately adapt and execute a corrected approach (wrap paths in quotes, use alternative tools, or create files directly with parent paths). One step failing never aborts the whole task — adapt, continue, and report honestly at the end. The only allowed user questions are real architectural/product decisions via `ask_user`.
 12. **Chunked Large File Generation**: For large files exceeding ~300–400 lines (or 1000+ lines), you MUST split generation across multiple tool calls: call `edit_file` (with original="") for the first chunk (skeleton/head/styles), then call `append_file` for subsequent chunks (body sections, interactive JS, footers) until complete.
 13. **Permanent Generation Quality Standards**:
@@ -2446,6 +2421,25 @@ def _build_system_prompt(
     style_summary = _load_style_conventions_summary(workspace)
     if style_summary:
         prompt_parts.append(f"\n## Workspace Style & Conventions:\n{style_summary}\n")
+
+    try:
+        from ..mcp.mcp_manager import mcp_manager
+        active_mcp_tools = mcp_manager.get_all_tools()
+        if active_mcp_tools:
+            mcp_lines = ["\n## Available MCP (Model Context Protocol) Tools:"]
+            chars_budget = 1500
+            total_chars = 0
+            for t in active_mcp_tools:
+                line = f"- `{t.namespaced_name}`: {t.description[:100]}"
+                if total_chars + len(line) < chars_budget:
+                    mcp_lines.append(line)
+                    total_chars += len(line)
+                else:
+                    mcp_lines.append(f"- ... and {len(active_mcp_tools) - len(mcp_lines) + 1} more MCP tools.")
+                    break
+            prompt_parts.append("\n".join(mcp_lines))
+    except Exception:
+        pass
 
     return "\n".join(prompt_parts)
 
@@ -2596,15 +2590,6 @@ def _compact_conversation_history(messages: list[ChatMessage], keep_recent_turns
     return compacted
 
 
-def _should_audit_staged_changes(staged_changes: list[FileChange], user_query: str) -> bool:
-    if not staged_changes:
-        return False
-    if any(c.original == "" for c in staged_changes):
-        return True
-    lower = user_query.lower()
-    return any(k in lower for k in ("create", "generate", "build", "write", "portfolio", "html", "make", "new file"))
-
-
 def _generate_diff_summary(change: FileChange) -> str:
     if not change.original:
         line_count = len(change.updated.splitlines())
@@ -2651,6 +2636,38 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         user_query = user_messages[-1]["content"] if user_messages else ""
         turn_number = len(user_messages) or 1
 
+        # Phase 2: Secure URL context injection (user messages only)
+        from .url_fetcher import extract_user_urls, fetch_user_url
+        from ..settings.service import list_settings
+
+        user_urls = []
+        try:
+            settings_dict = await list_settings()
+            allow_links = settings_dict.get("ai.allow_link_fetch", "true").lower() != "false"
+            if allow_links and user_query:
+                user_urls = extract_user_urls(user_query)
+        except Exception as e:
+            logger.warning("Failed to check link fetch settings: %s", e)
+
+        fetched_url_blocks = []
+        for u in user_urls:
+            yield _sse_status("fetching_url", f"Fetching {u}...")
+            ok, target_url, content_block = await fetch_user_url(u)
+            if ok:
+                fetched_url_blocks.append(content_block)
+            else:
+                logger.info("URL fetch skipped or failed for %s: %s", target_url, content_block)
+
+        if fetched_url_blocks:
+            user_query = (
+                f"{user_query}\n\n"
+                f"[Web Content Context]: The following web content was fetched from the URL(s) you provided. "
+                f"Use this content to answer questions, explain code, or perform tasks regarding the linked resource:\n"
+                + "\n\n".join(fetched_url_blocks)
+            )
+            if user_messages:
+                user_messages[-1]["content"] = user_query
+
         # ── Step 1: Adaptive Effort Routing Classifier ───────────────────────
         tier, tier_label, tier_reason = _classify_task_effort(
             user_query,
@@ -2687,8 +2704,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     p = ensure_within_workspace(workspace, request.attached_paths[0])
                     if p.is_file():
                         context["active_file"] = {"name": p.name, "content": _read_file_cached(p)}
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log_and_flag_failure("active_file_reading", exc, {"attached_paths": request.attached_paths})
         else:
             # Tier 2 Deep Task: Full budgeted RAG with symbol search & semantic retrieval
             yield _sse_status("thinking", "Analyzing workspace and gathering budgeted grounding snippets...")
@@ -2707,7 +2724,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 try:
                     _, rag_snippets = await _gather_budgeted_rag_context(workspace, user_query, request.attached_paths)
                 except Exception as exc:
-                    logger.warning("chat_harness: budgeted RAG failed: %s", exc)
+                    _, sse_warn = log_and_flag_failure("rag_context_gathering", exc, {"workspace": workspace, "query": user_query})
+                    yield sse_warn
 
         # ── Step 3: Provider Initialization ──────────────────────────────────
         system_prompt = _build_system_prompt(workspace, tier, context, rag_snippets, project_memory)
@@ -2826,8 +2844,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 if not rag_snippets and user_query.strip():
                     try:
                         _, rag_snippets = await _gather_budgeted_rag_context(workspace, user_query, request.attached_paths)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _, sse_warn = log_and_flag_failure("rag_context_gathering", exc, {"workspace": workspace, "query": user_query})
+                        yield sse_warn
                 messages[0] = ChatMessage(role="system", content=_build_system_prompt(workspace, tier, context, rag_snippets, project_memory))
 
             status_msg = "Rony Agent is streaming answer..." if tier == 0 else (
@@ -2839,7 +2858,24 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             full_response: list[str] = []
 
             # Tool availability: Tier 0 passes no tools (pure streaming answer)
-            active_tools = OPENAI_HARNESS_TOOLS if tier >= 1 else None
+            if tier >= 1:
+                from ..mcp.mcp_manager import mcp_manager
+                mcp_tool_defs = []
+                try:
+                    for t in mcp_manager.get_all_tools():
+                        mcp_tool_defs.append({
+                            "type": "function",
+                            "function": {
+                                "name": t.namespaced_name,
+                                "description": f"[MCP Tool from {t.server_id}] {t.description}".strip(),
+                                "parameters": t.input_schema or {"type": "object", "properties": {}},
+                            }
+                        })
+                except Exception:
+                    pass
+                active_tools = OPENAI_HARNESS_TOOLS + mcp_tool_defs
+            else:
+                active_tools = None
 
             try:
                 if active_tools:
@@ -3009,7 +3045,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     content=(
                         "Do not ask for permission, diagnostics, or abort. As the autonomous agent, execute your tools directly. "
                         "Remember: File-creation tools (`edit_file` with original=\"\") automatically create all parent directories on disk — a failed or timed-out `mkdir` is never blocking. "
-                        "Execute the corrected approach now by staging the required files directly with their relative paths (e.g. `edit_file(path=\"nigropo puzzle game/NigropoPuzzleGame.java\", original=\"\", updated=\"...\")`) or calling tools directly."
+                        "Execute the corrected approach now by staging the required files directly with their relative paths (e.g. `edit_file(path=\"src/example/App.java\", original=\"\", updated=\"...\")`) or calling tools directly."
                     )
                 ))
                 iteration += 1
@@ -3028,7 +3064,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             content=(
                                 "Do not ask for permission, diagnostics, or abort. As the autonomous agent, execute your tools directly. "
                                 "Remember: File-creation tools (`edit_file` with original=\"\") automatically create all parent directories on disk — a failed or timed-out `mkdir` is never blocking. "
-                                "Execute the corrected approach now by staging the required files directly with their relative paths (e.g. `edit_file(path=\"nigropo puzzle game/NigropoPuzzleGame.java\", original=\"\", updated=\"...\")`) or calling tools directly."
+                                "Execute the corrected approach now by staging the required files directly with their relative paths (e.g. `edit_file(path=\"src/example/App.java\", original=\"\", updated=\"...\")`) or calling tools directly."
                             )
                         ))
                         iteration += 1
@@ -3155,6 +3191,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         status_desc = "Scanning for unreferenced / orphaned files..."
                     elif tc.name == "update_architecture_doc":
                         status_desc = "Refreshing ARCHITECTURE.md..."
+                    elif tc.name.startswith("mcp__"):
+                        status_desc = f"Executing MCP tool: {tc.name}..."
 
                     yield _sse_status("tool", status_desc, tool=tc.name, detail=detail)
 
@@ -3179,6 +3217,90 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         result = _find_dead_code(workspace, tc.arguments.get("paths"))
                     elif tc.name == "update_architecture_doc":
                         result = _update_architecture_doc(workspace, tc.arguments.get("reason") or "Manual tool invocation")
+                    elif tc.name.startswith("mcp__"):
+                        parts = tc.name.split("__")
+                        server_id = parts[1] if len(parts) >= 2 else "unknown"
+                        raw_tool_name = "__".join(parts[2:]) if len(parts) >= 3 else tc.name
+
+                        from ..mcp.mcp_manager import mcp_manager
+                        from ...workspaces.trust_service import get_workspace_trust
+                        trust = await get_workspace_trust(workspace)
+                        is_trusted = trust.get("trusted", False)
+
+                        instance = mcp_manager.instances.get(server_id)
+                        tool_def = next((t for t in (instance.tools if instance else []) if t.name == raw_tool_name), None)
+                        is_read_only = tool_def.read_only if tool_def else False
+
+                        if not is_trusted and not is_read_only:
+                            restricted_err = f"Workspace is in Restricted Mode. Mutating MCP tool '{tc.name}' is blocked."
+                            yield _sse_status("tool_error", restricted_err, tool=tc.name)
+                            result = ToolResult(
+                                tool_name=tc.name,
+                                success=False,
+                                output="",
+                                error=restricted_err,
+                                failure_reason="restricted_mode_blocked",
+                                failure_detail=restricted_err
+                            )
+                        else:
+                            auto_approved = is_read_only and (instance.config.auto_approve_read_only if instance else False)
+
+                            if auto_approved:
+                                yield _sse_status("tool", f"[MCP: {server_id}] Executing {raw_tool_name} (auto-approved)...", tool=tc.name)
+                                try:
+                                    raw_res = await mcp_manager.call_tool(tc.name, tc.arguments)
+                                    text_content = "\n".join(c.get("text", "") for c in raw_res.get("content", []) if isinstance(c, dict))
+                                    wrapped_output = f'<untrusted_mcp_content server="{server_id}" tool="{raw_tool_name}">\n{text_content}\n</untrusted_mcp_content>'
+                                    result = ToolResult(
+                                        tool_name=tc.name,
+                                        success=not raw_res.get("is_error", False),
+                                        output=wrapped_output,
+                                        error="" if not raw_res.get("is_error", False) else text_content
+                                    )
+                                except Exception as exc:
+                                    result = ToolResult(tool_name=tc.name, success=False, output="", error=str(exc))
+                            else:
+                                action_id = str(uuid.uuid4())
+                                pending_mcp = PendingApproval(
+                                    action_id=action_id,
+                                    action_type="mcp",
+                                    detail=f"{server_id}:{raw_tool_name}",
+                                    reason=f"MCP Tool Execution ({tc.name})",
+                                    workspace=workspace,
+                                    command=tc.name
+                                )
+                                _pending_approvals[action_id] = pending_mcp
+
+                                yield _sse_approval_request(
+                                    action_id=action_id,
+                                    action_type="mcp",
+                                    detail=f"{server_id}:{raw_tool_name}",
+                                    reason=pending_mcp.reason,
+                                    command=tc.name
+                                )
+                                try:
+                                    await asyncio.wait_for(pending_mcp.event.wait(), timeout=COMMAND_APPROVAL_TIMEOUT_SECONDS)
+                                    if pending_mcp.approved:
+                                        yield _sse_status("tool", f"[MCP: {server_id}] Approved: Executing {raw_tool_name}...", tool=tc.name)
+                                        raw_res = await mcp_manager.call_tool(tc.name, tc.arguments)
+                                        text_content = "\n".join(c.get("text", "") for c in raw_res.get("content", []) if isinstance(c, dict))
+                                        wrapped_output = f'<untrusted_mcp_content server="{server_id}" tool="{raw_tool_name}">\n{text_content}\n</untrusted_mcp_content>'
+                                        result = ToolResult(
+                                            tool_name=tc.name,
+                                            success=not raw_res.get("is_error", False),
+                                            output=wrapped_output,
+                                            error="" if not raw_res.get("is_error", False) else text_content
+                                        )
+                                    else:
+                                        denied_msg = f"MCP Tool '{tc.name}' was rejected by user."
+                                        yield _sse_status("tool", denied_msg, tool=tc.name)
+                                        result = ToolResult(tool_name=tc.name, success=False, output="", error=denied_msg, failure_reason="user_denied", failure_detail=denied_msg)
+                                except asyncio.TimeoutError:
+                                    timeout_msg = f"Approval card timed out for MCP tool: {tc.name}."
+                                    yield _sse_status("tool_error", timeout_msg, tool=tc.name)
+                                    result = ToolResult(tool_name=tc.name, success=False, output="", error=timeout_msg, failure_reason="approval_timeout", failure_detail=timeout_msg)
+                                finally:
+                                    _pending_approvals.pop(action_id, None)
                     elif tc.name == "ask_user":
                         q_text = str(tc.arguments.get("question") or "Please select an option:")
                         opts = tc.arguments.get("options")
@@ -3631,8 +3753,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         stream = provider.stream_chat(chat_request.model, _compact_conversation_history(messages), chat_request.temperature)
                         async for token in stream:
                             yield _sse_token(token)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _, sse_warn = log_and_flag_failure("model_streaming", exc, {"model": chat_request.model})
+                        yield sse_warn
 
                 # Quality gate audit check
                 if staged_changes and _should_audit_staged_changes(staged_changes, user_query) and not audit_retried:
@@ -3787,8 +3910,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
     finally:
         try:
             _cleanup_server_sessions(workspace)
-        except Exception:
-            pass
+        except Exception as exc:
+            log_and_flag_failure("server_session_cleanup", exc, {"workspace": workspace})
 
 
 # ── Proposal Finalization, Self-Critique & Post-Apply Read-Back ──────────────
@@ -4100,8 +4223,8 @@ async def _escalate_to_duo(
                         from .service import reject_proposal
                         try:
                             await reject_proposal(target_prop_id)
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            log_and_flag_failure("reject_proposal", exc, {"target_prop_id": target_prop_id})
                         yield _sse_command_result(f"edit {summary_paths}", f"User rejected Duo Loop changes to {summary_paths}.", 1, False)
                         yield _sse_done(False, "Duo Loop proposal rejected by user.")
                 except asyncio.TimeoutError:
@@ -4124,3 +4247,4 @@ async def _escalate_to_duo(
         logger.error("chat_harness: Duo Loop escalation failed: %s", exc)
         yield _sse_error(f"Duo Loop escalation error: {exc}")
         yield _sse_done(False, f"Escalation error: {exc}")
+

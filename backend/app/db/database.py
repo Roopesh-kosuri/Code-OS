@@ -1,4 +1,5 @@
 import aiosqlite
+import asyncio
 import logging
 from pathlib import Path
 from typing import Optional
@@ -8,14 +9,173 @@ from ..core.config import get_settings
 logger = logging.getLogger(__name__)
 
 _db: Optional[aiosqlite.Connection] = None
+_db_lock: Optional[asyncio.Lock] = None
+
+
+def _get_db_lock() -> asyncio.Lock:
+    """Lazy-initialize asyncio.Lock inside running event loop to avoid startup crashes."""
+    global _db_lock
+    if _db_lock is None:
+        _db_lock = asyncio.Lock()
+    return _db_lock
 
 
 async def get_db() -> aiosqlite.Connection:
     """Return the shared single SQLite connection for the application."""
     global _db
     if _db is None:
-        await init_db()
+        async with _get_db_lock():
+            if _db is None:
+                await init_db()
     return _db
+
+
+async def _run_migrations(db: aiosqlite.Connection) -> None:
+    """Lightweight schema migration system using ordered migration versions."""
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS _schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    cur = await db.execute("SELECT version FROM _schema_migrations")
+    rows = await cur.fetchall()
+    applied = {r[0] for r in rows}
+
+    # Migration 1: workspaces and agent_jobs dynamic column additions
+    if 1 not in applied:
+        try:
+            cur = await db.execute("PRAGMA table_info(workspaces)")
+            w_rows = await cur.fetchall()
+            cols = [r["name"] for r in w_rows]
+            if "is_active" not in cols:
+                await db.execute("ALTER TABLE workspaces ADD COLUMN is_active INTEGER DEFAULT 0")
+            if "last_opened_at" not in cols:
+                await db.execute("ALTER TABLE workspaces ADD COLUMN last_opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
+        except Exception as exc:
+            logger.debug("Migration 1 workspaces: %s", exc)
+
+        try:
+            cur = await db.execute("PRAGMA table_info(agent_jobs)")
+            j_rows = await cur.fetchall()
+            cols = [r["name"] for r in j_rows]
+            if "workspace_manifest" not in cols:
+                await db.execute("ALTER TABLE agent_jobs ADD COLUMN workspace_manifest TEXT DEFAULT '{}'")
+            if "user_request" not in cols:
+                await db.execute("ALTER TABLE agent_jobs ADD COLUMN user_request TEXT DEFAULT ''")
+        except Exception as exc:
+            logger.debug("Migration 1 agent_jobs: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (1, 'column_additions')")
+        await db.commit()
+
+    # Migration 2: status CHECK validation triggers for pre-existing tables
+    if 2 not in applied:
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_agent_jobs_status_insert
+            BEFORE INSERT ON agent_jobs
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
+            END;
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_agent_jobs_status_update
+            BEFORE UPDATE OF status ON agent_jobs
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
+            END;
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_agent_tasks_status_insert
+            BEFORE INSERT ON agent_tasks
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in agent_tasks');
+            END;
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_agent_tasks_status_update
+            BEFORE UPDATE OF status ON agent_tasks
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in agent_tasks');
+            END;
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_duo_sessions_status_insert
+            BEFORE INSERT ON duo_sessions
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('running', 'completed', 'failed', 'cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in duo_sessions');
+            END;
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_duo_sessions_status_update
+            BEFORE UPDATE OF status ON duo_sessions
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('running', 'completed', 'failed', 'cancelled')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in duo_sessions');
+            END;
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_edit_proposals_status_insert
+            BEFORE INSERT ON edit_proposals
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('pending', 'applied', 'rejected')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in edit_proposals');
+            END;
+        """)
+        await db.execute("""
+            CREATE TRIGGER IF NOT EXISTS trg_edit_proposals_status_update
+            BEFORE UPDATE OF status ON edit_proposals
+            FOR EACH ROW
+            WHEN NEW.status NOT IN ('pending', 'applied', 'rejected')
+            BEGIN
+                SELECT RAISE(ABORT, 'Invalid status in edit_proposals');
+            END;
+        """)
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (2, 'status_check_constraints')")
+        await db.commit()
+
+    # Migration 3: Refresh status triggers with 'queued' support
+    if 3 not in applied:
+        try:
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_insert")
+            await db.execute("""
+                CREATE TRIGGER trg_agent_jobs_status_insert
+                BEFORE INSERT ON agent_jobs
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
+                END;
+            """)
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_update")
+            await db.execute("""
+                CREATE TRIGGER trg_agent_jobs_status_update
+                BEFORE UPDATE OF status ON agent_jobs
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
+                END;
+            """)
+            await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (3, 'refresh_status_triggers')")
+            await db.commit()
+        except Exception as exc:
+            logger.debug("Migration 3 status triggers: %s", exc)
 
 
 async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
@@ -31,7 +191,6 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
 
     _db = await aiosqlite.connect(db_path, timeout=30.0)
     _db.row_factory = aiosqlite.Row
-
 
     # Performance, integrity, and concurrency settings
     await _db.execute("PRAGMA journal_mode=WAL;")
@@ -64,7 +223,7 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
         CREATE TABLE IF NOT EXISTS edit_proposals (
             id TEXT PRIMARY KEY,
             workspace TEXT NOT NULL,
-            status TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')),
             payload TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
@@ -161,7 +320,7 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
             id TEXT PRIMARY KEY,
             workspace TEXT NOT NULL,
             workflow TEXT NOT NULL,
-            status TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')),
             started_at TEXT,
             completed_at TEXT,
             token_usage INTEGER DEFAULT 0,
@@ -181,7 +340,7 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
             job_id TEXT NOT NULL,
             title TEXT NOT NULL,
             agent_role TEXT NOT NULL,
-            status TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped')),
             dependencies TEXT DEFAULT '[]',
             assigned_agent TEXT,
             reasoning_summary TEXT DEFAULT '',
@@ -199,7 +358,7 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
             id TEXT PRIMARY KEY,
             workspace TEXT NOT NULL,
             task_description TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'running',
+            status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
             current_round INTEGER NOT NULL DEFAULT 0,
             max_rounds INTEGER NOT NULL DEFAULT 5,
             final_proposal_id TEXT,
@@ -254,28 +413,9 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
         );
         """
     )
-    # Dynamic schema migration for existing databases
-    try:
-        cur = await _db.execute("PRAGMA table_info(workspaces)")
-        rows = await cur.fetchall()
-        cols = [r["name"] for r in rows]
-        if "is_active" not in cols:
-            await _db.execute("ALTER TABLE workspaces ADD COLUMN is_active INTEGER DEFAULT 0")
-        if "last_opened_at" not in cols:
-            await _db.execute("ALTER TABLE workspaces ADD COLUMN last_opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP")
-    except Exception as exc:
-        logger.debug("Schema migration for workspaces: %s", exc)
 
-    try:
-        cur = await _db.execute("PRAGMA table_info(agent_jobs)")
-        rows = await cur.fetchall()
-        cols = [r["name"] for r in rows]
-        if "workspace_manifest" not in cols:
-            await _db.execute("ALTER TABLE agent_jobs ADD COLUMN workspace_manifest TEXT DEFAULT '{}'")
-        if "user_request" not in cols:
-            await _db.execute("ALTER TABLE agent_jobs ADD COLUMN user_request TEXT DEFAULT ''")
-    except Exception as exc:
-        logger.debug("Schema migration for agent_jobs: %s", exc)
+    # Run schema migrations
+    await _run_migrations(_db)
 
     await _db.commit()
     return _db
@@ -291,6 +431,3 @@ async def close_db() -> None:
             logger.warning("Error closing database connection: %s", exc)
         finally:
             _db = None
-
-
-

@@ -9,6 +9,8 @@ from .schemas import FileNode
 
 logger = logging.getLogger(__name__)
 
+INVALID_FILENAME_CHARS = {'*', '?', '"', '<', '>', '|', '\0'}
+
 LANGUAGE_BY_SUFFIX = {
     ".py": "python",
     ".java": "java",
@@ -89,10 +91,16 @@ def read_file(workspace: str, path: str) -> tuple[str, str]:
     return target.read_text(encoding="utf-8", errors="replace"), LANGUAGE_BY_SUFFIX.get(target.suffix.lower(), "plaintext")
 
 
-def create_entry(workspace: str, path: str, entry_type: str) -> None:
+def create_entry(workspace: str, path: str, entry_type: str) -> Path:
+    if not path or not str(path).strip():
+        raise HTTPException(status_code=400, detail="Name cannot be empty")
     target = ensure_within_workspace(workspace, path)
+    if not target.name or target.name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Invalid name")
+    if any(c in INVALID_FILENAME_CHARS for c in target.name) or ":" in target.name:
+        raise HTTPException(status_code=400, detail=f"Invalid characters in filename: {target.name}")
     if target.exists():
-        raise HTTPException(status_code=409, detail="Path already exists")
+        raise HTTPException(status_code=409, detail=f"Path already exists: {target.name}")
     target.parent.mkdir(parents=True, exist_ok=True)
     if entry_type == "directory":
         target.mkdir()
@@ -100,6 +108,7 @@ def create_entry(workspace: str, path: str, entry_type: str) -> None:
         target.write_text("", encoding="utf-8")
     else:
         raise HTTPException(status_code=400, detail="type must be file or directory")
+    return target
 
 
 def delete_entry(workspace: str, path: str) -> None:
@@ -194,4 +203,3 @@ def reveal_entry(workspace: str, path: str) -> None:
     except Exception as e:
         logger.error("files.reveal failed for path=%s: %s", target, e)
         raise HTTPException(status_code=500, detail=f"Failed to open system file explorer: {e}")
-

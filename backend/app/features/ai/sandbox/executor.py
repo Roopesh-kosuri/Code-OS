@@ -442,7 +442,16 @@ class SandboxExecutor:
         timeout: float = MAX_COMMAND_TIMEOUT_SECONDS,
     ) -> ToolResult:
         """Execute command either in strict container sandbox or on host with governor."""
-        if sandboxed or require_sandbox:
+        if require_sandbox:
+            # Check Docker availability FIRST. Fail closed if unavailable.
+            caps = _detect_container_runtime()
+            if not caps.get('docker'):
+                raise SandboxUnavailableError(
+                    'Sandbox required but Docker is not available on this host. '
+                    'Install Docker and ensure it is running, then retry.'
+                )
+            return await _execute_command_sandboxed(workspace, command)
+        if sandboxed:
             return await _execute_command_sandboxed(workspace, command)
         return await _execute_command_async(workspace, command, timeout=timeout)
 

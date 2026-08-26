@@ -8,7 +8,7 @@ client = TestClient(app)
 
 
 @pytest.mark.asyncio
-async def test_execute_coder_mode_fast_path(tmp_path):
+async def test_execute_coder_mode_fast_path(tmp_path, temp_db):
     # Create mock workspace file
     calc_file = tmp_path / "calculator.py"
     calc_file.write_text("def divide(a, b):\n    return a / b\n")
@@ -51,7 +51,7 @@ async def test_execute_coder_mode_fast_path(tmp_path):
     assert "test_result" in res
 
 
-def test_coder_mode_api_endpoint(tmp_path, auth_headers):
+def test_coder_mode_api_endpoint(tmp_path, auth_headers, temp_db):
     mock_raw_llm_output = (
         "[PROPOSAL: app.py]\n"
         "<<<< ORIGINAL\n"

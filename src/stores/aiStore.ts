@@ -255,6 +255,232 @@ const savedVisionModel = typeof window !== "undefined" ? localStorage.getItem("c
 const savedBaseUrl = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_base_url") ?? (savedPresetObj?.base_url || "") : "";
 const savedApiKeyProvider = typeof window !== "undefined" ? localStorage.getItem("code_os_ai_api_key_provider") ?? (savedPresetObj?.api_key_provider || null) : null;
 
+/**
+ * Shared SSE event dispatcher with 50ms token batching to eliminate React re-render churn.
+ * Preserves exact wire protocol and event names: tier_routing, status, ask_user, plan, token,
+ * proposal, command_result, approval_request, checkpoint, metrics, error, done.
+ */
+export function createSSEStreamHandler(
+  set: (fn: (state: AIState) => Partial<AIState> | AIState) => void,
+  get: () => AIState
+) {
+  let tokenBuffer = "";
+  let tokenFlushTimer: any = null;
+
+  const flushTokens = () => {
+    if (tokenFlushTimer) {
+      clearTimeout(tokenFlushTimer);
+      tokenFlushTimer = null;
+    }
+    if (!tokenBuffer) return;
+    const chunk = tokenBuffer;
+    tokenBuffer = "";
+    const now = Date.now();
+    set((state) => {
+      const messages = [...state.messages];
+      const last = messages[messages.length - 1];
+      if (last && last.role === "assistant") {
+        messages[messages.length - 1] = { ...last, content: last.content + chunk };
+      }
+      return { messages, lastTokenTimestamp: now };
+    });
+  };
+
+  const handler = (eventType: string, data: any) => {
+    if (eventType === "token") {
+      const tokenStr = typeof data === "string" ? data : (data?.content || "");
+      tokenBuffer += tokenStr;
+      if (!tokenFlushTimer) {
+        tokenFlushTimer = setTimeout(() => {
+          tokenFlushTimer = null;
+          flushTokens();
+        }, 50);
+      }
+      return;
+    }
+
+    // Flush any pending buffered tokens before handling status, command, or completion events
+    flushTokens();
+
+    if (eventType === "tier_routing") {
+      const tierVal = typeof data.tier === "number" ? data.tier : 0;
+      const labelVal = data.label || (tierVal === 0 ? "Fast Answer" : (tierVal === 1 ? "Quick Task" : "Deep think"));
+      const reasonVal = data.reason || labelVal;
+      set(() => ({
+        currentTier: tierVal,
+        currentTierLabel: labelVal,
+        currentTierReason: reasonVal,
+      }));
+    } else if (eventType === "status") {
+      const statusObj: AgentStatus = {
+        type: data.type || "thinking",
+        message: data.message || "",
+        tool: data.tool,
+        detail: data.detail,
+        command: data.command,
+        step: data.step,
+        total: data.total,
+        tier: data.tier,
+        label: data.label,
+        action_id: data.action_id,
+        options: data.options,
+        confirmed: data.confirmed,
+      };
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = { ...last, agentStatus: statusObj };
+        }
+        const newHistory = [...state.agentToolHistory];
+        if (statusObj.type === "tool" && statusObj.tool) {
+          newHistory.push({
+            tool: statusObj.tool,
+            detail: statusObj.detail,
+            timestamp: new Date().toISOString(),
+          });
+        }
+        return { agentStatus: statusObj, agentToolHistory: newHistory, pendingApproval: statusObj.type === "tool" ? null : state.pendingApproval, messages };
+      });
+    } else if (eventType === "ask_user" || eventType === "question") {
+      const askObj: PendingUserResponseState = {
+        action_id: data.action_id,
+        question: data.question || "Please select an option:",
+        options: data.options || [],
+      };
+      set(() => ({ pendingUserResponse: askObj }));
+    } else if (eventType === "plan") {
+      const planObj: AgentPlan = {
+        steps: data.steps || [],
+        current: data.current || 0,
+      };
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = { ...last, agentPlan: planObj };
+        }
+        return { agentPlan: planObj, messages };
+      });
+    } else if (eventType === "proposal") {
+      window.dispatchEvent(new CustomEvent("code-os:proposal-created"));
+    } else if (eventType === "command_result") {
+      const cmdResult: CommandExecution = {
+        command: data.command || "",
+        output: data.output || "",
+        exit_code: typeof data.exit_code === "number" ? data.exit_code : (data.success ? 0 : 1),
+        success: data.success ?? true,
+        reason: data.reason || "",
+      };
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        const toolEntry = {
+          tool: "run_command",
+          detail: cmdResult.command,
+          timestamp: new Date().toISOString(),
+          success: cmdResult.success,
+          reason: cmdResult.reason,
+        };
+        const updatedHistory = [...state.agentToolHistory, toolEntry];
+        if (last && last.role === "assistant") {
+          const existing = last.commands || [];
+          messages[messages.length - 1] = {
+            ...last,
+            commands: [...existing, cmdResult],
+            agentToolHistory: updatedHistory,
+          };
+        }
+        return { messages, agentToolHistory: updatedHistory, pendingApproval: null, pendingApprovals: [] };
+      });
+    } else if (eventType === "approval_request") {
+      const approvalObj: PendingApprovalState = {
+        action_id: data.action_id,
+        action_type: data.action_type || "command",
+        command: data.command || "",
+        detail: data.detail || data.command || data.path || "",
+        reason: data.reason || "Action requires user approval",
+        proposal_id: data.proposal_id,
+        path: data.path,
+        diff_summary: data.diff_summary,
+      };
+      set((state) => {
+        const currentList = state.pendingApprovals || [];
+        const list = [...currentList.filter((a) => a.action_id !== approvalObj.action_id), approvalObj];
+        return {
+          pendingApprovals: list,
+          pendingApproval: list[0] || approvalObj,
+          agentStatus: {
+            type: "approval_required",
+            message: data.reason || "Approval required",
+            command: data.command,
+            detail: data.path || data.detail,
+          },
+        };
+      });
+    } else if (eventType === "checkpoint") {
+      const checkpointObj: CheckpointInfo = {
+        turn_number: data.turn_number || 1,
+        commit_hash: data.commit_hash || "",
+        touched_files: data.touched_files || [],
+      };
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = { ...last, checkpoint: checkpointObj };
+        }
+        return { messages };
+      });
+    } else if (eventType === "metrics") {
+      if (typeof data.tokens_used === "number") {
+        set(() => ({ currentTokensUsed: data.tokens_used }));
+      }
+    } else if (eventType === "error") {
+      const errMsg = typeof data === "string" ? data : (data.message || "Agent error");
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant" && !last.content) {
+          messages[messages.length - 1] = {
+            ...last,
+            content: `⚠️ **AI Provider Error (${state.provider || "API"}):**\n\n${errMsg}\n\n*Tip: Check if your API key quota is reached (e.g. Gemini rate limit). You can switch providers or update your API key in Settings.*`,
+            agentStatus: { type: "error", message: "Provider Error" },
+          };
+        }
+        return { error: errMsg, messages, pendingApproval: null, pendingApprovals: [], pendingUserResponse: null };
+      });
+    } else if (eventType === "done") {
+      const isSuccess = data.success !== false;
+      const doneMsg = data.message || (isSuccess ? "Task completed" : "Task stopped");
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          const finalContent = last.content || (isSuccess ? "" : `⚠️ **AI Provider Error:**\n\n${doneMsg}\n\n*Tip: Switch providers or update your API key in Settings.*`);
+          messages[messages.length - 1] = {
+            ...last,
+            content: finalContent,
+            agentStatus: { type: isSuccess ? "done" : "error", message: doneMsg },
+            agentToolHistory: state.agentToolHistory,
+          };
+        }
+        return {
+          agentStatus: { type: isSuccess ? "done" : "error", message: doneMsg },
+          pendingApproval: null,
+          pendingApprovals: [],
+          pendingUserResponse: null,
+          streaming: false,
+          interruptedState: null,
+          messages,
+        };
+      });
+    }
+  };
+
+  return { handler, flushTokens };
+}
+
 export const useAIStore = create<AIState>((set, get) => ({
   preset: savedPreset,
   provider: savedPresetObj?.provider || "auto",
@@ -356,6 +582,7 @@ export const useAIStore = create<AIState>((set, get) => ({
         });
       }
 
+      const sseHandler = createSSEStreamHandler(set, get);
       await api.streamSSE(
         "/api/ai/chat-agent/resume",
         {
@@ -365,49 +592,10 @@ export const useAIStore = create<AIState>((set, get) => ({
           base_url: get().baseUrl || undefined,
           api_key_provider: get().apiKeyProvider || undefined,
         },
-        (eventType: string, data: any) => {
-          if (eventType === "tier_routing") {
-            const tierVal = typeof data.tier === "number" ? data.tier : 0;
-            const labelVal = data.label || (tierVal === 0 ? "Fast path" : (tierVal === 1 ? "Quick task" : "Deep think"));
-            set({ currentTier: tierVal, currentTierLabel: labelVal, currentTierReason: data.reason || labelVal });
-          } else if (eventType === "metrics") {
-            if (typeof data.tokens_used === "number") {
-              set({ currentTokensUsed: data.tokens_used });
-            }
-          } else if (eventType === "status") {
-            const statusObj: AgentStatus = {
-              type: data.type || "thinking",
-              message: data.message || "",
-              tool: data.tool,
-              detail: data.detail,
-              command: data.command,
-              tier: data.tier,
-              label: data.label,
-            };
-            set((s) => {
-              const messages = [...s.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant") {
-                messages[messages.length - 1] = { ...last, agentStatus: statusObj };
-              }
-              return { agentStatus: statusObj, messages };
-            });
-          } else if (eventType === "token") {
-            const tokenStr = typeof data === "string" ? data : (data.content || "");
-            set((s) => {
-              const messages = [...s.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant") {
-                messages[messages.length - 1] = { ...last, content: last.content + tokenStr };
-              }
-              return { messages };
-            });
-          } else if (eventType === "done") {
-            set({ streaming: false, interruptedState: null });
-          }
-        },
+        sseHandler.handler,
         controller.signal
       );
+      sseHandler.flushTokens();
     } catch (err: any) {
       if (err.name !== "AbortError") {
         set({ error: err.message || "Failed to resume interrupted run", streaming: false });
@@ -781,6 +969,7 @@ export const useAIStore = create<AIState>((set, get) => ({
     );
 
     try {
+      const sseHandler = createSSEStreamHandler(set, get);
       await api.streamSSE(
         "/api/ai/chat-agent/stream",
         {
@@ -795,193 +984,10 @@ export const useAIStore = create<AIState>((set, get) => ({
           agent_mode: get().agentMode,
           vision_model: get().visionModel,
         },
-        (eventType, data: any) => {
-          if (eventType === "tier_routing") {
-            const tierVal = typeof data.tier === "number" ? data.tier : 0;
-            const labelVal = data.label || (tierVal === 0 ? "Fast Answer" : (tierVal === 1 ? "Quick Task" : "Deep think"));
-            const reasonVal = data.reason || labelVal;
-            set({
-              currentTier: tierVal,
-              currentTierLabel: labelVal,
-              currentTierReason: reasonVal,
-            });
-          } else if (eventType === "status") {
-            const statusObj: AgentStatus = {
-              type: data.type || "thinking",
-              message: data.message || "",
-              tool: data.tool,
-              detail: data.detail,
-              command: data.command,
-              step: data.step,
-              total: data.total,
-              tier: data.tier,
-              label: data.label,
-              action_id: data.action_id,
-              options: data.options,
-              confirmed: data.confirmed,
-            };
-            set((state) => {
-              const messages = [...state.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant") {
-                messages[messages.length - 1] = { ...last, agentStatus: statusObj };
-              }
-              const newHistory = [...state.agentToolHistory];
-              if (statusObj.type === "tool" && statusObj.tool) {
-                newHistory.push({
-                  tool: statusObj.tool,
-                  detail: statusObj.detail,
-                  timestamp: new Date().toISOString(),
-                });
-              }
-              return { agentStatus: statusObj, agentToolHistory: newHistory, pendingApproval: statusObj.type === "tool" ? null : state.pendingApproval, messages };
-            });
-          } else if (eventType === "ask_user" || eventType === "question") {
-            const askObj: PendingUserResponseState = {
-              action_id: data.action_id,
-              question: data.question || "Please select an option:",
-              options: data.options || [],
-            };
-            set({ pendingUserResponse: askObj });
-          } else if (eventType === "plan") {
-            const planObj: AgentPlan = {
-              steps: data.steps || [],
-              current: data.current || 0,
-            };
-            set((state) => {
-              const messages = [...state.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant") {
-                messages[messages.length - 1] = { ...last, agentPlan: planObj };
-              }
-              return { agentPlan: planObj, messages };
-            });
-          } else if (eventType === "token") {
-            const tokenStr = typeof data === "string" ? data : (data.content || "");
-            const now = Date.now();
-            set((state) => {
-              const messages = [...state.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant") {
-                messages[messages.length - 1] = { ...last, content: last.content + tokenStr };
-              }
-              return { messages, lastTokenTimestamp: now };
-            });
-          } else if (eventType === "proposal") {
-            window.dispatchEvent(new CustomEvent("code-os:proposal-created"));
-          } else if (eventType === "command_result") {
-            const cmdResult: CommandExecution = {
-              command: data.command || "",
-              output: data.output || "",
-              exit_code: typeof data.exit_code === "number" ? data.exit_code : (data.success ? 0 : 1),
-              success: data.success ?? true,
-              reason: data.reason || "",
-            };
-            set((state) => {
-              const messages = [...state.messages];
-              const last = messages[messages.length - 1];
-              const toolEntry = {
-                tool: "run_command",
-                detail: cmdResult.command,
-                timestamp: new Date().toISOString(),
-                success: cmdResult.success,
-                reason: cmdResult.reason,
-              };
-              const updatedHistory = [...state.agentToolHistory, toolEntry];
-              if (last && last.role === "assistant") {
-                const existing = last.commands || [];
-                messages[messages.length - 1] = {
-                  ...last,
-                  commands: [...existing, cmdResult],
-                  agentToolHistory: updatedHistory,
-                };
-              }
-              return { messages, agentToolHistory: updatedHistory, pendingApproval: null, pendingApprovals: [] };
-            });
-          } else if (eventType === "approval_request") {
-            const approvalObj: PendingApprovalState = {
-              action_id: data.action_id,
-              action_type: data.action_type || "command",
-              command: data.command || "",
-              detail: data.detail || data.command || data.path || "",
-              reason: data.reason || "Action requires user approval",
-              proposal_id: data.proposal_id,
-              path: data.path,
-              diff_summary: data.diff_summary,
-            };
-            set((state) => {
-              const currentList = state.pendingApprovals || [];
-              const list = [...currentList.filter((a) => a.action_id !== approvalObj.action_id), approvalObj];
-              return {
-                pendingApprovals: list,
-                pendingApproval: list[0] || approvalObj,
-                agentStatus: {
-                  type: "approval_required",
-                  message: data.reason || "Approval required",
-                  command: data.command,
-                  detail: data.path || data.detail,
-                },
-              };
-            });
-          } else if (eventType === "checkpoint") {
-            const checkpointObj: CheckpointInfo = {
-              turn_number: data.turn_number || 1,
-              commit_hash: data.commit_hash || "",
-              touched_files: data.touched_files || [],
-            };
-            set((state) => {
-              const messages = [...state.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant") {
-                messages[messages.length - 1] = { ...last, checkpoint: checkpointObj };
-              }
-              return { messages };
-            });
-          } else if (eventType === "metrics") {
-            if (typeof data.tokens_used === "number") {
-              set({ currentTokensUsed: data.tokens_used });
-            }
-          } else if (eventType === "error") {
-            const errMsg = typeof data === "string" ? data : (data.message || "Agent error");
-            set((state) => {
-              const messages = [...state.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant" && !last.content) {
-                messages[messages.length - 1] = {
-                  ...last,
-                  content: `⚠️ **AI Provider Error (${state.provider || "API"}):**\n\n${errMsg}\n\n*Tip: Check if your API key quota is reached (e.g. Gemini rate limit). You can switch providers or update your API key in Settings.*`,
-                  agentStatus: { type: "error", message: "Provider Error" },
-                };
-              }
-              return { error: errMsg, messages, pendingApproval: null, pendingApprovals: [], pendingUserResponse: null };
-            });
-          } else if (eventType === "done") {
-            const isSuccess = data.success !== false;
-            const doneMsg = data.message || (isSuccess ? "Task completed" : "Task stopped");
-            set((state) => {
-              const messages = [...state.messages];
-              const last = messages[messages.length - 1];
-              if (last && last.role === "assistant") {
-                const finalContent = last.content || (isSuccess ? "" : `⚠️ **AI Provider Error:**\n\n${doneMsg}\n\n*Tip: Switch providers or update your API key in Settings.*`);
-                messages[messages.length - 1] = {
-                  ...last,
-                  content: finalContent,
-                  agentStatus: { type: isSuccess ? "done" : "error", message: doneMsg },
-                  agentToolHistory: state.agentToolHistory,
-                };
-              }
-              return {
-                agentStatus: { type: isSuccess ? "done" : "error", message: doneMsg },
-                pendingApproval: null,
-                pendingApprovals: [],
-                pendingUserResponse: null,
-                messages,
-              };
-            });
-          }
-        },
+        sseHandler.handler,
         activeController.signal
       );
+      sseHandler.flushTokens();
 
       await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
     } catch (error) {
@@ -1064,3 +1070,4 @@ export const useAIStore = create<AIState>((set, get) => ({
     }
   },
 }));
+
