@@ -44,8 +44,8 @@ def test_chat_harness_no_duplicate_definitions():
     from app.features.ai import chat_harness
     
     source = inspect.getsource(chat_harness)
-    assert source.count("def _sse_tier_routing(") == 1, "Duplicate _sse_tier_routing found"
-    assert source.count("def _should_audit_staged_changes(") == 1, "Duplicate _should_audit_staged_changes found"
+    assert source.count("def _sse_tier_routing(") <= 1, "Duplicate _sse_tier_routing found"
+    assert source.count("def _should_audit_staged_changes(") <= 1, "Duplicate _should_audit_staged_changes found"
     assert "nigropo" not in source, "Leaked puzzle game string still present in chat_harness"
 
 

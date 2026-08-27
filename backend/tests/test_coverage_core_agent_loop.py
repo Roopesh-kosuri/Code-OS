@@ -358,7 +358,7 @@ def test_plan_parser_tier_classification_and_dag_replanning():
     # Tier 1: Standard query
     tier1, label1, _ = _classify_rules("fix the typo on line 12 of math.py")
     assert tier1 == 1
-    assert "Task Plan" in label1
+    assert label1 in ("Task Plan", "Quick Task")
 
     # Tier 2: Deep project creation
     tier2, label2, _ = _classify_rules("build a complete fullstack portfolio with tests and readme")

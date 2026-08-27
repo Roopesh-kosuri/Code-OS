@@ -1,9 +1,16 @@
+from __future__ import annotations
+
+SENSITIVE_FILE_PATTERNS = (
+    ".env", ".env.*", "*.env",
+    "*.pem", "id_rsa", "id_rsa*", "*.key",
+    ".aws", ".aws/*", ".ssh", ".ssh/*",
+    "credentials.json", "serviceAccountKey.json",
+    "*.sqlite", "*.sqlite3", "*.db"
+)
+
 """
 approval_coordinator.py - Coordinates interactive user permissions, questions, and git checkpoints.
-
-Maintains pending approvals, trusted command memory, and per-turn undo capabilities.
 """
-from __future__ import annotations
 
 import asyncio
 import fnmatch
@@ -13,9 +20,11 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+from app.core.paths import normalize_workspace
 
 logger = logging.getLogger(__name__)
-
 
 @dataclass
 class PendingApproval:
@@ -51,31 +60,6 @@ class PendingUserResponse:
 _pending_approvals: dict[str, PendingApproval] = {}
 _pending_user_responses: dict[str, PendingUserResponse] = {}
 
-SENSITIVE_FILE_PATTERNS = (
-    ".env", ".env.*", "*.env",
-    "*.pem", "id_rsa", "id_rsa*", "*.key",
-    ".aws", ".aws/*", ".ssh", ".ssh/*",
-    "credentials.json", "serviceAccountKey.json",
-    "*.sqlite", "*.sqlite3", "*.db"
-)
-
-
-def _is_sensitive_filename(path_str: str) -> tuple[bool, str]:
-    """Check if a file path matches sensitive credential/secret patterns."""
-    p = Path(path_str)
-    name = p.name.lower()
-    posix_str = path_str.replace("\\", "/").lower()
-    for pat in SENSITIVE_FILE_PATTERNS:
-        pat_lower = pat.lower()
-        if fnmatch.fnmatch(name, pat_lower) or fnmatch.fnmatch(posix_str, pat_lower):
-            return True, p.name
-        if pat_lower.startswith(".") and name == pat_lower:
-            return True, p.name
-        if ".aws" in posix_str.split("/") or ".ssh" in posix_str.split("/"):
-            return True, p.name
-    return False, ""
-
-
 def _get_trusted_commands_path(workspace: str) -> Path:
     base = Path(workspace) if workspace else Path.cwd()
     os_dir = base / ".code_os"
@@ -91,7 +75,7 @@ def _load_trusted_commands(workspace: str) -> list[str]:
             if isinstance(data, list):
                 return [str(x).strip() for x in data if str(x).strip()]
     except Exception as exc:
-        logger.warning("approval_coordinator: failed to load trusted commands: %s", exc)
+        logger.warning("chat_harness: failed to load trusted commands: %s", exc)
     return []
 
 
@@ -107,7 +91,7 @@ def _save_trusted_command(workspace: str, pattern: str) -> bool:
             p.write_text(json.dumps(cmds, indent=2), encoding="utf-8")
         return True
     except Exception as exc:
-        logger.warning("approval_coordinator: failed to save trusted command '%s': %s", pattern, exc)
+        logger.warning("chat_harness: failed to save trusted command '%s': %s", pattern, exc)
         return False
 
 
@@ -121,7 +105,7 @@ def _remove_trusted_command(workspace: str, pattern: str) -> bool:
             p.write_text(json.dumps(cmds, indent=2), encoding="utf-8")
             return True
     except Exception as exc:
-        logger.warning("approval_coordinator: failed to remove trusted command '%s': %s", pattern, exc)
+        logger.warning("chat_harness: failed to remove trusted command '%s': %s", pattern, exc)
     return False
 
 
@@ -143,12 +127,32 @@ def _is_command_trusted(workspace: str, cmd: str) -> bool:
     return False
 
 
+def _is_sensitive_filename(path_str: str) -> tuple[bool, str]:
+    """Check if a file path matches sensitive credential/secret patterns."""
+    import fnmatch
+    p = Path(path_str)
+    name = p.name.lower()
+    posix_str = path_str.replace("\\", "/").lower()
+    for pat in SENSITIVE_FILE_PATTERNS:
+        pat_lower = pat.lower()
+        if fnmatch.fnmatch(name, pat_lower) or fnmatch.fnmatch(posix_str, pat_lower):
+            return True, p.name
+        if pat_lower.startswith(".") and name == pat_lower:
+            return True, p.name
+        if ".aws" in posix_str.split("/") or ".ssh" in posix_str.split("/"):
+            return True, p.name
+    return False, ""
+
+
 def _ensure_git_checkpoint(
     workspace: str,
     turn_num: int,
     touched_files: list[str] | set[str] | None = None,
 ) -> tuple[bool, str, str]:
-    """Ensure workspace is a git repo, and create a pre-turn checkpoint commit rony-turn-{N}-pre."""
+    """Ensure workspace is a git repo, and create a pre-turn checkpoint commit rony-turn-{N}-pre.
+    
+    Returns (new_repo_initialized: bool, commit_hash: str, error_message: str).
+    """
     if not workspace:
         return False, "", "No workspace provided"
     
@@ -156,16 +160,18 @@ def _ensure_git_checkpoint(
     if not ws_path.is_dir():
         return False, "", "Workspace directory does not exist"
 
+    # Validation: Abort if agent touched any sensitive file
     if touched_files:
         for tf in touched_files:
             is_sens, matched_name = _is_sensitive_filename(str(tf))
             if is_sens:
                 err_msg = f"Agent touched sensitive file: {matched_name}. Add it to .gitignore or exclude it from the workspace."
-                logger.error("approval_coordinator: %s", err_msg)
+                logger.error("chat_harness: %s", err_msg)
                 return False, "", err_msg
 
     new_repo_initialized = False
 
+    # 1. Check if git repo
     try:
         res = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
@@ -187,15 +193,32 @@ def _ensure_git_checkpoint(
                 gitignore = ws_path / ".gitignore"
                 if not gitignore.exists():
                     gitignore_content = (
-                        ".venv/\n__pycache__/\nnode_modules/\n*.pyc\n.DS_Store\n.code_os/\n"
-                        ".env\n.env.*\n*.pem\nid_rsa\nid_rsa.pub\n.aws/\n.ssh/\n*.key\n"
-                        "credentials.json\nserviceAccountKey.json\n*.sqlite\n*.sqlite3\n*.db\n"
+                        ".venv/\n"
+                        "__pycache__/\n"
+                        "node_modules/\n"
+                        "*.pyc\n"
+                        ".DS_Store\n"
+                        ".code_os/\n"
+                        ".env\n"
+                        ".env.*\n"
+                        "*.pem\n"
+                        "id_rsa\n"
+                        "id_rsa.pub\n"
+                        ".aws/\n"
+                        ".ssh/\n"
+                        "*.key\n"
+                        "credentials.json\n"
+                        "serviceAccountKey.json\n"
+                        "*.sqlite\n"
+                        "*.sqlite3\n"
+                        "*.db\n"
                     )
                     gitignore.write_text(gitignore_content, encoding="utf-8")
     except Exception as exc:
-        logger.warning("approval_coordinator: git repo check/init failed: %s", exc)
+        logger.warning("chat_harness: git repo check/init failed: %s", exc)
         return False, "", str(exc)
 
+    # 2. Stage ONLY touched files (never git add -A) and create pre-turn checkpoint commit
     commit_hash = ""
     try:
         if touched_files:
@@ -235,14 +258,18 @@ def _ensure_git_checkpoint(
         if hash_res.returncode == 0:
             commit_hash = hash_res.stdout.strip()
     except Exception as exc:
-        logger.warning("approval_coordinator: git checkpoint commit failed: %s", exc)
+        logger.warning("chat_harness: git checkpoint commit failed: %s", exc)
         return new_repo_initialized, "", str(exc)
 
     return new_repo_initialized, commit_hash, ""
 
 
 def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) -> tuple[bool, str, list[str]]:
-    """Restores ONLY the agent-touched files from the pre-turn commit hash."""
+    """Restores ONLY the agent-touched files from the pre-turn commit hash.
+    
+    Uses `git checkout <commit_hash> -- <paths>` — never a blanket reset --hard,
+    never touching user files the agent didn't modify.
+    """
     if not workspace or not commit_hash or not touched_files:
         return False, "Missing workspace, commit_hash, or touched_files", []
     
@@ -269,7 +296,7 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
             cwd=str(ws_path),
             capture_output=True,
             text=True,
-            timeout=10.0,
+            timeout=15.0,
         )
         if res.returncode == 0:
             restored = []
@@ -333,23 +360,3 @@ def clear_all_pending() -> int:
         _pending_user_responses.pop(action_id, None)
         cleared += 1
     return cleared
-
-
-class ApprovalCoordinator:
-    """Class wrapper providing structured access to approvals and trust memory."""
-
-    @staticmethod
-    def approve(action_id: str, always_allow: bool = False, trust_pattern: str | None = None):
-        return approve_action(action_id, always_allow, trust_pattern)
-
-    @staticmethod
-    def reject(action_id: str):
-        return reject_action(action_id)
-
-    @staticmethod
-    def clear():
-        return clear_all_pending()
-
-    @staticmethod
-    def is_trusted(workspace: str, cmd: str) -> bool:
-        return _is_command_trusted(workspace, cmd)

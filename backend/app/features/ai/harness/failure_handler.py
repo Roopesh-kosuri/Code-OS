@@ -1,10 +1,10 @@
+from __future__ import annotations
 """
 failure_handler.py - Centralized resilient failure logging and flagging for chat_harness.
 
 Ensures that errors during intermediate harness stages (RAG, streaming, tool execution, etc.)
 are never silently swallowed, but also NEVER crash the SSE stream.
 """
-from __future__ import annotations
 
 import json
 import logging

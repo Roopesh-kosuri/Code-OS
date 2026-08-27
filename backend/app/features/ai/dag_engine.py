@@ -9,6 +9,12 @@ logger = logging.getLogger(__name__)
 class DAGEngine:
     def __init__(self) -> None:
         self._running_jobs: dict[str, asyncio.Task] = {}
+        self._job_events: dict[str, asyncio.Event] = {}
+
+    def _notify_job_update(self, job_id: str) -> None:
+        """Wake up the DAG engine event loop immediately upon task state change."""
+        if job_id in self._job_events:
+            self._job_events[job_id].set()
 
     async def start_job(self, job_id: str, provider_config: dict | None = None) -> None:
         task = asyncio.create_task(self._run_job(job_id, provider_config))
@@ -24,6 +30,7 @@ class DAGEngine:
     async def _run_job(self, job_id: str, provider_config: dict | None = None) -> None:
         await update_job_status(job_id, "running")
         await add_job_log(job_id, "Starting workflow execution...")
+        self._job_events[job_id] = asyncio.Event()
         
         try:
             while True:
@@ -85,7 +92,15 @@ class DAGEngine:
                     has_waiting = any(t["status"] == "waiting" for t in tasks)
                     if has_waiting:
                         # A task is waiting for user permission or clarification — keep polling silently
-                        await asyncio.sleep(1)
+                        evt = self._job_events.get(job_id)
+                        if evt:
+                            evt.clear()
+                            try:
+                                await asyncio.wait_for(evt.wait(), timeout=2.0)
+                            except asyncio.TimeoutError:
+                                pass
+                        else:
+                            await asyncio.sleep(2.0)
                         continue
                     # If there are no runnable tasks and none are currently running or waiting, we have a cycle/deadlock
                     await update_job_status(job_id, "failed", errors="Deadlock detected in task dependencies.")
@@ -113,6 +128,7 @@ class DAGEngine:
             await update_job_status(job_id, "failed", errors=str(exc))
         finally:
             self._running_jobs.pop(job_id, None)
+            self._job_events.pop(job_id, None)
 
     async def _execute_task(self, job_id: str, task: dict, provider_config: dict | None = None) -> None:
         task_id = task["id"]
@@ -232,6 +248,7 @@ class DAGEngine:
             
             await update_task_status(task_id, "completed", reasoning_summary=output.reasoning_summary, structured_data=output.structured_data)
             await add_job_log(job_id, f"Agent [{role}] successfully completed task '{task['title']}'.")
+            self._notify_job_update(job_id)
             await event_bus.publish("task_completed", {"job_id": job_id, "task_id": task_id})
             
         except Exception as exc:
@@ -275,6 +292,7 @@ class DAGEngine:
                         if t["agent_role"] in ("Review Agent", "Documentation Agent") and t["status"] in ("queued", "waiting"):
                             await update_task_status(t["id"], "completed", reasoning_summary="Skipped by user choice (Reduced Pipeline)")
                             await add_job_log(job_id, f"Task '{t['title']}' ({t['agent_role']}) skipped by user choice.")
+                self._notify_job_update(job_id)
                 await event_bus.publish("task_completed", {"job_id": job_id, "task_id": task_id})
             else:
                 await update_task_status(task_id, "failed", reasoning_summary=str(exc))

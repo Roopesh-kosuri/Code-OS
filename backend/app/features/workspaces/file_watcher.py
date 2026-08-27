@@ -52,13 +52,19 @@ class WorkspaceWatcher:
     def stop(self) -> None:
         with self._lock:
             if self._observer.is_alive():
-                logger.info("Stopping workspace file watcher observer...")
+                try:
+                    logger.info("Stopping workspace file watcher observer...")
+                except Exception:
+                    pass
                 self._observer.stop()
                 self._observer.join(timeout=1.0)
             self._watched.clear()
             self._observer = Observer()
             self._observer.daemon = True
-            logger.info("Workspace file watcher stopped.")
+            try:
+                logger.info("Workspace file watcher stopped.")
+            except Exception:
+                pass
 
     def status(self) -> dict[str, object]:
         return {"running": self._observer.is_alive(), "watched": sorted(self._watched)}

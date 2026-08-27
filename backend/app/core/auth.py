@@ -78,8 +78,8 @@ def generate_and_store_token() -> str:
                 print(f"CODE_OS_SESSION_TOKEN={existing}", flush=True)
                 logger.info("auth: session token reloaded from %s", token_path)
                 return existing
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("auth: failed to read existing session token from %s: %s", token_path, exc, exc_info=True)
 
     token = secrets.token_hex(32)  # 256 bits of randomness
     _SESSION_TOKEN = token
@@ -88,8 +88,8 @@ def generate_and_store_token() -> str:
     token_path.write_text(token, encoding="utf-8")
     try:
         os.chmod(token_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.debug("auth: os.chmod failed on session token file %s: %s", token_path, exc)
 
     print(f"CODE_OS_SESSION_TOKEN={token}", flush=True)
     logger.info("auth: session token generated and stored at %s", token_path)

@@ -1,19 +1,19 @@
-"""
-compaction_manager.py - Conversation history compaction, response cleaning, and truncation detection.
-
-Keeps LLM context within safe token window budgets and strips internal protocol markers.
-"""
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Dict, List
 
-from ..schemas import ChatMessage, FileChange
+from app.features.ai.schemas import ChatMessage
 
-_EXTENDED_TOOL_RE = re.compile(r"\[TOOL_CALL:\s*([a-z_]+)\]([\s\S]*?)\[/TOOL_CALL\]", re.IGNORECASE)
-_CODEBLOCK_TOOL_RE = re.compile(r"```[a-z]*\s*\[TOOL_CALL:\s*([a-z_]+)\]([\s\S]*?)\[/TOOL_CALL\]\s*```", re.IGNORECASE)
-_PLAN_RE = re.compile(r"\[PLAN\]([\s\S]*?)\[/PLAN\]", re.IGNORECASE)
-
+_EXTENDED_TOOL_RE = re.compile(
+    r"\[TOOL_CALL:\s*(?P<name>[a-z_]+)\s*\]\s*(?P<body>.*?)\s*\[/TOOL_CALL\]",
+    re.DOTALL | re.IGNORECASE,
+)
+_CODEBLOCK_TOOL_RE = re.compile(
+    r"```(?:tool_call|json)\s*\n(\{\s*\"(?:tool|name)\"\s*:\s*\"[a-z_]+\"[\s\S]*?\})\s*```",
+    re.IGNORECASE,
+)
+_PLAN_RE = re.compile(r"\[PLAN(?:_DAG)?\].*?\[/PLAN(?:_DAG)?\]", re.DOTALL | re.IGNORECASE)
 
 def _is_response_truncated(text: str) -> bool:
     if "[TRUNCATED" in text:
@@ -56,7 +56,7 @@ def _compact_conversation_history(messages: list[ChatMessage], keep_recent_turns
             if "Tool results:" in content or "[TOOL_RESULT:" in content or "Tool observation results:" in content:
                 tool_names = re.findall(r"\[TOOL_RESULT:\s*([a-z_]+)\]", content)
                 if tool_names:
-                    summary = f"(Historical tool results for: {', '.join(set(tool_names))} - compacted to save context tokens)"
+                    summary = f"(Historical tool results for: {', '.join(set(tool_names))} — compacted to save context tokens)"
                     compacted.append(ChatMessage(role="user", content=summary))
                 else:
                     compacted.append(msg)
@@ -66,7 +66,7 @@ def _compact_conversation_history(messages: list[ChatMessage], keep_recent_turns
             if "[TOOL_CALL:" in content and len(content) > 300:
                 compact_tool_calls = re.sub(
                     r"(\[\s*TOOL_CALL:\s*([a-z_]+)\s*\])([\s\S]*?)(\[\s*/\s*TOOL_CALL\s*\])",
-                    r"\1\n(Tool payload for \2 - compacted to save context tokens)\n\4",
+                    r"\1\n(Tool payload for \2 — compacted to save context tokens)\n\4",
                     content
                 )
                 compacted.append(ChatMessage(role="assistant", content=compact_tool_calls))
@@ -81,19 +81,16 @@ def _compact_conversation_history(messages: list[ChatMessage], keep_recent_turns
 def _generate_diff_summary(change: FileChange) -> str:
     if not change.original:
         line_count = len(change.updated.splitlines())
-        return f"+{line_count} lines (new file)"
+        return f"+ [New file] {change.path} ({line_count} lines)"
     orig_lines = len(change.original.splitlines())
     upd_lines = len(change.updated.splitlines())
-    diff = upd_lines - orig_lines
-    sign = "+" if diff >= 0 else ""
-    return f"{sign}{diff} lines"
+    diff_sign = f"+{upd_lines - orig_lines}" if upd_lines >= orig_lines else f"-{orig_lines - upd_lines}"
+    return f"~ [Modified] {change.path} ({diff_sign} lines)"
 
 
 class CompactionManager:
-    """Class wrapper providing conversation compaction and response cleaning."""
-
     @staticmethod
-    def compact(messages: list[ChatMessage], keep_recent_turns: int = 2) -> list[ChatMessage]:
+    def compact(messages, keep_recent_turns: int = 5):
         return _compact_conversation_history(messages, keep_recent_turns)
 
     @staticmethod

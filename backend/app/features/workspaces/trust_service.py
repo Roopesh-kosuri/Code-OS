@@ -14,7 +14,8 @@ async def get_workspace_trust(workspace_path: str) -> dict:
     """
     try:
         normalized = normalize_workspace(workspace_path)
-    except Exception:
+    except Exception as exc:
+        logger.warning("trust_service: path normalization failed for %s: %s", workspace_path, exc)
         return {"path": workspace_path, "trusted": False, "trust_level": None, "trusted_at": None}
 
     db = await get_db()
