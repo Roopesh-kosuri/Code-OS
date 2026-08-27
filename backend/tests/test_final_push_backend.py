@@ -100,8 +100,16 @@ class TestDuoServiceCoverage:
             start_session, cancel_session, get_session, list_sessions,
             DuoSessionRequest, ModelConfig, _active_tasks
         )
+        from app.db.database import get_db
 
         ws = str(tmp_path)
+        db = await get_db()
+        await db.execute(
+            "INSERT OR IGNORE INTO workspaces(path, name, last_opened_at) VALUES (?, ?, '2026-01-01T00:00:00')",
+            (ws, tmp_path.name)
+        )
+        await db.commit()
+
         req = DuoSessionRequest(
             workspace=ws,
             task_description="Implement a feature",
