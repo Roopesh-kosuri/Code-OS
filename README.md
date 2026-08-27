@@ -52,7 +52,7 @@ Everything runs on your machine. Your code never leaves it, except to whichever 
 | :--- | :--- |
 | **Windows** | [GitHub Release v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0) |
 | **Linux** | [GitHub Release v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0) |
-| **macOS** | [[GitHub Release v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0) |
+| **macOS** | [GitHub Release v3.0.0](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v3.0.0) |
 
 > **v3.0.0 installers are fully self-contained** — Python 3.11 and Node.js 20 are bundled inside. Install on a fresh machine with no prior setup and everything works.
 
