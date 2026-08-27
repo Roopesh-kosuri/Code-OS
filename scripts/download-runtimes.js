@@ -61,74 +61,83 @@ function downloadFile(url, dest) {
   });
 }
 
-async function setupCurrentPlatformRuntimes() {
-  const platform = process.platform;
-  console.log(`[runtimes] Setting up runtimes for platform: ${platform}...`);
+async function setupRuntimesForPlatform(targetPlatform) {
+  console.log(`[runtimes] Setting up runtimes for target platform: ${targetPlatform}...`);
 
-  // 1. Python runtime for current platform
-  const pyDestDir = path.join(PYTHON_DIR, platform === 'win32' ? 'win' : platform);
-  const pyExe = platform === 'win32'
+  // 1. Python runtime
+  const pyDestDir = path.join(PYTHON_DIR, targetPlatform === 'win32' || targetPlatform === 'win' ? 'win' : 'linux');
+  const pyExe = (targetPlatform === 'win32' || targetPlatform === 'win')
     ? path.join(pyDestDir, 'python', 'python.exe')
     : path.join(pyDestDir, 'python', 'bin', 'python3');
 
   if (!fs.existsSync(pyExe)) {
-    fs.mkdirSync(pyDestDir, { recursive: true });
-    const pyUrl = platform === 'win32' ? PYTHON_URLS.win32 : PYTHON_URLS.linux;
-    const pyTar = path.join(pyDestDir, 'python.tar.gz');
-    await downloadFile(pyUrl, pyTar);
-    console.log(`[runtimes] Extracting Python to ${pyDestDir} ...`);
-    execSync(`tar -xzf "${pyTar}" -C "${pyDestDir}"`, { stdio: 'inherit' });
-    fs.unlinkSync(pyTar);
-    console.log(`[runtimes] Python ready at: ${pyExe}`);
+    try {
+      fs.mkdirSync(pyDestDir, { recursive: true });
+      const pyUrl = (targetPlatform === 'win32' || targetPlatform === 'win') ? PYTHON_URLS.win32 : PYTHON_URLS.linux;
+      const pyTar = path.join(pyDestDir, 'python.tar.gz');
+      await downloadFile(pyUrl, pyTar);
+      console.log(`[runtimes] Extracting Python to ${pyDestDir} ...`);
+      execSync(`tar -xzf "${pyTar}" -C "${pyDestDir}"`, { stdio: 'inherit' });
+      if (fs.existsSync(pyTar)) fs.unlinkSync(pyTar);
+      console.log(`[runtimes] Python ready at: ${pyExe}`);
+    } catch (err) {
+      console.warn(`[runtimes] Warning: Python download/unpack error: ${err.message}`);
+    }
   } else {
     console.log(`[runtimes] Python already present at: ${pyExe}`);
   }
 
-  // 2. Node.js runtime for current platform
-  const nodeDestDir = path.join(NODE_DIR, platform === 'win32' ? 'win' : platform);
-  const nodeExe = platform === 'win32'
+  // 2. Node.js runtime
+  const nodeDestDir = path.join(NODE_DIR, targetPlatform === 'win32' || targetPlatform === 'win' ? 'win' : 'linux');
+  const nodeExe = (targetPlatform === 'win32' || targetPlatform === 'win')
     ? path.join(nodeDestDir, 'node', 'node.exe')
     : path.join(nodeDestDir, 'node', 'bin', 'node');
 
   if (!fs.existsSync(nodeExe)) {
-    fs.mkdirSync(nodeDestDir, { recursive: true });
-    const nodeUrl = platform === 'win32' ? NODE_URLS.win32 : NODE_URLS.linux;
-    const isZip = nodeUrl.endsWith('.zip');
-    const archiveFile = path.join(nodeDestDir, isZip ? 'node.zip' : 'node.tar.gz');
-    await downloadFile(nodeUrl, archiveFile);
-    console.log(`[runtimes] Extracting Node.js to ${nodeDestDir} ...`);
+    try {
+      fs.mkdirSync(nodeDestDir, { recursive: true });
+      const nodeUrl = (targetPlatform === 'win32' || targetPlatform === 'win') ? NODE_URLS.win32 : NODE_URLS.linux;
+      const isZip = nodeUrl.endsWith('.zip');
+      const archiveFile = path.join(nodeDestDir, isZip ? 'node.zip' : 'node.tar.gz');
+      await downloadFile(nodeUrl, archiveFile);
+      console.log(`[runtimes] Extracting Node.js to ${nodeDestDir} ...`);
 
-    if (isZip) {
-      // Use PowerShell Expand-Archive on Windows
-      const tempExtract = path.join(nodeDestDir, 'temp_extract');
-      fs.mkdirSync(tempExtract, { recursive: true });
-      execSync(`powershell -Command "Expand-Archive -Path '${archiveFile}' -DestinationPath '${tempExtract}' -Force"`, { stdio: 'inherit' });
-      // Move inner folder to node
-      const entries = fs.readdirSync(tempExtract);
-      const inner = path.join(tempExtract, entries[0]);
-      const targetNodeDir = path.join(nodeDestDir, 'node');
-      if (fs.existsSync(targetNodeDir)) fs.rmSync(targetNodeDir, { recursive: true, force: true });
-      fs.renameSync(inner, targetNodeDir);
-      fs.rmSync(tempExtract, { recursive: true, force: true });
-      fs.unlinkSync(archiveFile);
-    } else {
-      execSync(`tar -xzf "${archiveFile}" -C "${nodeDestDir}"`, { stdio: 'inherit' });
-      const entries = fs.readdirSync(nodeDestDir).filter(e => e.startsWith('node-v'));
-      if (entries.length > 0) {
-        const inner = path.join(nodeDestDir, entries[0]);
+      if (isZip) {
+        const tempExtract = path.join(nodeDestDir, 'temp_extract');
+        fs.mkdirSync(tempExtract, { recursive: true });
+        execSync(`powershell -Command "Expand-Archive -Path '${archiveFile}' -DestinationPath '${tempExtract}' -Force"`, { stdio: 'inherit' });
+        const entries = fs.readdirSync(tempExtract);
+        const inner = path.join(tempExtract, entries[0]);
         const targetNodeDir = path.join(nodeDestDir, 'node');
         if (fs.existsSync(targetNodeDir)) fs.rmSync(targetNodeDir, { recursive: true, force: true });
         fs.renameSync(inner, targetNodeDir);
+        fs.rmSync(tempExtract, { recursive: true, force: true });
+        fs.unlinkSync(archiveFile);
+      } else {
+        execSync(`tar -xzf "${archiveFile}" -C "${nodeDestDir}"`, { stdio: 'inherit' });
+        const entries = fs.readdirSync(nodeDestDir).filter(e => e.startsWith('node-v'));
+        if (entries.length > 0) {
+          const inner = path.join(nodeDestDir, entries[0]);
+          const targetNodeDir = path.join(nodeDestDir, 'node');
+          if (fs.existsSync(targetNodeDir)) fs.rmSync(targetNodeDir, { recursive: true, force: true });
+          fs.renameSync(inner, targetNodeDir);
+        }
+        if (fs.existsSync(archiveFile)) fs.unlinkSync(archiveFile);
       }
-      fs.unlinkSync(archiveFile);
+      console.log(`[runtimes] Node.js ready at: ${nodeExe}`);
+    } catch (err) {
+      console.warn(`[runtimes] Warning: Node.js download/unpack error: ${err.message}`);
     }
-    console.log(`[runtimes] Node.js ready at: ${nodeExe}`);
   } else {
     console.log(`[runtimes] Node.js already present at: ${nodeExe}`);
   }
 }
 
-setupCurrentPlatformRuntimes().catch((err) => {
-  console.error('[runtimes] Failed to setup runtimes:', err);
-  process.exit(1);
+const args = process.argv.slice(2);
+let target = process.platform;
+if (args.includes('--linux')) target = 'linux';
+else if (args.includes('--win')) target = 'win32';
+
+setupRuntimesForPlatform(target).catch((err) => {
+  console.warn('[runtimes] Failed to setup runtimes:', err.message);
 });

@@ -388,23 +388,20 @@ ipcMain.handle("vision:capture", async (_event, req) => {
 });
 
 app.whenReady().then(async () => {
-  await backend.start();
+  createMenu();
+  // Open window immediately so user sees instant startup UI
+  await createWindow();
+
+  // Start backend and capture service asynchronously
+  void backend.start().catch((err) => {
+    console.error("[app] backend start error:", err);
+  });
+
   try {
     await captureService.start();
   } catch (err) {
     console.warn("[app] Capture service failed to start:", err);
   }
-  // Bundled PyInstaller binary needs ~15-20s on first cold start (self-extraction).
-  // Dev mode system Python is fast, so use a shorter timeout there.
-  const tokenWaitMs = isDev ? 6_000 : 35_000;
-  try {
-    await backend.waitForToken(tokenWaitMs);
-    console.log("[app] session token ready");
-  } catch {
-    console.warn("[app] session token wait timed out; opening window anyway");
-  }
-  createMenu();
-  await createWindow();
 });
 
 

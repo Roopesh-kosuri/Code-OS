@@ -173,6 +173,7 @@ export class BackendProcess {
         env: {
           ...process.env,
           CODE_OS_HOME: app.getPath("userData"),
+          PYTHONUNBUFFERED: "1",
         }
       });
       return;
@@ -215,6 +216,7 @@ export class BackendProcess {
       env: {
         ...process.env,
         CODE_OS_HOME: app.getPath("userData"),
+          PYTHONUNBUFFERED: "1",
         PYTHONPATH: backendDir
       }
     });

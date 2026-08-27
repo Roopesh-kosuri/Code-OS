@@ -23,5 +23,6 @@
   },
 
   "include": ["src", "vite.config.ts"],
+  "exclude": ["src/__tests__", "**/*.test.ts", "**/*.test.tsx", "src/test-setup.ts"],
   "references": [{ "path": "./electron" }]
 }
