@@ -28,6 +28,7 @@ class LoggingEventHandler(FileSystemEventHandler):
 class WorkspaceWatcher:
     def __init__(self) -> None:
         self._observer = Observer()
+        self._observer.daemon = True
         self._watched: set[str] = set()
         self._lock = Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -42,6 +43,7 @@ class WorkspaceWatcher:
                 logger.info("workspace.watch already active path=%s", resolved)
                 return
             if not self._observer.is_alive():
+                self._observer.daemon = True
                 self._observer.start()
             self._observer.schedule(LoggingEventHandler(resolved, self._loop), resolved, recursive=True)
             self._watched.add(resolved)
@@ -52,9 +54,10 @@ class WorkspaceWatcher:
             if self._observer.is_alive():
                 logger.info("Stopping workspace file watcher observer...")
                 self._observer.stop()
-                self._observer.join(timeout=3.0)
+                self._observer.join(timeout=1.0)
             self._watched.clear()
             self._observer = Observer()
+            self._observer.daemon = True
             logger.info("Workspace file watcher stopped.")
 
     def status(self) -> dict[str, object]:
@@ -62,4 +65,3 @@ class WorkspaceWatcher:
 
 
 watcher = WorkspaceWatcher()
-

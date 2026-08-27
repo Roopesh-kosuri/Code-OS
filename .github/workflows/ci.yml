@@ -46,3 +46,5 @@ jobs:
 
       - name: Run Python Test Suite with Coverage
         run: python -m pytest backend/tests --cov=app --cov-fail-under=50 -v
+        env:
+          PYTHONPATH: backend

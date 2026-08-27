@@ -103,3 +103,28 @@ async def ws_with_db(tmp_path, temp_db):
     )
     await db.commit()
     return ws
+
+@pytest.fixture(autouse=True, scope="session")
+def cleanup_watchers_and_background_resources():
+    yield
+    try:
+        from app.features.workspaces.file_watcher import watcher
+        watcher.stop()
+    except Exception:
+        pass
+
+def pytest_sessionfinish(session, exitstatus):
+    """Ensure all background worker threads are daemonized or stopped so pytest process exits cleanly."""
+    try:
+        from app.features.workspaces.file_watcher import watcher
+        watcher.stop()
+    except Exception:
+        pass
+
+    import threading
+    for t in threading.enumerate():
+        if t is not threading.main_thread():
+            try:
+                t.daemon = True
+            except Exception:
+                pass
