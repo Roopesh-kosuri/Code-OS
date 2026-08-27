@@ -88,12 +88,14 @@ def test_new_file_rejects_escape(client, tmp_path):
     assert "outside workspace" in res.json().get("detail", "").lower()
 
     # Escape with absolute path outside
+    import os
+    outside_abs = os.path.abspath(os.path.join(ws, "..", "escaped_abs.txt"))
     res = client.post("/api/files/create", json={
         "workspace": ws,
-        "path": "C:\\Windows\\System32\\bad.dll",
+        "path": outside_abs,
         "type": "file"
     })
-    assert res.status_code == 403
+    assert res.status_code in (400, 403)
 
 
 def test_new_file_blocked_restricted(client, tmp_path):

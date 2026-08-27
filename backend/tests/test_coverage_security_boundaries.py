@@ -256,7 +256,7 @@ def test_monitoring_secret_scrubbing():
         "and github token ghp_123456789012345678901234567890123456 "
         "and AWS key AKIAIOSFODNN7EXAMPLE "
         "with password: 'SuperSecretPassword123' "
-        "and google ******************************"
+        "and google AIzaSyD123456789012345678901234567890123"
     )
 
     scrubbed = sanitize_text(raw_text)

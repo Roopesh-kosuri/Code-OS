@@ -139,7 +139,8 @@ async def test_restricted_mode_blocks_mutating_mcp_tools(tmp_path: Path, auth_he
     )
     await mcp_manager.register_server(mock_config)
 
-    async with httpx.AsyncClient(app=app, base_url="http://test", headers=auth_headers) as async_client:
+    transport = httpx.ASGITransport(app=app) if hasattr(httpx, 'ASGITransport') else None
+    async with (httpx.AsyncClient(transport=transport, base_url="http://test", headers=auth_headers) if transport else httpx.AsyncClient(app=app, base_url="http://test", headers=auth_headers)) as async_client:
         # 1. Read-only tool is allowed in Restricted Mode
         resp_read = await async_client.post("/api/mcp/call", json={
             "tool_name": "mcp__mock_sec__echo_read",

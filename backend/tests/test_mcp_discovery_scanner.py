@@ -116,7 +116,8 @@ async def test_scanner_rate_limit(auth_headers):
     ws = "rate_limit_workspace"
     mcp_scanner._scan_history[ws] = []
 
-    async with httpx.AsyncClient(app=app, base_url="http://test", headers=auth_headers) as client:
+    transport = httpx.ASGITransport(app=app) if hasattr(httpx, 'ASGITransport') else None
+    async with (httpx.AsyncClient(transport=transport, base_url="http://test", headers=auth_headers) if transport else httpx.AsyncClient(app=app, base_url="http://test", headers=auth_headers)) as client:
         # First 5 scans succeed
         for _ in range(5):
             res = await client.post("/api/mcp/scan", json={

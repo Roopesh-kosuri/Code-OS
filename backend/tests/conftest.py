@@ -87,3 +87,19 @@ async def untrusted_workspace(tmp_path):
     os.makedirs(ws_dir, exist_ok=True)
     await set_workspace_trust(ws_dir, trusted=False)
     return ws_dir
+
+@pytest_asyncio.fixture
+async def ws_with_db(tmp_path, temp_db):
+    ws = tmp_path / "test_workspace"
+    ws.mkdir(exist_ok=True)
+    (ws / "src").mkdir(exist_ok=True)
+    (ws / "src" / "main.py").write_text("print('hello world')\n", encoding="utf-8")
+    
+    from app.db.database import get_db
+    db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO workspaces(path, name, last_opened_at) VALUES (?, ?, '2026-01-01T00:00:00')",
+        (str(ws), ws.name)
+    )
+    await db.commit()
+    return ws
