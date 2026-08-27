@@ -11,20 +11,18 @@ export default defineConfig({
     },
   },
   // Serve Monaco editor workers from node_modules as static assets.
-  // This prevents @monaco-editor/react from trying to fetch them from
-  // the jsdelivr CDN (which fails in Electron and offline environments).
   publicDir: "public",
   server: {
     host: "127.0.0.1",
     port: 5176,
     strictPort: false,
     fs: {
-      // Allow Vite dev server to serve files from node_modules
       allow: ["..", path.resolve(__dirname, "node_modules/monaco-editor")],
     },
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    sourcemap: false,
+    chunkSizeWarningLimit: 2000,
   },
 });
