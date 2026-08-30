@@ -52,10 +52,10 @@ Please check the **Actions** tab on your fork or repository page to track status
 
 ---
 
-## 4. Manual Release Procedure
+## 4. Release Architecture & Procedure
 
-> **CI builds and uploads macOS only** (via `.github/workflows/release.yml` on a `macos-latest` runner).
-> Windows and Linux installers must be built **locally** by the maintainer and uploaded to the GitHub Release by hand.
+> **CI builds and uploads macOS and Linux automatically** (via `.github/workflows/release.yml` on `macos-latest` and `ubuntu-latest` runners).
+> Windows installers are built **locally** by the maintainer and uploaded to the GitHub Release by hand.
 
 ### Building Windows installers (on a Windows machine)
 
@@ -76,50 +76,20 @@ npm run package          # runs build -> preflight -> electron-builder
 #         release/CODE-OS-<version>-portable.exe (portable)
 ```
 
-### Building Linux installers (on Ubuntu 22.04 / WSL2)
+### Uploading Windows assets to GitHub Release
 
-```bash
-# 1. Install system deps for electron-builder fpm targets
-sudo apt-get update && sudo apt-get install -y ruby ruby-dev build-essential rpm
-sudo gem install --no-document fpm
-
-# 2. Install project dependencies
-npm install
-pip install -r backend/requirements.txt pyinstaller
-
-# 3. Compile backend binary
-npm run build:backend-exe
-
-# 4. Download runtimes for Linux
-node scripts/download-runtimes.js --linux
-
-# 5. Run preflight + package
-npm run package
-# Output: release/CODE-OS-<version>.AppImage
-#         release/code-os_<version>_amd64.deb
-```
-
-### Uploading assets to the GitHub Release
-
-After local builds succeed:
-
-1. Go to the GitHub repository → **Releases** → the tag you just pushed.
-2. Click **Edit release**.
-3. Drag-and-drop the Windows and Linux files from your local `release/` folder.
-4. Click **Update release**.
-
-The macOS `.dmg` and `.zip` are uploaded automatically by CI.
-
-### Consistent asset naming convention
-
-| Platform | Asset filename |
-|----------|---------------|
-| Windows installer | `CODE-OS-Setup-<version>.exe` |
-| Windows portable  | `CODE-OS-<version>-portable.exe` |
-| macOS DMG         | `CODE-OS-<version>.dmg` |
-| macOS ZIP         | `CODE-OS-<version>-mac.zip` |
-| Linux AppImage    | `CODE-OS-<version>.AppImage` |
-| Linux deb         | `code-os_<version>_amd64.deb` |
+1. Push your release tag:
+   ```bash
+   git tag v3.0.1
+   git push origin v3.0.1
+   ```
+2. GitHub Actions will automatically compile and attach:
+   - `CODE-OS-3.0.1.dmg` (macOS DMG)
+   - `CODE-OS-3.0.1-mac.zip` (macOS ZIP)
+   - `CODE-OS-3.0.1.AppImage` (Linux AppImage)
+   - `code-os_3.0.1_amd64.deb` (Linux deb package)
+3. Go to the GitHub repository → **Releases** → `v3.0.1`.
+4. Click **Edit release**, drag-and-drop the local Windows files (`CODE-OS-Setup-3.0.1.exe` and `CODE-OS-3.0.1-portable.exe`), and click **Update release**.
 
 ---
 

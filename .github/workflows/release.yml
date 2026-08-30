@@ -1,4 +1,4 @@
-﻿name: macOS Release Build
+﻿name: macOS & Linux Release Build
 
 on:
   push:
@@ -11,8 +11,8 @@ on:
         required: false
         default: 'v3.0.1'
 
-# Windows and Linux installers are built locally and uploaded manually.
-# See CONTRIBUTING.md -> "Manual Release Procedure" for instructions.
+# Windows installers are built locally by the maintainer and uploaded manually.
+# GitHub Actions builds and uploads macOS and Linux installers automatically.
 
 permissions:
   contents: write
@@ -77,5 +77,73 @@ jobs:
           files: |
             release/*.dmg
             release/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    name: Build Linux (AppImage + deb)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install System Dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools rpm ruby ruby-dev build-essential
+          sudo gem install --no-document fpm
+
+      - name: Install Python Dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pyinstaller
+
+      - name: Install Node Dependencies
+        run: npm install
+
+      - name: Compile Backend PyInstaller Binary
+        run: npm run build:backend-exe
+
+      - name: Compile Frontend & Electron Main
+        run: |
+          npm run build:vite
+          npm run build:electron
+
+      - name: Download Bundled Runtimes (Linux)
+        run: node scripts/download-runtimes.js --linux
+
+      - name: Preflight Check
+        run: node scripts/preflight.js
+
+      - name: Package Linux (AppImage + deb)
+        run: npx electron-builder --linux AppImage deb --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload Linux Installers to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag_name || 'v3.0.1' }}
+          files: |
+            release/*.AppImage
+            release/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
