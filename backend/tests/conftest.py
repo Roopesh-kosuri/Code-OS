@@ -114,17 +114,22 @@ def cleanup_watchers_and_background_resources():
         pass
 
 def pytest_sessionfinish(session, exitstatus):
-    """Ensure all background worker threads are daemonized or stopped so pytest process exits cleanly."""
+    """Ensure all background worker threads are stopped so pytest process exits cleanly."""
     try:
         from app.features.workspaces.file_watcher import watcher
         watcher.stop()
     except Exception:
         pass
 
-    import threading
-    for t in threading.enumerate():
-        if t is not threading.main_thread():
-            try:
-                t.daemon = True
-            except Exception:
-                pass
+
+def pytest_unconfigure(config):
+    """Force immediate process exit after all reports and coverage summaries are complete,
+    preventing non-daemon background threads in third-party libraries (watchdog, asyncio transports)
+    from hanging CI on exit."""
+    import os
+    import sys
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if not sys.flags.interactive and not sys.gettrace():
+        exit_code = getattr(config, '_exitstatus', 0)
+        os._exit(exit_code if isinstance(exit_code, int) else 0)

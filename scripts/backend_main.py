@@ -1,3 +1,5 @@
+import os
+os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 """
 backend_main.py - Entry point for PyInstaller-bundled CODE OS backend.
 

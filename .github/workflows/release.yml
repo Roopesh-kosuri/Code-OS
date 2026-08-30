@@ -1,4 +1,4 @@
-name: Multi-Platform Release Packaging
+﻿name: macOS Release Build
 
 on:
   push:
@@ -7,24 +7,23 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v3.0.0)'
+        description: 'Release Tag (e.g. v3.0.1)'
         required: false
-        default: 'v3.0.0'
+        default: 'v3.0.1'
+
+# Windows and Linux installers are built locally and uploaded manually.
+# See CONTRIBUTING.md -> "Manual Release Procedure" for instructions.
 
 permissions:
   contents: write
 
 jobs:
-  build-release:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+  build-macos:
+    name: Build macOS (dmg + zip)
+    runs-on: macos-latest
+    timeout-minutes: 45
     env:
       NODE_OPTIONS: "--max-old-space-size=4096"
-
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
 
     steps:
       - name: Checkout Code
@@ -47,50 +46,36 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt pyinstaller
 
-      - name: Install System Dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libarchive-tools rpm ruby ruby-dev build-essential
-          sudo gem install --no-document fpm
-
       - name: Install Node Dependencies
         run: npm install
 
-      - name: Compile Backend PyInstaller Standalone Binary
+      - name: Compile Backend PyInstaller Binary
         run: npm run build:backend-exe
 
       - name: Compile Frontend & Electron Main
         run: |
           npm run build:vite
           npm run build:electron
-          npm run download:runtimes
 
-      - name: Package with Electron-Builder
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            npx electron-builder --win nsis portable --publish never
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            npx electron-builder --mac dmg zip --publish never
-          else
-            npx electron-builder --linux AppImage deb tar.gz --publish never
-          fi
-        shell: bash
+      - name: Download Bundled Runtimes (macOS)
+        run: node scripts/download-runtimes.js --mac
+
+      - name: Preflight Check
+        run: node scripts/preflight.js
+
+      - name: Package macOS (dmg + zip)
+        run: npx electron-builder --mac dmg zip --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - name: Upload Installer Binaries to GitHub Release
+      - name: Upload macOS Installer to GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          tag_name: ${{ github.ref_name || inputs.tag_name || 'v3.0.0' }}
+          tag_name: ${{ github.ref_name || inputs.tag_name || 'v3.0.1' }}
           files: |
-            release/*.exe
             release/*.dmg
             release/*.zip
-            release/*.AppImage
-            release/*.deb
-            release/*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

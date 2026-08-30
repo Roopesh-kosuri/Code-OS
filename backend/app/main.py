@@ -1,3 +1,5 @@
+import os
+os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 import asyncio
 from contextlib import asynccontextmanager
 import logging

@@ -33,13 +33,14 @@
     "build:mac": "npm run build && electron-builder --mac",
     "build:linux": "npm run build && electron-builder --linux",
     "build:all": "npm run build && electron-builder -mwl",
-    "package": "npm run build && electron-builder",
+    "package": "npm run build && node scripts/preflight.js && electron-builder",
     "build:electron": "tsc -p electron/tsconfig.json && node -e \"require('fs').writeFileSync('dist-electron/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\"",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1",
     "postinstall": "electron-builder install-app-deps",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "fetch-runtimes": "node scripts/download-runtimes.js"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -103,14 +104,6 @@
         "filter": [
           "**/*"
         ]
-      },
-      {
-        "from": "backend-dist/backend-server.exe",
-        "to": "backend-server.exe"
-      },
-      {
-        "from": "backend-dist/backend-server",
-        "to": "backend-server"
       }
     ],
     "win": {
@@ -119,6 +112,12 @@
         "nsis",
         "portable",
         "dir"
+      ],
+      "extraResources": [
+        {
+          "from": "backend-dist/backend-server.exe",
+          "to": "backend-server.exe"
+        }
       ]
     },
     "nsis": {
@@ -142,7 +141,13 @@
       ],
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
-      "gatekeeperAssess": false
+      "gatekeeperAssess": false,
+      "extraResources": [
+        {
+          "from": "backend-dist/backend-server",
+          "to": "backend-server"
+        }
+      ]
     },
     "linux": {
       "icon": "build/icon.png",
@@ -152,7 +157,13 @@
         "dir"
       ],
       "category": "Development",
-      "maintainer": "Roopesh Kosuri <roopesh@codeos.ai>"
+      "maintainer": "Roopesh Kosuri <roopesh@codeos.ai>",
+      "extraResources": [
+        {
+          "from": "backend-dist/backend-server",
+          "to": "backend-server"
+        }
+      ]
     }
   }
 }
