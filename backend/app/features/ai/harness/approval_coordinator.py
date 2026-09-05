@@ -1,13 +1,5 @@
 from __future__ import annotations
 
-SENSITIVE_FILE_PATTERNS = (
-    ".env", ".env.*", "*.env",
-    "*.pem", "id_rsa", "id_rsa*", "*.key",
-    ".aws", ".aws/*", ".ssh", ".ssh/*",
-    "credentials.json", "serviceAccountKey.json",
-    "*.sqlite", "*.sqlite3", "*.db"
-)
-
 """
 approval_coordinator.py - Coordinates interactive user permissions, questions, and git checkpoints.
 """
@@ -23,6 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from app.core.paths import normalize_workspace
+from .checkpoint_manager import (
+    SENSITIVE_FILE_PATTERNS,
+    _ensure_git_checkpoint,
+    _is_sensitive_filename,
+    undo_turn_files,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,193 +125,167 @@ def _is_command_trusted(workspace: str, cmd: str) -> bool:
     return False
 
 
-def _is_sensitive_filename(path_str: str) -> tuple[bool, str]:
-    """Check if a file path matches sensitive credential/secret patterns."""
-    import fnmatch
-    p = Path(path_str)
-    name = p.name.lower()
-    posix_str = path_str.replace("\\", "/").lower()
-    for pat in SENSITIVE_FILE_PATTERNS:
-        pat_lower = pat.lower()
-        if fnmatch.fnmatch(name, pat_lower) or fnmatch.fnmatch(posix_str, pat_lower):
-            return True, p.name
-        if pat_lower.startswith(".") and name == pat_lower:
-            return True, p.name
-        if ".aws" in posix_str.split("/") or ".ssh" in posix_str.split("/"):
-            return True, p.name
-    return False, ""
-
-
-def _ensure_git_checkpoint(
-    workspace: str,
-    turn_num: int,
-    touched_files: list[str] | set[str] | None = None,
-) -> tuple[bool, str, str]:
-    """Ensure workspace is a git repo, and create a pre-turn checkpoint commit rony-turn-{N}-pre.
-    
-    Returns (new_repo_initialized: bool, commit_hash: str, error_message: str).
-    """
-    if not workspace:
-        return False, "", "No workspace provided"
-    
-    ws_path = Path(workspace)
-    if not ws_path.is_dir():
-        return False, "", "Workspace directory does not exist"
-
-    # Validation: Abort if agent touched any sensitive file
-    if touched_files:
-        for tf in touched_files:
-            is_sens, matched_name = _is_sensitive_filename(str(tf))
-            if is_sens:
-                err_msg = f"Agent touched sensitive file: {matched_name}. Add it to .gitignore or exclude it from the workspace."
-                logger.error("chat_harness: %s", err_msg)
-                return False, "", err_msg
-
-    new_repo_initialized = False
-
-    # 1. Check if git repo
+async def register_pending_approval(
+    pending: PendingApproval,
+    task_id: str = "",
+    workspace: str = "",
+    payload: Optional[dict] = None,
+    expires_in_seconds: float = 3600.0,
+) -> None:
+    """Store in-memory and persist to SQLite pending_approvals table."""
+    _pending_approvals[pending.action_id] = pending
+    ws = workspace or pending.workspace
+    tid = task_id or pending.proposal_id or "task_general"
+    payload_dict = payload or {
+        "detail": pending.detail,
+        "reason": pending.reason,
+        "proposal_id": pending.proposal_id,
+        "path": pending.path,
+        "diff_summary": pending.diff_summary,
+        "command": pending.command,
+        "is_native_fallback": pending.is_native_fallback,
+    }
+    now = time.time()
+    expires_at = now + expires_in_seconds
     try:
-        res = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
-            cwd=str(ws_path),
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-        if res.returncode != 0:
-            init_res = subprocess.run(
-                ["git", "init"],
-                cwd=str(ws_path),
-                capture_output=True,
-                text=True,
-                timeout=5.0,
+        from app.db.database import get_pool
+        pool = await get_pool()
+        await pool.write_execute(
+            """
+            INSERT OR REPLACE INTO pending_approvals
+            (action_id, task_id, workspace, action_type, payload_json, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pending.action_id,
+                tid,
+                ws,
+                pending.action_type,
+                json.dumps(payload_dict),
+                now,
+                expires_at,
             )
-            if init_res.returncode == 0:
-                new_repo_initialized = True
-                gitignore = ws_path / ".gitignore"
-                if not gitignore.exists():
-                    gitignore_content = (
-                        ".venv/\n"
-                        "__pycache__/\n"
-                        "node_modules/\n"
-                        "*.pyc\n"
-                        ".DS_Store\n"
-                        ".code_os/\n"
-                        ".env\n"
-                        ".env.*\n"
-                        "*.pem\n"
-                        "id_rsa\n"
-                        "id_rsa.pub\n"
-                        ".aws/\n"
-                        ".ssh/\n"
-                        "*.key\n"
-                        "credentials.json\n"
-                        "serviceAccountKey.json\n"
-                        "*.sqlite\n"
-                        "*.sqlite3\n"
-                        "*.db\n"
-                    )
-                    gitignore.write_text(gitignore_content, encoding="utf-8")
+        )
     except Exception as exc:
-        logger.warning("chat_harness: git repo check/init failed: %s", exc)
-        return False, "", str(exc)
+        logger.warning("approval_coordinator: failed to persist approval %s: %s", pending.action_id, exc)
 
-    # 2. Stage ONLY touched files (never git add -A) and create pre-turn checkpoint commit
-    commit_hash = ""
+
+async def remove_pending_approval(action_id: str) -> None:
+    """Remove from in-memory dict and delete from SQLite."""
+    _pending_approvals.pop(action_id, None)
     try:
-        if touched_files:
-            rel_paths = []
-            for f in touched_files:
-                p = Path(f)
-                try:
-                    rel = p.relative_to(ws_path)
-                    rel_paths.append(str(rel).replace("\\", "/"))
-                except ValueError:
-                    rel_paths.append(str(f).replace("\\", "/"))
-            
-            if rel_paths:
-                subprocess.run(
-                    ["git", "add", "--"] + rel_paths,
-                    cwd=str(ws_path),
-                    capture_output=True,
-                    text=True,
-                    timeout=10.0,
-                )
-
-        commit_msg = f"rony-turn-{turn_num}-pre"
-        subprocess.run(
-            ["git", "commit", "--allow-empty", "-m", commit_msg],
-            cwd=str(ws_path),
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-        )
-        hash_res = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(ws_path),
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-        if hash_res.returncode == 0:
-            commit_hash = hash_res.stdout.strip()
+        from app.db.database import get_pool
+        pool = await get_pool()
+        await pool.write_execute("DELETE FROM pending_approvals WHERE action_id = ?", (action_id,))
     except Exception as exc:
-        logger.warning("chat_harness: git checkpoint commit failed: %s", exc)
-        return new_repo_initialized, "", str(exc)
-
-    return new_repo_initialized, commit_hash, ""
+        logger.warning("approval_coordinator: failed to delete approval %s: %s", action_id, exc)
 
 
-def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) -> tuple[bool, str, list[str]]:
-    """Restores ONLY the agent-touched files from the pre-turn commit hash.
-    
-    Uses `git checkout <commit_hash> -- <paths>` — never a blanket reset --hard,
-    never touching user files the agent didn't modify.
-    """
-    if not workspace or not commit_hash or not touched_files:
-        return False, "Missing workspace, commit_hash, or touched_files", []
-    
-    ws_path = Path(workspace)
-    if not ws_path.is_dir():
-        return False, f"Workspace not found: {workspace}", []
+async def request_approval(
+    action_id: str,
+    action_type: str,
+    detail: str,
+    reason: str,
+    task_id: str = "",
+    workspace: str = "",
+    payload: Optional[dict] = None,
+    proposal_id: str = "",
+    command: str = "",
+    diff_summary: str = "",
+    path: str = "",
+    is_native_fallback: bool = False,
+) -> PendingApproval:
+    """Create, register and persist a pending approval."""
+    pending = PendingApproval(
+        action_id=action_id,
+        action_type=action_type,
+        detail=detail,
+        reason=reason,
+        proposal_id=proposal_id,
+        path=path,
+        diff_summary=diff_summary,
+        workspace=workspace,
+        command=command,
+        is_native_fallback=is_native_fallback,
+        created_at=time.time(),
+    )
+    await register_pending_approval(pending, task_id=task_id, workspace=workspace, payload=payload)
+    return pending
 
-    rel_paths = []
-    for f in touched_files:
-        p = Path(f)
+
+async def load_pending_approvals_from_db() -> list[dict]:
+    """Reload non-expired pending approvals from SQLite and delete expired ones."""
+    now = time.time()
+    try:
+        from app.db.database import get_pool
+        pool = await get_pool()
+        # 1. Clean up expired rows (> 1 hour)
+        await pool.write_execute("DELETE FROM pending_approvals WHERE expires_at < ?", (now,))
+        
+        # 2. Query remaining active rows
+        rows = await pool.read_query(
+            "SELECT action_id, task_id, workspace, action_type, payload_json, created_at, expires_at FROM pending_approvals"
+        )
+    except Exception as exc:
+        logger.warning("approval_coordinator: error loading pending approvals from DB: %s", exc)
+        return []
+
+    results = []
+    for r in rows:
+        action_id = r["action_id"]
+        task_id = r["task_id"]
+        workspace = r["workspace"]
+        action_type = r["action_type"]
+        created_at = r["created_at"]
+        expires_at = r["expires_at"]
         try:
-            rel = p.relative_to(ws_path)
-            rel_paths.append(str(rel).replace("\\", "/"))
-        except ValueError:
-            rel_paths.append(f.replace("\\", "/"))
+            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except Exception:
+            payload = {}
 
-    if not rel_paths:
-        return False, "No valid files to restore", []
+        if action_id not in _pending_approvals:
+            pending = PendingApproval(
+                action_id=action_id,
+                action_type=action_type,
+                detail=payload.get("detail", ""),
+                reason=payload.get("reason", ""),
+                proposal_id=payload.get("proposal_id", ""),
+                path=payload.get("path", ""),
+                diff_summary=payload.get("diff_summary", ""),
+                workspace=workspace,
+                command=payload.get("command", ""),
+                is_native_fallback=payload.get("is_native_fallback", False),
+                created_at=created_at,
+            )
+            _pending_approvals[action_id] = pending
 
-    try:
-        cmd = ["git", "checkout", commit_hash, "--"] + rel_paths
-        res = subprocess.run(
-            cmd,
-            cwd=str(ws_path),
-            capture_output=True,
-            text=True,
-            timeout=15.0,
-        )
-        if res.returncode == 0:
-            restored = []
-            for rf in rel_paths:
-                fp = ws_path / rf
-                if fp.exists():
-                    restored.append(rf)
-            return True, f"Successfully restored {len(restored)} file(s) to checkpoint {commit_hash[:7]}", restored
-        else:
-            return False, f"Git checkout error: {res.stderr.strip()}", []
-    except Exception as exc:
-        return False, f"Undo operation failed: {exc}", []
+        results.append({
+            "action_id": action_id,
+            "task_id": task_id,
+            "workspace": workspace,
+            "action_type": action_type,
+            "payload": payload,
+            "created_at": created_at,
+            "expires_at": expires_at,
+        })
+    return results
+
+
+async def get_all_pending_approvals(workspace: Optional[str] = None) -> list[dict]:
+    """Retrieve all active pending approvals, reloading from DB."""
+    all_approvals = await load_pending_approvals_from_db()
+    if workspace:
+        norm_ws = str(normalize_workspace(workspace))
+        return [a for a in all_approvals if a.get("workspace") == norm_ws or a.get("workspace") == workspace]
+    return all_approvals
 
 
 async def approve_action(action_id: str, always_allow: bool = False, trust_pattern: str | None = None) -> bool:
     """Approve a pending action, optionally recording command trust for the workspace."""
     pending = _pending_approvals.get(action_id)
+    if not pending:
+        await load_pending_approvals_from_db()
+        pending = _pending_approvals.get(action_id)
     if not pending:
         return False
     pending.approved = True
@@ -323,6 +295,7 @@ async def approve_action(action_id: str, always_allow: bool = False, trust_patte
         pattern = trust_pattern or pending.detail
         _save_trusted_command(pending.workspace, pattern)
     pending.event.set()
+    await remove_pending_approval(action_id)
     return True
 
 
@@ -330,9 +303,13 @@ async def reject_action(action_id: str) -> bool:
     """Reject a pending action."""
     pending = _pending_approvals.get(action_id)
     if not pending:
+        await load_pending_approvals_from_db()
+        pending = _pending_approvals.get(action_id)
+    if not pending:
         return False
     pending.approved = False
     pending.event.set()
+    await remove_pending_approval(action_id)
     return True
 
 

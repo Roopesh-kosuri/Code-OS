@@ -96,12 +96,45 @@ export function App() {
     void useEditorStore.getState().loadEditorSettings();
   }, []);
 
+  // Consolidate backend health & freshness checks with document visibility awareness
   useEffect(() => {
-    void useBackendStore.getState().checkHealth();
-    const interval = setInterval(() => {
+    const backend = useBackendStore.getState();
+    void backend.checkHealth();
+
+    let freshnessTimer: number | null = null;
+
+    const startFreshnessPolling = () => {
+      if (freshnessTimer !== null) return;
       void useBackendStore.getState().checkFreshness();
-    }, 10000);
-    return () => clearInterval(interval);
+      freshnessTimer = window.setInterval(() => {
+        void useBackendStore.getState().checkFreshness();
+      }, 10000);
+    };
+
+    const stopFreshnessPolling = () => {
+      if (freshnessTimer !== null) {
+        window.clearInterval(freshnessTimer);
+        freshnessTimer = null;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopFreshnessPolling();
+      } else {
+        startFreshnessPolling();
+      }
+    };
+
+    if (!document.hidden) {
+      startFreshnessPolling();
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      stopFreshnessPolling();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, []);
 
   useEffect(() => {
@@ -149,20 +182,59 @@ export function App() {
     }
     void useEditorStore.getState().restoreTabs();
     void useIndexStore.getState().refresh();
-    const timer = window.setInterval(() => {
-      if (useBackendStore.getState().status === "connected") {
-        void refreshTree();
+
+    let timer: number | null = null;
+    let indexTimer: number | null = null;
+
+    const startPolling = () => {
+      if (timer === null) {
+        timer = window.setInterval(() => {
+          if (useBackendStore.getState().status === "connected") {
+            void refreshTree();
+          }
+        }, 10000);
       }
-    }, 10000);
-    const indexTimer = window.setInterval(() => {
-      if (useBackendStore.getState().status === "connected") {
-        void useIndexStore.getState().refresh();
+      if (indexTimer === null) {
+        indexTimer = window.setInterval(() => {
+          if (useBackendStore.getState().status === "connected") {
+            void useIndexStore.getState().refresh();
+          }
+        }, 10000);
       }
-    }, 10000);
+    };
+
+    const stopPolling = () => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+      if (indexTimer !== null) {
+        window.clearInterval(indexTimer);
+        indexTimer = null;
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        if (useBackendStore.getState().status === "connected") {
+          void refreshTree();
+          void useIndexStore.getState().refresh();
+        }
+        startPolling();
+      }
+    };
+
+    if (!document.hidden) {
+      startPolling();
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      window.clearInterval(timer);
-      window.clearInterval(indexTimer);
+      stopPolling();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [currentWorkspace?.path, refreshTree]);
 

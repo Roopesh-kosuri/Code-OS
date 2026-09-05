@@ -155,7 +155,7 @@ Output format:
                             elif action in ("switch_to_api", "change_model"):
                                 auto_retries = 0
                                 new_provider = decision_res.get("provider") or "groq"
-                                new_model = decision_res.get("model") or ("llama-3.3-70b-versatile" if new_provider == "groq" else "gpt-4o")
+                                new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("minimaxai/minimax-m3" if new_provider == "nvidia-nim" else "gpt-4o"))
                                 new_key_provider = decision_res.get("api_key_provider") or new_provider
                                 if not self.provider_config:
                                     self.provider_config = {}

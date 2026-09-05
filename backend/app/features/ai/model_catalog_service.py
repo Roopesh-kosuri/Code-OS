@@ -12,94 +12,34 @@ from typing import Any
 import httpx
 
 from ..settings.service import get_api_key
+from .catalog import PROVIDER_CATALOG
 
 logger = logging.getLogger(__name__)
 
 # 24 hours TTL in seconds
 CATALOG_CACHE_TTL = 86400.0
 
-# Curated static catalog fallbacks in case network is unreachable or on fresh boot
+# Curated static catalog fallbacks derived directly from PROVIDER_CATALOG
 KNOWN_STATIC_CATALOG: dict[str, list[str]] = {
-    "groq": [
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-        "llama-3.3-70b-versatile",
-        "llama-3.3-70b-specdec",
-        "llama-3.1-8b-instant",
-        "llama-3.2-1b-preview",
-        "llama-3.2-3b-preview",
-        "deepseek-r1-distill-llama-70b",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
-    ],
-    "openai": [
-        "gpt-4o",
-        "gpt-4o-mini",
-        "gpt-4-turbo",
-        "gpt-4",
-        "gpt-3.5-turbo",
-        "o1",
-        "o1-mini",
-        "o1-preview",
-        "o3-mini",
-        "chatgpt-4o-latest",
-    ],
-    "gemini": [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gemini-2.0-flash-exp",
-        "gemini-2.0-flash-thinking-exp",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-    ],
-    "anthropic": [
-        "claude-3-5-sonnet-latest",
-        "claude-3-5-sonnet-20241022",
-        "claude-3-5-haiku-latest",
-        "claude-3-opus-latest",
-    ],
-    "deepseek": [
-        "deepseek-chat",
-        "deepseek-reasoner",
-    ],
-    "mistral": [
-        "mistral-large-latest",
-        "codestral-latest",
-        "mistral-small-latest",
-        "ministral-8b-latest",
-    ],
-    "nvidia-nim": [
-        "meta/llama-3.3-70b-instruct",
-        "meta/llama-3.1-8b-instruct",
-        "minimaxai/minimax-01",
-        "minimaxai/minimax-m3",
-        "deepseek-ai/deepseek-r1",
-        "deepseek-ai/deepseek-coder-6.7b-instruct",
-        "z-ai/glm-5.2",
-        "nvidia/llama-3.1-nemotron-70b-instruct",
-        "mistralai/mistral-large-2-instruct",
-    ],
-    "ollama": [
-        "llama3",
-        "llama3.1",
-        "llama3.2",
-        "qwen2.5-coder",
-        "mistral",
-        "codellama",
-        "deepseek-coder",
-    ],
+    prov: [m.id for m in models]
+    for prov, models in PROVIDER_CATALOG.items()
 }
 
 _DEFAULT_URLS = {
+    "moonshot": "https://api.moonshot.ai/v1",
+    "glm": "https://open.bigmodel.cn/api/paas/v4",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "deepseek": "https://api.deepseek.com",
     "openai": "https://api.openai.com/v1",
     "groq": "https://api.groq.com/openai/v1",
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "deepseek": "https://api.deepseek.com/v1",
     "mistral": "https://api.mistral.ai/v1",
+    "xai": "https://api.x.ai/v1",
+    "llama": "https://api.groq.com/openai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "nvidia-nim": "https://integrate.api.nvidia.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
+    "cohere": "https://api.cohere.com/v1",
     "ollama": "http://127.0.0.1:11434",
 }
 

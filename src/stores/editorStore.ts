@@ -45,6 +45,9 @@ function getInitialRecentFiles(): string[] {
   return [];
 }
 
+export const MAX_LIVE_TABS = 15;
+const evictedTabCache = new Map<string, string>();
+
 export const useEditorStore = create<EditorState>((set, get) => ({
   openFiles: [],
   activePath: null,
@@ -79,6 +82,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     get().addToRecentFiles(filePath);
     const existing = get().openFiles.find((file) => file.path === filePath);
     if (existing) {
+      // Rehydrate if previously evicted
+      if (existing.content === "" && evictedTabCache.has(filePath)) {
+        const cached = evictedTabCache.get(filePath) || "";
+        set((state) => ({
+          openFiles: state.openFiles.map((f) => f.path === filePath ? { ...f, content: cached } : f),
+          activePath: filePath,
+        }));
+        evictedTabCache.delete(filePath);
+        return;
+      }
       set({ activePath: filePath });
       return;
     }
@@ -87,10 +100,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       path: filePath
     });
     console.info("[editor.open] loaded", { path: filePath, language: response.language, bytes: response.content.length });
-    set((state) => ({
-      openFiles: [...state.openFiles, { path: filePath, name: filename(filePath), content: response.content, language: response.language, dirty: false }],
-      activePath: filePath
-    }));
+    set((state) => {
+      let files = [...state.openFiles, { path: filePath, name: filename(filePath), content: response.content, language: response.language, dirty: false }];
+      // If over MAX_LIVE_TABS, evict the oldest inactive, clean tab to background cache
+      if (files.length > MAX_LIVE_TABS) {
+        const evictIndex = files.findIndex((f) => f.path !== filePath && !f.dirty && f.content.length > 0);
+        if (evictIndex >= 0) {
+          const toEvict = files[evictIndex];
+          evictedTabCache.set(toEvict.path, toEvict.content);
+          files[evictIndex] = { ...toEvict, content: "" };
+        }
+      }
+      return { openFiles: files, activePath: filePath };
+    });
     localStorage.setItem("code-os:open-tabs", JSON.stringify(get().openFiles.map((file) => file.path)));
   },
   closeFile: (filePath) =>

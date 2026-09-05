@@ -18,7 +18,10 @@ export interface DAGPlanStep {
 export interface AgentStatus {
   type:
     | "thinking"
+    | "thinking_progress"
+    | "retry"
     | "tool"
+    | "tool_result"
     | "step_complete"
     | "duo_escalation"
     | "proposal_created"
@@ -50,6 +53,33 @@ export interface AgentStatus {
   action_id?: string;
   options?: string[];
   confirmed?: boolean;
+  tokens?: number;
+  retry_delay_seconds?: number;
+  is_rate_limit?: boolean;
+  attempt?: number;
+  max_attempts?: number;
+  success?: boolean;
+  output?: string;
+}
+
+export interface SuggestedRecoveryModel {
+  provider: string;
+  model: string;
+  name: string;
+}
+
+export interface AIRecoveryPayload {
+  error: string;
+  provider?: string;
+  model?: string;
+  category?: string;
+  http_status?: number;
+  error_body?: string;
+  is_auth_error?: boolean;
+  is_404?: boolean;
+  is_429?: boolean;
+  is_context_overflow?: boolean;
+  suggested_models?: SuggestedRecoveryModel[];
 }
 
 export interface PendingApprovalState {
@@ -82,6 +112,8 @@ export interface ToolEvent {
   timestamp: string;
   success?: boolean;
   output_preview?: string;
+  state?: "running" | "completed" | "failed" | "skipped";
+  reason?: string;
 }
 
 export interface CommandExecution {
@@ -192,6 +224,9 @@ type AIState = {
   currentTierLabel: string | null;
   currentTierReason: string | null;
   currentTokensUsed: number | null;
+  retryStatus: { message: string; retry_delay_seconds?: number; attempt?: number; max_attempts?: number; is_rate_limit?: boolean } | null;
+  recoveryPayload: AIRecoveryPayload | null;
+  clearRecovery: () => void;
   interruptedState: InterruptedState | null;
   agentStatus: AgentStatus | null;
   agentPlan: AgentPlan | null;
@@ -199,6 +234,8 @@ type AIState = {
   pendingApproval: PendingApprovalState | null;
   pendingApprovals: PendingApprovalState[];
   pendingUserResponse: PendingUserResponseState | null;
+  interruptedTasks: any[];
+  fetchInterruptedTasks: () => Promise<void>;
   streamStartTimestamp: number | null;
   lastTokenTimestamp: number | null;
 
@@ -325,6 +362,14 @@ export function createSSEStreamHandler(
         action_id: data.action_id,
         options: data.options,
         confirmed: data.confirmed,
+        tokens: data.tokens,
+        retry_delay_seconds: data.retry_delay_seconds,
+        is_rate_limit: data.is_rate_limit === true,
+        attempt: data.attempt,
+        max_attempts: data.max_attempts,
+        success: data.success,
+        output: data.output,
+        reason: data.reason,
       };
       set((state) => {
         const messages = [...state.messages];
@@ -338,9 +383,37 @@ export function createSSEStreamHandler(
             tool: statusObj.tool,
             detail: statusObj.detail,
             timestamp: new Date().toISOString(),
+            state: "running",
           });
+        } else if ((statusObj.type === "tool_result" || statusObj.type === "tool_error" || statusObj.type === "tool_skipped") && statusObj.tool) {
+          const previous = [...newHistory].reverse().findIndex((entry) => entry.tool === statusObj.tool && entry.state === "running");
+          const isDone = statusObj.type === "tool_result" && data.success === true;
+          const isSkipped = statusObj.type === "tool_skipped" || data.reason === "consecutive_failures";
+          const stateVal = isDone ? "completed" : (isSkipped ? "skipped" : "failed");
+          if (previous >= 0) {
+            const index = newHistory.length - 1 - previous;
+            newHistory[index] = {
+              ...newHistory[index],
+              success: isDone,
+              state: stateVal,
+              output_preview: data.output || data.message || "",
+              reason: data.reason || "",
+            };
+          } else if (statusObj.type === "tool_skipped") {
+            newHistory.push({
+              tool: statusObj.tool,
+              detail: statusObj.detail,
+              timestamp: new Date().toISOString(),
+              state: "skipped",
+              success: false,
+              output_preview: data.message || "",
+              reason: data.reason || "consecutive_failures",
+            });
+          }
         }
-        return { agentStatus: statusObj, agentToolHistory: newHistory, pendingApproval: statusObj.type === "tool" ? null : state.pendingApproval, messages };
+        const tokenUpdate = typeof data.tokens === "number" ? { currentTokensUsed: data.tokens } : {};
+        const retryUpdate = statusObj.type === "retry" ? { retryStatus: { message: statusObj.message, retry_delay_seconds: data.retry_delay_seconds, attempt: data.attempt, max_attempts: data.max_attempts, is_rate_limit: data.is_rate_limit === true } } : (statusObj.type === "thinking" || statusObj.type === "tool" ? { retryStatus: null } : {});
+        return { agentStatus: statusObj, agentToolHistory: newHistory, pendingApproval: statusObj.type === "tool" ? null : state.pendingApproval, messages, ...tokenUpdate, ...retryUpdate };
       });
     } else if (eventType === "ask_user" || eventType === "question") {
       const askObj: PendingUserResponseState = {
@@ -375,23 +448,39 @@ export function createSSEStreamHandler(
       set((state) => {
         const messages = [...state.messages];
         const last = messages[messages.length - 1];
-        const toolEntry = {
-          tool: "run_command",
-          detail: cmdResult.command,
-          timestamp: new Date().toISOString(),
-          success: cmdResult.success,
-          reason: cmdResult.reason,
-        };
-        const updatedHistory = [...state.agentToolHistory, toolEntry];
+        const newHistory = [...state.agentToolHistory];
+        const prevRunningIdx = [...newHistory].reverse().findIndex(
+          (entry) => (entry.tool === "run_command" || entry.tool === "run_test") && entry.state === "running"
+        );
+        if (prevRunningIdx >= 0) {
+          const idx = newHistory.length - 1 - prevRunningIdx;
+          newHistory[idx] = {
+            ...newHistory[idx],
+            success: cmdResult.success,
+            state: cmdResult.success ? "completed" : "failed",
+            output_preview: cmdResult.output.substring(0, 300),
+            reason: cmdResult.reason,
+          };
+        } else {
+          newHistory.push({
+            tool: "run_command",
+            detail: cmdResult.command,
+            timestamp: new Date().toISOString(),
+            success: cmdResult.success,
+            state: cmdResult.success ? "completed" : "failed",
+            output_preview: cmdResult.output.substring(0, 300),
+            reason: cmdResult.reason,
+          });
+        }
         if (last && last.role === "assistant") {
           const existing = last.commands || [];
           messages[messages.length - 1] = {
             ...last,
             commands: [...existing, cmdResult],
-            agentToolHistory: updatedHistory,
+            agentToolHistory: newHistory,
           };
         }
-        return { messages, agentToolHistory: updatedHistory, pendingApproval: null, pendingApprovals: [] };
+        return { messages, agentToolHistory: newHistory, pendingApproval: null, pendingApprovals: [] };
       });
     } else if (eventType === "approval_request") {
       const approvalObj: PendingApprovalState = {
@@ -442,22 +531,35 @@ export function createSSEStreamHandler(
         const messages = [...state.messages];
         const last = messages[messages.length - 1];
         if (last && last.role === "assistant" && !last.content) {
+          const prov = state.provider || "API";
+          const tip = getTaxonomyTip(prov, errMsg, typeof data === "object" ? data?.category : undefined, typeof data === "object" ? data?.is_429 : undefined);
           messages[messages.length - 1] = {
             ...last,
-            content: `⚠️ **AI Provider Error (${state.provider || "API"}):**\n\n${errMsg}\n\n*Tip: Check if your API key quota is reached (e.g. Gemini rate limit). You can switch providers or update your API key in Settings.*`,
+            content: `⚠️ **AI Provider Error (${prov}):**\n\n${errMsg}\n\n${tip}`,
             agentStatus: { type: "error", message: "Provider Error" },
           };
         }
-        return { error: errMsg, messages, pendingApproval: null, pendingApprovals: [], pendingUserResponse: null };
+        return {
+          error: errMsg,
+          messages,
+          pendingApproval: null,
+          pendingApprovals: [],
+          interruptedTasks: [],
+          pendingUserResponse: null,
+          retryStatus: null,
+        };
       });
     } else if (eventType === "done") {
       const isSuccess = data.success !== false;
       const doneMsg = data.message || (isSuccess ? "Task completed" : "Task stopped");
+      const recPayload: AIRecoveryPayload | null = data.recovery || (!isSuccess ? { error: doneMsg } : null);
       set((state) => {
         const messages = [...state.messages];
         const last = messages[messages.length - 1];
         if (last && last.role === "assistant") {
-          const finalContent = last.content || (isSuccess ? "" : `⚠️ **AI Provider Error:**\n\n${doneMsg}\n\n*Tip: Switch providers or update your API key in Settings.*`);
+          const prov = state.provider || "API";
+          const tip = getTaxonomyTip(prov, doneMsg, recPayload?.category, recPayload?.is_429);
+          const finalContent = last.content || (isSuccess ? "" : `⚠️ **AI Provider Error:**\n\n${doneMsg}\n\n${tip}`);
           messages[messages.length - 1] = {
             ...last,
             content: finalContent,
@@ -469,16 +571,56 @@ export function createSSEStreamHandler(
           agentStatus: { type: isSuccess ? "done" : "error", message: doneMsg },
           pendingApproval: null,
           pendingApprovals: [],
+          interruptedTasks: [],
           pendingUserResponse: null,
           streaming: false,
           interruptedState: null,
+          recoveryPayload: recPayload,
+          retryStatus: null,
           messages,
         };
       });
     }
   };
-
   return { handler, flushTokens };
+}
+
+export function getTaxonomyTip(provider: string, errMsg: string, category?: string, is429?: boolean): string {
+  if (category === "rate_limit" || is429 === true) {
+    return `*Tip: Rate limit reached on ${provider || "provider"}. Wait a moment or switch models below.*`;
+  }
+  if (category === "authentication") {
+    return `*Tip: Authentication failed. Please verify your API key for ${provider || "provider"} in Settings.*`;
+  }
+  if (category === "not_found") {
+    return `*Tip: Requested model not found on ${provider || "provider"}. Choose a supported model below.*`;
+  }
+  if (category === "context_overflow") {
+    return `*Tip: Context window limit reached. The conversation history was compacted.*`;
+  }
+  if (category === "transient") {
+    return `*Tip: Provider service is temporarily unreachable. Try again shortly or choose an alternative model below.*`;
+  }
+  const lower = errMsg.toLowerCase();
+  if (lower.includes("http 429") || lower.includes("status 429")) {
+    return `*Tip: Rate limit reached on ${provider || "provider"}. Wait a moment or switch models below.*`;
+  }
+  if (lower.includes("401") || lower.includes("403") || lower.includes("authentication") || lower.includes("unauthorized") || lower.includes("api key")) {
+    return `*Tip: Authentication failed. Please verify your API key for ${provider || "provider"} in Settings.*`;
+  }
+  if (lower.includes("404") || lower.includes("not found") || lower.includes("does not exist")) {
+    return `*Tip: Requested model not found on ${provider || "provider"}. Choose a supported model below.*`;
+  }
+  if (lower.includes("context") || lower.includes("too large") || lower.includes("token")) {
+    return `*Tip: Context window limit reached. The conversation history was compacted.*`;
+  }
+  if (lower.includes("connection") || lower.includes("timeout") || lower.includes("500") || lower.includes("502") || lower.includes("503") || lower.includes("504") || lower.includes("network")) {
+    return `*Tip: Provider service is temporarily unreachable. Try again shortly or choose an alternative model below.*`;
+  }
+  if (lower.includes("prose narration") || lower.includes("no tools")) {
+    return `*Tip: The model described steps without emitting executable tool calls. Try re-prompting with explicit tool instructions.*`;
+  }
+  return `*Tip: You can switch providers or choose an alternative model below.*`;
 }
 
 export const useAIStore = create<AIState>((set, get) => ({
@@ -503,12 +645,16 @@ export const useAIStore = create<AIState>((set, get) => ({
   currentTierLabel: null,
   currentTierReason: null,
   currentTokensUsed: null,
+  retryStatus: null,
+  recoveryPayload: null,
+  clearRecovery: () => set({ recoveryPayload: null, retryStatus: null }),
   interruptedState: null,
   agentStatus: null,
   agentPlan: null,
   agentToolHistory: [],
   pendingApproval: null,
   pendingApprovals: [],
+  interruptedTasks: [],
   pendingUserResponse: null,
   streamStartTimestamp: null,
   lastTokenTimestamp: null,
@@ -536,6 +682,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       agentToolHistory: [],
       pendingApproval: null,
       pendingApprovals: [],
+  interruptedTasks: [],
       pendingUserResponse: null,
     });
   },
@@ -621,6 +768,9 @@ export const useAIStore = create<AIState>((set, get) => ({
         always_allow: alwaysAllow,
         trust_pattern: trustPattern,
       });
+    } catch (err) {
+      console.warn("Approval endpoint notice:", err);
+    } finally {
       set((state) => {
         const remaining = (state.pendingApprovals || []).filter((a) => a.action_id !== actionId);
         return {
@@ -628,14 +778,15 @@ export const useAIStore = create<AIState>((set, get) => ({
           pendingApproval: remaining[0] || null,
         };
       });
-    } catch (err) {
-      console.error("Failed to approve action:", err);
     }
   },
 
   rejectAction: async (actionId: string) => {
     try {
       await api.post(`/api/ai/chat-agent/reject/${actionId}`);
+    } catch (err) {
+      console.warn("Reject endpoint notice:", err);
+    } finally {
       set((state) => {
         const remaining = (state.pendingApprovals || []).filter((a) => a.action_id !== actionId);
         return {
@@ -643,8 +794,58 @@ export const useAIStore = create<AIState>((set, get) => ({
           pendingApproval: remaining[0] || null,
         };
       });
+    }
+  },
+
+    fetchPendingApprovals: async (workspace?: string) => {
+    try {
+      const list = await api.get<any[]>("/api/ai/pending-approvals", workspace ? { workspace } : undefined);
+      if (Array.isArray(list) && list.length > 0) {
+        const formatted: PendingApprovalState[] = list.map((item) => ({
+          action_id: item.action_id,
+          action_type: item.action_type || "command",
+          detail: item.payload?.detail || item.action_id,
+          reason: item.payload?.reason || "Action requires user approval",
+          proposal_id: item.payload?.proposal_id,
+          path: item.payload?.path,
+          diff_summary: item.payload?.diff_summary,
+          command: item.payload?.command,
+          always_allow: false,
+          trust_pattern: null,
+        }));
+        set({
+          pendingApprovals: formatted,
+          pendingApproval: formatted[0],
+          agentStatus: {
+            type: "approval_required",
+            message: `Pending Approval: ${formatted[0].detail}`,
+            step: 1,
+          },
+        });
+      }
     } catch (err) {
-      console.error("Failed to reject action:", err);
+      console.debug("Failed to fetch pending approvals:", err);
+    }
+  },
+
+    fetchInterruptedTasks: async () => {
+    try {
+      const list = await api.get<any[]>("/api/agents/interrupted");
+      if (Array.isArray(list)) {
+        set({ interruptedTasks: list });
+      }
+    } catch (err) {
+      console.debug("Failed to fetch interrupted tasks on startup:", err);
+    }
+  },
+
+  resumeTask: async (taskId: string) => {
+    try {
+      await api.post(`/api/agents/${taskId}/resume`);
+      return true;
+    } catch (err) {
+      console.error("Failed to resume task:", err);
+      return false;
     }
   },
 
@@ -796,7 +997,16 @@ export const useAIStore = create<AIState>((set, get) => ({
     activeController?.abort();
     activeController = null;
     void api.post("/api/ai/chat-agent/cancel").catch(() => {});
-    set({ streaming: false, pendingUserResponse: null, pendingApproval: null, pendingApprovals: [], streamStartTimestamp: null, lastTokenTimestamp: null });
+    set({
+      streaming: false,
+      pendingUserResponse: null,
+      pendingApproval: null,
+      pendingApprovals: [],
+      interruptedTasks: [],
+      streamStartTimestamp: null,
+      lastTokenTimestamp: null,
+      retryStatus: null,
+    });
   },
 
   // ── Multi-thread actions ────────────────────────────────────────────────────
@@ -839,6 +1049,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       pendingUserResponse: null,
       pendingApproval: null,
       pendingApprovals: [],
+  interruptedTasks: [],
     });
   },
 
@@ -910,7 +1121,7 @@ export const useAIStore = create<AIState>((set, get) => ({
 
     const activeThread = get().threads.find((t) => t.id === threadId);
     if (activeThread?.title === "New Conversation") {
-      const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "…" : "");
+      const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "… " : "");
       void get().renameThread(threadId, cleanTitle);
     }
 
@@ -937,6 +1148,8 @@ export const useAIStore = create<AIState>((set, get) => ({
       messages: [...state.messages, userMessage, assistantMessage],
       streaming: true,
       error: null,
+      retryStatus: null,
+      recoveryPayload: null,
       streamStartTimestamp: now,
       lastTokenTimestamp: now,
       agentStatus: { type: "thinking", message: "Connecting..." },
@@ -945,6 +1158,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       pendingUserResponse: null,
       pendingApproval: null,
       pendingApprovals: [],
+  interruptedTasks: [],
     }));
 
     try {
@@ -999,8 +1213,8 @@ export const useAIStore = create<AIState>((set, get) => ({
           if (last && last.role === "assistant" && !last.content) {
             messages[messages.length - 1] = {
               ...last,
-              content: `⚠️ **AI Provider Error (${state.provider || "API"}):**\n\n${errMsg}\n\n*Tip: Check if your API key quota is reached (e.g. Gemini/Groq rate limit). You can switch providers or update your API key in Settings.*`,
-              agentStatus: { type: "error", message: "Provider Error" },
+              content: `⚠️ **Connection Error:**\n\n${errMsg}\n\n*Tip: Unable to communicate with the server. Check your connection or backend status.*`,
+              agentStatus: { type: "error", message: "Connection Error" },
             };
           }
           return { error: errMsg, messages };

@@ -1,8 +1,10 @@
 import aiosqlite
+import sqlite3
 import asyncio
 import logging
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from ..core.config import get_settings
 
 
@@ -12,10 +14,141 @@ _db: Optional[aiosqlite.Connection] = None
 _db_lock: Optional[asyncio.Lock] = None
 
 
+class ConnectionPool:
+    """aiosqlite connection pool with 3 read connections and 1 serialized write connection."""
+    def __init__(self, db_path: Path, read_count: int = 3) -> None:
+        self.db_path = db_path
+        self.read_count = read_count
+        self._read_queue: Optional[asyncio.Queue[aiosqlite.Connection]] = None
+        self._write_conn: Optional[aiosqlite.Connection] = None
+        self._write_lock: Optional[asyncio.Lock] = None
+        self._all_conns: List[aiosqlite.Connection] = []
+
+    async def initialize(self) -> aiosqlite.Connection:
+        self._read_queue = asyncio.Queue()
+        self._write_lock = asyncio.Lock()
+        self._all_conns.clear()
+
+        try:
+            # 1. Initialize write connection
+            self._write_conn = await aiosqlite.connect(self.db_path)
+            self._all_conns.append(self._write_conn)
+            self._write_conn.row_factory = aiosqlite.Row
+            await self._configure_pragmas(self._write_conn)
+
+            # 2. Initialize read connections
+            for _ in range(self.read_count):
+                r_conn = await aiosqlite.connect(self.db_path)
+                self._all_conns.append(r_conn)
+                r_conn.row_factory = aiosqlite.Row
+                await self._configure_pragmas(r_conn)
+                await r_conn.execute("PRAGMA query_only=ON;")
+                await self._read_queue.put(r_conn)
+
+            return self._write_conn
+        except Exception:
+            await self.close()
+            raise
+
+    async def _configure_pragmas(self, conn: aiosqlite.Connection) -> None:
+        await conn.execute("PRAGMA journal_mode=WAL;")
+        await conn.execute("PRAGMA synchronous=NORMAL;")
+        await conn.execute("PRAGMA foreign_keys=ON;")
+        await conn.execute("PRAGMA busy_timeout=5000;")
+        await conn.execute("PRAGMA cache_size=-64000;")
+        await conn.execute("PRAGMA mmap_size=268435456;")
+        await conn.execute("PRAGMA temp_store=MEMORY;")
+        # Health check
+        cur = await conn.execute("PRAGMA quick_check(1);")
+        res = await cur.fetchone()
+        if res and res[0] != "ok":
+            logger.warning("Database quick_check warning: %s", res[0])
+
+    async def acquire_read(self) -> aiosqlite.Connection:
+        if self._read_queue is None:
+            return self._write_conn
+        return await self._read_queue.get()
+
+    async def release_read(self, conn: aiosqlite.Connection) -> None:
+        if self._read_queue is not None:
+            await self._read_queue.put(conn)
+
+    async def read_query(self, sql: str, params: tuple = ()) -> list:
+        t0 = time.perf_counter()
+        conn = await self.acquire_read()
+        try:
+            try:
+                async with asyncio.timeout(10.0):
+                    cur = await conn.execute(sql, params)
+                    rows = await cur.fetchall()
+                    elapsed = time.perf_counter() - t0
+                    if elapsed > 1.0:
+                        logger.warning("Slow read query (%.2fs): %s", elapsed, sql[:100])
+                    return rows
+            except asyncio.TimeoutError:
+                logger.error("Read query timed out (>10s): %s", sql[:100])
+                raise TimeoutError("Database query timed out")
+        finally:
+            await self.release_read(conn)
+
+    async def write_execute(self, sql: str, params: tuple = ()) -> None:
+        t0 = time.perf_counter()
+        if self._write_lock is None or self._write_conn is None:
+            raise RuntimeError("Database pool not initialized")
+        async with self._write_lock:
+            try:
+                async with asyncio.timeout(10.0):
+                    await self._write_conn.execute(sql, params)
+                    await self._write_conn.commit()
+                    elapsed = time.perf_counter() - t0
+                    if elapsed > 1.0:
+                        logger.warning("Slow write query (%.2fs): %s", elapsed, sql[:100])
+            except asyncio.TimeoutError:
+                logger.error("Write query timed out (>10s): %s", sql[:100])
+                try:
+                    await self._write_conn.rollback()
+                except Exception:
+                    pass
+                raise TimeoutError("Database write timed out")
+            except Exception:
+                try:
+                    await self._write_conn.rollback()
+                except Exception:
+                    pass
+                raise
+
+    async def close(self) -> None:
+        conns_to_close = list(self._all_conns)
+        if self._write_conn in conns_to_close:
+            conns_to_close.remove(self._write_conn)
+            conns_to_close.append(self._write_conn)
+        for conn in conns_to_close:
+            try:
+                try:
+                    async with asyncio.timeout(0.5):
+                        await conn.rollback()
+                except Exception:
+                    pass
+                async with asyncio.timeout(1.5):
+                    await conn.close()
+            except Exception as exc:
+                logger.debug("Error closing connection: %s", exc)
+        self._all_conns.clear()
+        self._write_conn = None
+        self._read_queue = None
+
+
+_pool: Optional[ConnectionPool] = None
+
+
 def _get_db_lock() -> asyncio.Lock:
-    """Lazy-initialize asyncio.Lock inside running event loop to avoid startup crashes."""
     global _db_lock
-    if _db_lock is None:
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if _db_lock is None or (getattr(_db_lock, "_loop", None) is not None and _db_lock._loop is not current_loop):
         _db_lock = asyncio.Lock()
     return _db_lock
 
@@ -28,6 +161,14 @@ async def get_db() -> aiosqlite.Connection:
             if _db is None:
                 await init_db()
     return _db
+
+
+async def get_pool() -> ConnectionPool:
+    """Return the aiosqlite connection pool."""
+    global _pool
+    if _pool is None or _pool._write_conn is None:
+        await get_db()
+    return _pool
 
 
 async def _run_migrations(db: aiosqlite.Connection) -> None:
@@ -110,138 +251,357 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
                 SELECT RAISE(ABORT, 'Invalid status in agent_tasks');
             END;
         """)
-        await db.execute("""
-            CREATE TRIGGER IF NOT EXISTS trg_duo_sessions_status_insert
-            BEFORE INSERT ON duo_sessions
-            FOR EACH ROW
-            WHEN NEW.status NOT IN ('running', 'completed', 'failed', 'cancelled')
-            BEGIN
-                SELECT RAISE(ABORT, 'Invalid status in duo_sessions');
-            END;
-        """)
-        await db.execute("""
-            CREATE TRIGGER IF NOT EXISTS trg_duo_sessions_status_update
-            BEFORE UPDATE OF status ON duo_sessions
-            FOR EACH ROW
-            WHEN NEW.status NOT IN ('running', 'completed', 'failed', 'cancelled')
-            BEGIN
-                SELECT RAISE(ABORT, 'Invalid status in duo_sessions');
-            END;
-        """)
-        await db.execute("""
-            CREATE TRIGGER IF NOT EXISTS trg_edit_proposals_status_insert
-            BEFORE INSERT ON edit_proposals
-            FOR EACH ROW
-            WHEN NEW.status NOT IN ('pending', 'applied', 'rejected')
-            BEGIN
-                SELECT RAISE(ABORT, 'Invalid status in edit_proposals');
-            END;
-        """)
-        await db.execute("""
-            CREATE TRIGGER IF NOT EXISTS trg_edit_proposals_status_update
-            BEFORE UPDATE OF status ON edit_proposals
-            FOR EACH ROW
-            WHEN NEW.status NOT IN ('pending', 'applied', 'rejected')
-            BEGIN
-                SELECT RAISE(ABORT, 'Invalid status in edit_proposals');
-            END;
-        """)
-        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (2, 'status_check_constraints')")
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (2, 'status_triggers')")
         await db.commit()
 
-    # Migration 3: Refresh status triggers with 'queued' support
+    # Migration 3: Phase 2 performance indexes & symbol_index table
     if 3 not in applied:
         try:
-            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_insert")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON agent_jobs(status);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_proposals_workspace ON edit_proposals(workspace);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);")
+            try:
+                cur = await db.execute("PRAGMA table_info(edit_proposals)")
+                ep_rows = await cur.fetchall()
+                ep_cols = [r["name"] for r in ep_rows]
+                if "payload" not in ep_cols:
+                    await db.execute("ALTER TABLE edit_proposals ADD COLUMN payload TEXT DEFAULT '{}'")
+            except Exception:
+                pass
+
             await db.execute("""
-                CREATE TRIGGER trg_agent_jobs_status_insert
+                CREATE TABLE IF NOT EXISTS symbol_index (
+                    workspace TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    mtime REAL NOT NULL,
+                    symbols_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (workspace, file_path),
+                    FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_symbol_index_workspace ON symbol_index(workspace);")
+        except Exception as exc:
+            logger.debug("Migration 3 performance indexes: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (3, 'phase2_indexes')")
+        await db.commit()
+
+    # Migration 4: Phase 3A spawned_processes tracking
+    if 4 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS spawned_processes (
+                    pid INTEGER PRIMARY KEY,
+                    process_type TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    spawned_at REAL NOT NULL
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_spawned_processes_workspace ON spawned_processes(workspace);")
+        except Exception as exc:
+            logger.debug("Migration 4 spawned_processes: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (4, 'spawned_processes')")
+        await db.commit()
+
+    # Migration 5: Phase 3B pending_approvals and paused status triggers
+    if 5 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS pending_approvals (
+                    action_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_pending_approvals_workspace ON pending_approvals(workspace);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_pending_approvals_expires ON pending_approvals(expires_at);")
+
+            # Add pause_reason and retry_after columns to agent_jobs if not present
+            try:
+                cur = await db.execute("PRAGMA table_info(agent_jobs)")
+                j_rows = await cur.fetchall()
+                j_cols = [r["name"] for r in j_rows]
+                if "pause_reason" not in j_cols:
+                    await db.execute("ALTER TABLE agent_jobs ADD COLUMN pause_reason TEXT DEFAULT ''")
+                if "retry_after" not in j_cols:
+                    await db.execute("ALTER TABLE agent_jobs ADD COLUMN retry_after REAL DEFAULT 0.0")
+            except Exception as exc:
+                logger.debug("Migration 5 agent_jobs cols: %s", exc)
+
+            # Re-create triggers to support 'paused' status
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_insert;")
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_update;")
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_tasks_status_insert;")
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_tasks_status_update;")
+
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_agent_jobs_status_insert
                 BEFORE INSERT ON agent_jobs
                 FOR EACH ROW
-                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting', 'paused')
                 BEGIN
                     SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
                 END;
             """)
-            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_update")
             await db.execute("""
-                CREATE TRIGGER trg_agent_jobs_status_update
+                CREATE TRIGGER IF NOT EXISTS trg_agent_jobs_status_update
                 BEFORE UPDATE OF status ON agent_jobs
                 FOR EACH ROW
-                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting', 'paused')
                 BEGIN
                     SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
                 END;
             """)
-            await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (3, 'refresh_status_triggers')")
-            await db.commit()
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_agent_tasks_status_insert
+                BEFORE INSERT ON agent_tasks
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped', 'paused')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_tasks');
+                END;
+            """)
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_agent_tasks_status_update
+                BEFORE UPDATE OF status ON agent_tasks
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped', 'paused')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_tasks');
+                END;
+            """)
         except Exception as exc:
-            logger.debug("Migration 3 status triggers: %s", exc)
+            logger.debug("Migration 5 pending_approvals: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (5, 'pending_approvals_and_paused')")
+        await db.commit()
+
+    # Migration 6: Phase 3C task_steps table and 'interrupted' status triggers
+    if 6 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS task_steps (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    job_id TEXT NOT NULL,
+                    step_num INTEGER NOT NULL,
+                    step_type TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+                    payload_hash TEXT NOT NULL,
+                    result_json TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    FOREIGN KEY (task_id) REFERENCES agent_tasks(id) ON DELETE CASCADE,
+                    FOREIGN KEY (job_id) REFERENCES agent_jobs(id) ON DELETE CASCADE
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_steps_task ON task_steps(task_id);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_steps_status ON task_steps(status);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_steps_task_hash ON task_steps(task_id, payload_hash);")
+
+            # Re-create triggers to support 'interrupted' status on agent_tasks and agent_jobs
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_insert;")
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_jobs_status_update;")
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_tasks_status_insert;")
+            await db.execute("DROP TRIGGER IF EXISTS trg_agent_tasks_status_update;")
+
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_agent_jobs_status_insert
+                BEFORE INSERT ON agent_jobs
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting', 'paused', 'interrupted')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
+                END;
+            """)
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_agent_jobs_status_update
+                BEFORE UPDATE OF status ON agent_jobs
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting', 'paused', 'interrupted')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_jobs');
+                END;
+            """)
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_agent_tasks_status_insert
+                BEFORE INSERT ON agent_tasks
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped', 'paused', 'interrupted')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_tasks');
+                END;
+            """)
+            await db.execute("""
+                CREATE TRIGGER IF NOT EXISTS trg_agent_tasks_status_update
+                BEFORE UPDATE OF status ON agent_tasks
+                FOR EACH ROW
+                WHEN NEW.status NOT IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped', 'paused', 'interrupted')
+                BEGIN
+                    SELECT RAISE(ABORT, 'Invalid status in agent_tasks');
+                END;
+            """)
+        except Exception as exc:
+            logger.debug("Migration 6 task_steps: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (6, 'task_steps_and_interrupted')")
+        await db.commit()
 
 
-async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
-    """Initialize the shared database connection, configure PRAGMAs, and run schema scripts."""
-    global _db
-    if _db is not None:
-        return _db
-
-    if db_path is None:
+async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
+    """Initialize connection pool and tables if they do not exist."""
+    global _db, _pool
+    if db_path is not None:
+        db_path = Path(db_path)
+    else:
         settings = get_settings()
-        settings.data_dir.mkdir(parents=True, exist_ok=True)
         db_path = settings.database_path
 
-    _db = await aiosqlite.connect(db_path, timeout=30.0)
-    _db.row_factory = aiosqlite.Row
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Performance, integrity, and concurrency settings
-    await _db.execute("PRAGMA journal_mode=WAL;")
-    await _db.execute("PRAGMA foreign_keys=ON;")
-    await _db.execute("PRAGMA busy_timeout=30000;")
-    await _db.execute("PRAGMA cache_size=-2000;")
-    await _db.execute("PRAGMA synchronous=NORMAL;")
+    _pool = ConnectionPool(db_path, read_count=4)
+    try:
+        _db = await _pool.initialize()
+    except (sqlite3.DatabaseError, Exception) as init_err:
+        logger.error("Failed to initialize database (possible corruption): %s. Attempting auto-recovery...", init_err)
+        await _pool.close()
+        _pool = None
+        corrupt_backup = db_path.with_suffix(f".corrupted_{int(time.time())}.bak")
+        try:
+            if db_path.exists():
+                db_path.rename(corrupt_backup)
+        except Exception as ren_err:
+            logger.warning("Could not rename corrupted db file: %s", ren_err)
+        _pool = ConnectionPool(db_path, read_count=4)
+        _db = await _pool.initialize()
 
     await _db.executescript(
         """
         CREATE TABLE IF NOT EXISTS workspaces (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            path TEXT NOT NULL UNIQUE,
+            path TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             last_opened_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             is_active INTEGER DEFAULT 0
         );
 
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
+        CREATE TABLE IF NOT EXISTS files (
+            path TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL,
+            content TEXT,
+            size INTEGER,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS api_keys (
-            provider_id TEXT PRIMARY KEY,
-            encrypted_key TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS edit_proposals (
             id TEXT PRIMARY KEY,
             workspace TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('pending', 'applied', 'rejected')),
-            payload TEXT NOT NULL,
+            task_id TEXT,
+            title TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'applied')),
+            diff TEXT NOT NULL DEFAULT '',
+            changes TEXT NOT NULL DEFAULT '[]',
+            payload TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_edit_proposals_workspace ON edit_proposals(workspace);
 
-        CREATE TABLE IF NOT EXISTS repo_index_status (
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            turn_number INTEGER NOT NULL,
+            agent_role TEXT NOT NULL,
+            message TEXT NOT NULL,
+            event_type TEXT NOT NULL DEFAULT 'info',
+            tools_used TEXT NOT NULL DEFAULT '[]',
+            files_touched TEXT NOT NULL DEFAULT '[]',
+            commit_hash TEXT,
+            tokens_used INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_log_workspace ON activity_log(workspace);
+        CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_log(created_at);
+
+        CREATE TABLE IF NOT EXISTS file_index (
+            path TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            content TEXT,
+            embedding BLOB,
+            tokens INTEGER,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_file_index_workspace ON file_index(workspace);
+
+        CREATE TABLE IF NOT EXISTS symbol_index (
+            workspace TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            mtime REAL NOT NULL,
+            symbols_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (workspace, file_path),
+            FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_symbol_index_workspace ON symbol_index(workspace);
+
+        CREATE TABLE IF NOT EXISTS spawned_processes (
+            pid INTEGER PRIMARY KEY,
+            process_type TEXT NOT NULL,
+            workspace TEXT NOT NULL,
+            spawned_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_spawned_processes_workspace ON spawned_processes(workspace);
+
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            action_id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            workspace TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            expires_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_pending_approvals_workspace ON pending_approvals(workspace);
+        CREATE INDEX IF NOT EXISTS idx_pending_approvals_expires ON pending_approvals(expires_at);
+
+        CREATE TABLE IF NOT EXISTS task_steps (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            step_num INTEGER NOT NULL,
+            step_type TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+            payload_hash TEXT NOT NULL,
+            result_json TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES agent_tasks(id) ON DELETE CASCADE,
+            FOREIGN KEY (job_id) REFERENCES agent_jobs(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_steps_task ON task_steps(task_id);
+        CREATE INDEX IF NOT EXISTS idx_task_steps_status ON task_steps(status);
+        CREATE INDEX IF NOT EXISTS idx_task_steps_task_hash ON task_steps(task_id, payload_hash);
+
+        CREATE TABLE IF NOT EXISTS repo_architecture (
             workspace TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            message TEXT NOT NULL DEFAULT '',
-            started_at TEXT,
-            completed_at TEXT,
-            total_files INTEGER NOT NULL DEFAULT 0,
-            indexed_files INTEGER NOT NULL DEFAULT 0,
-            changed_files INTEGER NOT NULL DEFAULT 0,
-            project_type TEXT NOT NULL DEFAULT 'unknown',
-            language_summary TEXT NOT NULL DEFAULT '{}',
-            frameworks TEXT NOT NULL DEFAULT '[]',
+            summary TEXT NOT NULL DEFAULT '',
+            key_patterns TEXT NOT NULL DEFAULT '[]',
             entry_points TEXT NOT NULL DEFAULT '[]',
             FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
         );
@@ -320,7 +680,7 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
             id TEXT PRIMARY KEY,
             workspace TEXT NOT NULL,
             workflow TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting')),
+            status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'completed', 'failed', 'cancelled', 'waiting', 'paused', 'interrupted')),
             started_at TEXT,
             completed_at TEXT,
             token_usage INTEGER DEFAULT 0,
@@ -340,7 +700,7 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
             job_id TEXT NOT NULL,
             title TEXT NOT NULL,
             agent_role TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped')),
+            status TEXT NOT NULL CHECK (status IN ('queued', 'pending', 'running', 'completed', 'failed', 'waiting', 'cancelled', 'skipped', 'paused', 'interrupted')),
             dependencies TEXT DEFAULT '[]',
             assigned_agent TEXT,
             reasoning_summary TEXT DEFAULT '',
@@ -411,6 +771,29 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
             trusted_at TEXT,
             FOREIGN KEY (path) REFERENCES workspaces(path) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS api_keys (
+            provider_id TEXT PRIMARY KEY,
+            encrypted_key TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS repo_index_status (
+            workspace TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'idle',
+            message TEXT NOT NULL DEFAULT '',
+            started_at TEXT,
+            completed_at TEXT,
+            total_files INTEGER NOT NULL DEFAULT 0,
+            indexed_files INTEGER NOT NULL DEFAULT 0,
+            changed_files INTEGER NOT NULL DEFAULT 0,
+            project_type TEXT NOT NULL DEFAULT 'unknown',
+            language_summary TEXT NOT NULL DEFAULT '{}',
+            frameworks TEXT NOT NULL DEFAULT '[]',
+            entry_points TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
+        );
         """
     )
 
@@ -421,12 +804,37 @@ async def init_db(db_path: str | Path | None = None) -> aiosqlite.Connection:
     return _db
 
 
+async def checkpoint_wal() -> None:
+    """Checkpoint the WAL file to reclaim space."""
+    pool = await get_pool()
+    if pool._write_lock is None or pool._write_conn is None:
+        return
+    async with pool._write_lock:
+        await pool._write_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+
+
 async def close_db() -> None:
-    """Close the shared database connection."""
-    global _db
-    if _db is not None:
+    """Close all database pool connections."""
+    global _db, _pool, _db_lock
+    _db_lock = None
+    if _pool is not None:
         try:
-            await _db.close()
+            async with asyncio.timeout(3.0):
+                await _pool.close()
+        except Exception as exc:
+            logger.warning("Error closing database connection pool: %s", exc)
+        finally:
+            _pool = None
+            _db = None
+    elif _db is not None:
+        try:
+            try:
+                async with asyncio.timeout(0.5):
+                    await _db.rollback()
+            except Exception:
+                pass
+            async with asyncio.timeout(1.5):
+                await _db.close()
         except Exception as exc:
             logger.warning("Error closing database connection: %s", exc)
         finally:

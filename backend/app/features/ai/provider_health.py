@@ -13,6 +13,24 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+
+class CircuitOpenError(RuntimeError):
+    """Raised when AI provider calls are blocked due to open circuit breaker."""
+    def __init__(self, provider: str, cooldown_remaining: float = 300.0):
+        super().__init__(f"Circuit breaker is OPEN for provider '{provider}'. Cooldown remaining: {cooldown_remaining:.1f}s")
+        self.provider = provider
+        self.cooldown_remaining = cooldown_remaining
+        self.retry_after = cooldown_remaining
+
+
+class RateLimitError(RuntimeError):
+    """Raised when an AI provider returns HTTP 429 Too Many Requests."""
+    def __init__(self, message: str = "Rate limit exceeded (HTTP 429)", retry_after: float = 60.0):
+        super().__init__(message)
+        self.retry_after = retry_after
+        self.status_code = 429
+
+
 # Sliding health window (1 hour)
 HEALTH_WINDOW_SECONDS = 3600.0
 # Circuit breaker trip threshold
@@ -22,6 +40,9 @@ CIRCUIT_BREAKER_FAILURES = 5
 CIRCUIT_BREAKER_COOLDOWN_BASE = 300.0
 CIRCUIT_BREAKER_COOLDOWN_MAX = 7200.0
 
+from .catalog import TIER_ROUTING
+
+# Preferred fallback order across supported providers
 DEFAULT_FALLBACK_ORDER = [
     "groq",
     "gemini",
@@ -29,18 +50,32 @@ DEFAULT_FALLBACK_ORDER = [
     "openai",
     "anthropic",
     "deepseek",
+    "moonshot",
+    "qwen",
+    "glm",
+    "xai",
     "mistral",
+    "cohere",
+    "openrouter",
+    "llama",
     "ollama",
 ]
 
 DEFAULT_PROVIDER_MODELS = {
     "groq": "openai/gpt-oss-120b",
     "gemini": "gemini-2.5-flash",
-    "nvidia-nim": "meta/llama-3.1-70b-instruct",
+    "nvidia-nim": "minimaxai/minimax-m3",
     "openai": "gpt-4o",
     "anthropic": "claude-3-5-sonnet-latest",
     "deepseek": "deepseek-chat",
+    "moonshot": "moonshot-v1-128k",
+    "qwen": "qwen-max",
+    "glm": "glm-4-plus",
+    "xai": "grok-3",
     "mistral": "mistral-large-latest",
+    "cohere": "command-a-03-2025",
+    "openrouter": "deepseek/deepseek-chat",
+    "llama": "llama-3.3-70b-versatile",
     "ollama": "llama3",
 }
 
@@ -51,7 +86,14 @@ DEFAULT_PROVIDER_URLS = {
     "openai": "https://api.openai.com/v1",
     "anthropic": "https://api.anthropic.com/v1",
     "deepseek": "https://api.deepseek.com/v1",
+    "moonshot": "https://api.moonshot.ai/v1",
+    "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "glm": "https://open.bigmodel.cn/api/paas/v4",
+    "xai": "https://api.x.ai/v1",
     "mistral": "https://api.mistral.ai/v1",
+    "cohere": "https://api.cohere.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "llama": "https://api.groq.com/openai/v1",
     "ollama": "http://127.0.0.1:11434",
 }
 
@@ -181,10 +223,12 @@ class ProviderHealthTracker:
         failed_provider: str | set[str] | list[str],
         configured_keys: dict[str, str | None],
         preferred_order: list[str] | None = None,
+        allow_local_fallback: bool = False,
     ) -> tuple[str, str, str] | None:
         """
         Find the next healthy, configured provider in order of preference.
         Excludes any providers that have already failed in the current turn.
+        Local/Ollama fallback is strictly disallowed unless allow_local_fallback is True.
         Returns: (provider_id, default_model, base_url) or None if no fallback available.
         """
         if isinstance(failed_provider, (set, list, tuple)):
@@ -204,8 +248,11 @@ class ProviderHealthTracker:
             if is_open:
                 continue
 
-            # Check if key is configured (ollama doesn't require key)
-            if cand_key != "ollama" and not configured_keys.get(cand_key):
+            # Check if local ollama is allowed
+            if cand_key == "ollama":
+                if not allow_local_fallback:
+                    continue
+            elif not configured_keys.get(cand_key):
                 continue
 
             # Check model and URL

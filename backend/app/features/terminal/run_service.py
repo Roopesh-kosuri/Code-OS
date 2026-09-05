@@ -1,3 +1,4 @@
+from app.features.process_tracker import track_spawned_process, untrack_process
 """
 Multi-Language File Run Service for CODE OS.
 Compiles and executes source files under strict resource limits (512MB RAM cap, 60s timeout ceiling),
@@ -233,6 +234,7 @@ async def run_file_stream(
     """
     start_time = time.time()
     run_id = f"run_{uuid.uuid4().hex[:8]}"
+    proc = None
 
     def sse(event: str, data: dict) -> str:
         return f"event: {event}\ndata: {json.dumps(data)}\n\n"
@@ -351,6 +353,7 @@ async def run_file_stream(
             stderr=asyncio.subprocess.PIPE,
         )
         _active_runs[run_id] = proc
+        await track_spawned_process(proc.pid, 'run_file', str(norm_ws))
 
         yield sse("started", {
             "run_id": run_id,
@@ -446,6 +449,8 @@ async def run_file_stream(
         yield sse("error", {"error": f"Execution failed: {exc}", "run_id": run_id})
     finally:
         _active_runs.pop(run_id, None)
+        if proc and proc.pid:
+            await untrack_process(proc.pid)
         temp_dir = _active_run_temps.pop(run_id, None)
         if temp_dir and os.path.isdir(temp_dir):
             try:

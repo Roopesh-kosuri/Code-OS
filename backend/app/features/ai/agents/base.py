@@ -1,3 +1,17 @@
+from enum import Enum
+
+class TaskStatus(str, Enum):
+    QUEUED = "queued"
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    WAITING = "waiting"
+    CANCELLED = "cancelled"
+    SKIPPED = "skipped"
+    PAUSED = "paused"
+    INTERRUPTED = "interrupted"
+
 import asyncio
 import logging
 from typing import Optional, Dict
@@ -125,6 +139,11 @@ class BaseAgent(NewBaseAgent):
                             logger.warning("Cross-provider fallback lookup failed: %s", fb_lookup_err)
 
                     logs.append(f"[ERROR] Legacy Agent [{self.role}] LLM call failed (auto-retry {auto_retries}/{MAX_AUTO_RETRIES}): {exc}")
+                    try:
+                        from ..harness.tool_executor import handle_rate_limit_or_circuit_break
+                        await handle_rate_limit_or_circuit_break(job_id, task_id, exc)
+                    except Exception as pause_err:
+                        logger.debug("Legacy agent pause handler: %s", pause_err)
                     if auto_retries >= MAX_AUTO_RETRIES:
                         decision_res = await self.handle_llm_failure(job_id, task_id, exc)
                         action = decision_res.get("action", "cancel")
@@ -134,7 +153,7 @@ class BaseAgent(NewBaseAgent):
                         elif action in ("switch_to_api", "change_model"):
                             auto_retries = 0
                             new_provider = decision_res.get("provider") or "groq"
-                            new_model = decision_res.get("model") or ("llama-3.3-70b-versatile" if new_provider == "groq" else "gpt-4o")
+                            new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("minimaxai/minimax-m3" if new_provider == "nvidia-nim" else "gpt-4o"))
                             new_key_provider = decision_res.get("api_key_provider") or new_provider
                             if not self.provider_config:
                                 self.provider_config = {}

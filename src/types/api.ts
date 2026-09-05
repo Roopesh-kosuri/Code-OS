@@ -9,6 +9,8 @@ export type FileNode = {
   path: string;
   type: "file" | "directory";
   children: FileNode[];
+  hasChildren?: boolean;
+  size?: number;
 };
 
 export type OpenFile = {

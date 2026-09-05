@@ -2,6 +2,35 @@
 
 All notable changes to CODE OS AI and Core Infrastructure are documented in this file.
 
+## [3.1.0] - 2026-09-01
+
+### Added
+- **Scalability**: Virtual file tree, event-driven DAG, SQLite connection pooling, smart context assembly, incremental indexing
+- **Stability**: Durable execution, crash recovery, graceful pause on rate limits, orphan process reaping, chaos test suite
+- **AI Providers**: GLM (Zhipu AI), Qwen (Alibaba), DeepSeek, xAI (Grok), NVIDIA, Cohere, Moonshot AI (Kimi), plus GPT-5, Claude 5, Gemini 3.x series
+- **Engineering**: 5 ADRs, structured logging, error taxonomy, enhanced health checks, property-based tests, fuzz tests, load tests
+- **Security**: Dependency audit (0 critical CVEs), code signing plan, threat model update, security checklist
+
+### Changed
+- chat_harness.py decomposed from 4,250 lines to 9 focused submodules (1,455 lines orchestrator + 2,311 lines submodules)
+- SQLite connection pool: 4 read + 1 write connections with WAL mode
+- Quick-task iteration budget increased from 3 to 10
+
+### Fixed
+- Rony Agent tool-execution loop: agent now executes tool calls instead of narrating them (supports OpenAI Harmony format, nested JSON, plain-text descriptions)
+- Agent reasoning text no longer leaks into chat bubble
+- Tasks complete autonomously without requiring "continue" prompts
+- DNS rebinding vulnerability in auth middleware
+- Duplicate route mounting
+- Brittle CORS config
+- Session token expiry (24h TTL with rotation)
+
+### Security
+- 6 FAANG-audit vulnerabilities closed
+- Property-based path containment (6 tests)
+- Fuzz testing on 3 critical parsers (30,000 inputs)
+- 0 critical CVEs in dependencies
+
 ## [v2.4.0] - 2026-08-18
 
 ### 1. Sensitive File Staging Leakage Prevention (Phase 1)

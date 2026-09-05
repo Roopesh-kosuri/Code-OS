@@ -6,7 +6,7 @@ from .failure_handler import log_and_flag_failure
 from .sse_streamer import (
     _sse_event, SSEStreamer, _sse_status, _sse_checkpoint, _sse_token, _sse_tier_routing,
     _sse_ask_user, _sse_memory_updated, _sse_plan, _sse_approval_request,
-    _sse_proposal, _sse_command_result, _sse_metrics, _sse_done, _sse_error,
+    _sse_proposal, _sse_command_result, _sse_metrics, _sse_done, _sse_error, StreamReasoningFilter,
 )
 from .approval_coordinator import (
     PendingApproval, PendingUserResponse,
@@ -30,10 +30,10 @@ from .plan_parser import (
     DAGPlanStep, PlanParser, _parse_plan, _parse_plan_dag, _replan_on_failure,
     _classify_rules, _classify_task_effort, _is_deep_query, _is_quick_task_query,
     _has_escalate_marker, _response_is_done, _declares_tool_intent,
-    _extract_heuristic_tool_calls, _parse_tool_calls_extended, _has_tool_calls_extended,
+    _extract_heuristic_tool_calls, _parse_tool_calls_extended, _has_tool_calls_extended, step_matches_work,
 )
 from .tool_executor import (
-    MAX_AGENT_ITERATIONS, MAX_QUICK_TASK_ITERATIONS, MAX_TOOL_CALLS_PER_ITERATION,
+    MAX_AGENT_ITERATIONS, MAX_HUGE_TASK_ITERATIONS, MAX_QUICK_TASK_ITERATIONS, MAX_TOOL_CALLS_PER_ITERATION,
     MAX_RETRY_BEFORE_ESCALATE, SEMANTIC_SEARCH_TOP_K, COMMAND_APPROVAL_TIMEOUT_SECONDS,
     EDIT_APPROVAL_TIMEOUT_SECONDS, APPROVAL_TIMEOUT_SECONDS, COMPACTION_THRESHOLD_TURNS,
     _clean_rel_path, _read_file_cached, _find_mismatch_context, _validate_smart_edit,

@@ -1,4 +1,5 @@
-﻿"""
+from __future__ import annotations
+"""
 code_intelligence.py — Workspace Symbol Indexing & Code Intelligence Engine for CODE OS.
 
 Provides:
@@ -10,7 +11,6 @@ Provides:
 - Structured Git Diff Analysis (compared to checkpoints / commits)
 - Pre-proposal Secret & High-Entropy Token Scanner
 """
-from __future__ import annotations
 
 import ast
 from collections import Counter
@@ -28,13 +28,165 @@ from ..agents.agent_tools import ToolResult
 from ..schemas import FileChange
 
 logger = logging.getLogger(__name__)
+_last_indexed_at: dict[str, float] = {}
 
 
 # ── Symbol Indexing Engine (find_references & go_to_definition) ──────────────
 
+import sqlite3
+from app.core.config import get_settings
+
+def _get_sqlite_conn() -> sqlite3.Connection:
+    db_path = get_settings().database_path
+    conn = sqlite3.connect(str(db_path), timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=5000;")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_index (
+            workspace TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            mtime REAL NOT NULL,
+            symbols_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (workspace, file_path)
+        );
+    """)
+    return conn
+
+def _load_stored_symbols(workspace: str) -> dict[str, tuple[float, list[dict]]]:
+    try:
+        with _get_sqlite_conn() as conn:
+            cur = conn.execute("SELECT file_path, mtime, symbols_json FROM symbol_index WHERE workspace = ?", (workspace,))
+            rows = cur.fetchall()
+            return {r[0]: (float(r[1]), json.loads(r[2])) for r in rows}
+    except Exception as exc:
+        logger.debug("Failed loading symbol_index from SQLite: %s", exc)
+        return {}
+
+def _save_file_symbols(workspace: str, file_path: str, mtime: float, symbols: list[dict]) -> None:
+    try:
+        with _get_sqlite_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO symbol_index (workspace, file_path, mtime, symbols_json, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (workspace, file_path, mtime, json.dumps(symbols))
+            )
+            conn.commit()
+    except Exception as exc:
+        logger.debug("Failed saving symbol_index to SQLite: %s", exc)
+
+def reindex_single_file(workspace: str, file_path: str) -> None:
+    """Re-index a single file on save/modification without scanning the entire workspace."""
+    if not workspace or not file_path:
+        return
+    ws_path = Path(workspace)
+    p = Path(file_path) if Path(file_path).is_absolute() else ws_path / file_path
+    if not p.is_file():
+        try:
+            with _get_sqlite_conn() as conn:
+                rel = str(p.relative_to(ws_path)).replace("\\", "/")
+                conn.execute("DELETE FROM symbol_index WHERE workspace = ? AND file_path = ?", (workspace, rel))
+                conn.commit()
+        except Exception:
+            pass
+        return
+    if p.stat().st_size > 100 * 1024:
+        return
+    try:
+        rel_path = str(p.relative_to(ws_path)).replace("\\", "/")
+        content = p.read_text(encoding="utf-8", errors="replace")
+        syms = _parse_file_symbols_ast(p, rel_path, content)
+        _save_file_symbols(workspace, rel_path, p.stat().st_mtime, syms)
+    except Exception as exc:
+        logger.debug("reindex_single_file failed: %s", exc)
+
+def _parse_file_symbols_ast(file_path: Path, rel_path: str, content: str) -> list[dict]:
+    syms: list[dict] = []
+    lines = content.splitlines()
+    if file_path.suffix == ".py":
+        try:
+            tree = ast.parse(content, filename=str(file_path))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    args_list = [a.arg for a in node.args.args]
+                    sig = f"def {node.name}({', '.join(args_list)})"
+                    doc = ast.get_docstring(node) or ""
+                    syms.append({
+                        "name": node.name,
+                        "symbol_type": "function",
+                        "file_path": rel_path,
+                        "line": node.lineno,
+                        "signature": sig,
+                        "docstring": doc[:120],
+                    })
+                elif isinstance(node, ast.ClassDef):
+                    bases = [getattr(b, "id", getattr(b, "attr", "")) for b in node.bases]
+                    sig = f"class {node.name}({', '.join(filter(None, bases))})"
+                    doc = ast.get_docstring(node) or ""
+                    syms.append({
+                        "name": node.name,
+                        "symbol_type": "class",
+                        "file_path": rel_path,
+                        "line": node.lineno,
+                        "signature": sig,
+                        "docstring": doc[:120],
+                    })
+                elif isinstance(node, ast.Assign):
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            sym_type = "constant" if target.id.isupper() else "variable"
+                            val_repr = ""
+                            if isinstance(node.value, ast.Constant):
+                                val_repr = repr(node.value.value)
+                            sig = f"{target.id} = {val_repr}".strip()
+                            syms.append({
+                                "name": target.id,
+                                "symbol_type": sym_type,
+                                "file_path": rel_path,
+                                "line": node.lineno,
+                                "signature": sig,
+                                "docstring": "",
+                            })
+        except Exception:
+            pass
+    else:
+        for line_idx, line in enumerate(lines, start=1):
+            fn_m = re.search(r"\b(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_$]+)\s*\(([^)]*)\)", line)
+            if fn_m:
+                syms.append({
+                    "name": fn_m.group(1),
+                    "symbol_type": "function",
+                    "file_path": rel_path,
+                    "line": line_idx,
+                    "signature": f"function {fn_m.group(1)}({fn_m.group(2)})",
+                    "docstring": "",
+                })
+            var_m = re.search(r"\b(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:(?:async\s*)?\(([^)]*)\)\s*=>|function|([^\n;]+))", line)
+            if var_m:
+                sym_name = var_m.group(1)
+                sym_type = "constant" if sym_name.isupper() else ("function" if "=>" in line or "function" in line else "variable")
+                syms.append({
+                    "name": sym_name,
+                    "symbol_type": sym_type,
+                    "file_path": rel_path,
+                    "line": line_idx,
+                    "signature": line.strip()[:100],
+                    "docstring": "",
+                })
+            cls_m = re.search(r"\b(?:export\s+)?class\s+([a-zA-Z0-9_$]+)", line)
+            if cls_m:
+                syms.append({
+                    "name": cls_m.group(1),
+                    "symbol_type": "class",
+                    "file_path": rel_path,
+                    "line": line_idx,
+                    "signature": line.strip()[:100],
+                    "docstring": "",
+                })
+    return syms
+
 def _build_symbol_index(workspace: str, max_files: int = 250) -> dict[str, Any]:
     """Parse Python, JS, TS files in workspace and build symbol definitions and references map.
-    Stores and caches to <workspace>/.code_os/symbol_index.json.
+    Stores and caches directly to SQLite symbol_index table.
     """
     if not workspace:
         return {"definitions": {}, "references": {}}
@@ -43,24 +195,7 @@ def _build_symbol_index(workspace: str, max_files: int = 250) -> dict[str, Any]:
     if not ws_path.is_dir():
         return {"definitions": {}, "references": {}}
 
-    idx_file = ws_path / ".code_os" / "symbol_index.json"
-    if idx_file.is_file():
-        try:
-            cached = json.loads(idx_file.read_text(encoding="utf-8"))
-            if isinstance(cached, dict) and "definitions" in cached and "references" in cached and "files_mtime" in cached:
-                cached_files_mtime = cached.get("files_mtime", {})
-                indexed_at = cached.get("indexed_at", 0)
-                if time.time() - indexed_at < 300:
-                    cache_valid = True
-                    for rel_p, saved_mtime in cached_files_mtime.items():
-                        full_p = ws_path / rel_p
-                        if not full_p.is_file() or full_p.stat().st_mtime != saved_mtime:
-                            cache_valid = False
-                            break
-                    if cache_valid:
-                        return cached
-        except Exception:
-            pass
+    stored_index = _load_stored_symbols(workspace)
 
     definitions: dict[str, list[dict]] = {}
     references: dict[str, list[dict]] = {}
@@ -82,96 +217,34 @@ def _build_symbol_index(workspace: str, max_files: int = 250) -> dict[str, Any]:
 
     for file_path in all_files:
         try:
+            if file_path.stat().st_size > 100 * 1024:
+                continue
             rel_path = str(file_path.relative_to(ws_path)).replace("\\", "/")
+            mtime = file_path.stat().st_mtime
+            if rel_path in stored_index and stored_index[rel_path][0] == mtime:
+                file_syms = stored_index[rel_path][1]
+            else:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+                file_syms = _parse_file_symbols_ast(file_path, rel_path, content)
+                _save_file_symbols(workspace, rel_path, mtime, file_syms)
+                if len(_last_indexed_at) >= 1000 and workspace not in _last_indexed_at:
+                    try:
+                        oldest = next(iter(_last_indexed_at))
+                        _last_indexed_at.pop(oldest, None)
+                    except Exception:
+                        _last_indexed_at.clear()
+                _last_indexed_at[workspace] = time.time()
+
+            for sym in file_syms:
+                definitions.setdefault(sym["name"], []).append(sym)
+
             content = file_path.read_text(encoding="utf-8", errors="replace")
-            lines = content.splitlines()
+            lines_content = content.splitlines()
         except Exception:
             continue
 
-        if file_path.suffix == ".py":
-            try:
-                tree = ast.parse(content, filename=str(file_path))
-                for node in ast.walk(tree):
-                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        args_list = [a.arg for a in node.args.args]
-                        sig = f"def {node.name}({', '.join(args_list)})"
-                        doc = ast.get_docstring(node) or ""
-                        definitions.setdefault(node.name, []).append({
-                            "name": node.name,
-                            "symbol_type": "function",
-                            "file_path": rel_path,
-                            "line": node.lineno,
-                            "signature": sig,
-                            "docstring": doc[:120],
-                        })
-                    elif isinstance(node, ast.ClassDef):
-                        bases = [getattr(b, "id", getattr(b, "attr", "")) for b in node.bases]
-                        sig = f"class {node.name}({', '.join(filter(None, bases))})"
-                        doc = ast.get_docstring(node) or ""
-                        definitions.setdefault(node.name, []).append({
-                            "name": node.name,
-                            "symbol_type": "class",
-                            "file_path": rel_path,
-                            "line": node.lineno,
-                            "signature": sig,
-                            "docstring": doc[:120],
-                        })
-                    elif isinstance(node, ast.Assign):
-                        for target in node.targets:
-                            if isinstance(target, ast.Name):
-                                sym_type = "constant" if target.id.isupper() else "variable"
-                                val_repr = ""
-                                if isinstance(node.value, ast.Constant):
-                                    val_repr = repr(node.value.value)
-                                sig = f"{target.id} = {val_repr}".strip()
-                                definitions.setdefault(target.id, []).append({
-                                    "name": target.id,
-                                    "symbol_type": sym_type,
-                                    "file_path": rel_path,
-                                    "line": node.lineno,
-                                    "signature": sig,
-                                    "docstring": "",
-                                })
-            except Exception:
-                pass
-        else:
-            # JS/TS parsing
-            for line_idx, line in enumerate(lines, start=1):
-                fn_m = re.search(r"\b(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_$]+)\s*\(([^)]*)\)", line)
-                if fn_m:
-                    definitions.setdefault(fn_m.group(1), []).append({
-                        "name": fn_m.group(1),
-                        "symbol_type": "function",
-                        "file_path": rel_path,
-                        "line": line_idx,
-                        "signature": f"function {fn_m.group(1)}({fn_m.group(2)})",
-                        "docstring": "",
-                    })
-                var_m = re.search(r"\b(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:(?:async\s*)?\(([^)]*)\)\s*=>|function|([^\n;]+))", line)
-                if var_m:
-                    sym_name = var_m.group(1)
-                    sym_type = "constant" if sym_name.isupper() else ("function" if "=>" in line or "function" in line else "variable")
-                    definitions.setdefault(sym_name, []).append({
-                        "name": sym_name,
-                        "symbol_type": sym_type,
-                        "file_path": rel_path,
-                        "line": line_idx,
-                        "signature": line.strip()[:100],
-                        "docstring": "",
-                    })
-                cls_m = re.search(r"\b(?:export\s+)?class\s+([a-zA-Z0-9_$]+)", line)
-                if cls_m:
-                    definitions.setdefault(cls_m.group(1), []).append({
-                        "name": cls_m.group(1),
-                        "symbol_type": "class",
-                        "file_path": rel_path,
-                        "line": line_idx,
-                        "signature": line.strip()[:100],
-                        "docstring": "",
-                    })
-
         # Reference finding
-        for line_idx, line in enumerate(lines, start=1):
+        for line_idx, line in enumerate(lines_content, start=1):
             tokens = set(re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", line))
             for tok in tokens:
                 if len(tok) >= 2 and tok not in (
@@ -185,7 +258,6 @@ def _build_symbol_index(workspace: str, max_files: int = 250) -> dict[str, Any]:
                         "line": line_idx,
                         "line_content": line.strip()[:140],
                     })
-
     files_mtime: dict[str, float] = {}
     for p in all_files:
         try:
@@ -198,16 +270,11 @@ def _build_symbol_index(workspace: str, max_files: int = 250) -> dict[str, Any]:
         "definitions": definitions,
         "references": references,
         "files_mtime": files_mtime,
-        "indexed_at": time.time(),
+        "indexed_at": _last_indexed_at.get(workspace, time.time()),
         "total_files": len(all_files),
     }
 
-    try:
-        idx_file = ws_path / ".code_os" / "symbol_index.json"
-        idx_file.parent.mkdir(parents=True, exist_ok=True)
-        idx_file.write_text(json.dumps(index_data, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    # Persisted exclusively to SQLite symbol_index table
 
     return index_data
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 
-from app.features.ai.schemas import ChatMessage
+from app.features.ai.schemas import ChatMessage, FileChange
 
 _EXTENDED_TOOL_RE = re.compile(
     r"\[TOOL_CALL:\s*(?P<name>[a-z_]+)\s*\]\s*(?P<body>.*?)\s*\[/TOOL_CALL\]",
@@ -40,11 +40,14 @@ def _clean_response_text(text: str) -> str:
 
 
 def _compact_conversation_history(messages: list[ChatMessage], keep_recent_turns: int = 2) -> list[ChatMessage]:
-    if len(messages) <= keep_recent_turns * 2:
+    total_len = sum(len(m.content) for m in messages if getattr(m, "content", None))
+    # If history is getting large, compact more aggressively to keep under TPM/context limits
+    effective_turns = 1 if total_len > 4000 else keep_recent_turns
+    if len(messages) <= effective_turns * 2:
         return messages
 
     compacted: list[ChatMessage] = []
-    cutoff_index = len(messages) - (keep_recent_turns * 2)
+    cutoff_index = len(messages) - (effective_turns * 2)
 
     for idx, msg in enumerate(messages):
         if idx == 0 or idx >= cutoff_index:

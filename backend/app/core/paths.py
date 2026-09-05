@@ -1,8 +1,11 @@
-"""
+r"""
 core/paths.py — Path normalisation and workspace boundary enforcement.
 
 Security rules enforced here:
   * Client-supplied paths are NEVER tilde-expanded (.expanduser() is not called).
+  * Windows UNC paths (\\server\share, //server/share) and device namespaces (\\?\, \\.\)
+    are strictly rejected upfront to prevent network SMB stalls and share escapes.
+  * Null bytes and control prefixes are rejected.
   * All paths are resolved with Path.resolve() which follows symlinks; the
     resolved path is then checked to be inside the workspace root, so a symlink
     inside the workspace that points outside is rejected.
@@ -26,11 +29,22 @@ IGNORED_DIRS = {
 }
 
 
-def _reject_tilde(raw_path: str) -> None:
-    """Raise 400 if the raw client-supplied path starts with a tilde."""
+def _reject_dangerous_prefixes(raw_path: str) -> None:
+    """Raise HTTPException if raw client-supplied path has malicious or escaping prefixes."""
+    if not raw_path:
+        return
+    if chr(0) in raw_path:
+        raise HTTPException(status_code=400, detail="Null bytes are not allowed in paths")
     stripped = raw_path.strip()
     if stripped.startswith("~"):
         raise HTTPException(status_code=400, detail="Tilde expansion is not allowed in paths")
+    if stripped.startswith(("\\", "//")):
+        raise HTTPException(status_code=403, detail="UNC and network paths are not allowed")
+
+
+def _reject_tilde(raw_path: str) -> None:
+    """Backwards-compatible helper."""
+    _reject_dangerous_prefixes(raw_path)
 
 
 def normalize_workspace(raw_path: str) -> Path:
@@ -47,10 +61,10 @@ def normalize_workspace(raw_path: str) -> Path:
 
 def normalize_path(raw_path: str) -> Path:
     """
-    Normalise a client-supplied path WITHOUT tilde expansion.
+    Normalise a client-supplied path WITHOUT tilde expansion or UNC prefixes.
     Use this for any path that originates from a network request.
     """
-    _reject_tilde(raw_path)
+    _reject_dangerous_prefixes(raw_path)
     try:
         return Path(raw_path).resolve()
     except (OSError, ValueError) as exc:
@@ -64,7 +78,7 @@ def ensure_within_workspace(workspace: str, target: str) -> Path:
     Both symlinks and ".." traversal are neutralised by Path.resolve().
     If the resolved target escapes the workspace root a 403 is raised.
     """
-    _reject_tilde(target)
+    _reject_dangerous_prefixes(target)
     workspace_path = normalize_workspace(workspace)
 
     target_p = Path(target)

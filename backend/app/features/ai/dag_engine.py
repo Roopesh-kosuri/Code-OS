@@ -10,6 +10,7 @@ class DAGEngine:
     def __init__(self) -> None:
         self._running_jobs: dict[str, asyncio.Task] = {}
         self._job_events: dict[str, asyncio.Event] = {}
+        self._concurrency_semaphore = asyncio.Semaphore(3)
 
     def _notify_job_update(self, job_id: str) -> None:
         """Wake up the DAG engine event loop immediately upon task state change."""
@@ -108,18 +109,25 @@ class DAGEngine:
                     break
 
                 
-                # Launch runnable tasks in parallel
+                # Launch runnable tasks bounded by semaphore
                 futures = []
                 for t in runnable_tasks:
-                    futures.append(self._execute_task(job_id, t, provider_config))
+                    futures.append(self._execute_task_bounded(job_id, t, provider_config))
                 
                 if futures:
                     await asyncio.gather(*futures)
-                    # Brief smoothing delay to avoid bursting API token limits
-                    await asyncio.sleep(1.0)
+                    self._notify_job_update(job_id)
                 else:
-                    # Wait a bit before checking task status again
-                    await asyncio.sleep(1)
+                    # Await event-driven task update with 5.0s safety fallback
+                    evt = self._job_events.get(job_id)
+                    if evt:
+                        evt.clear()
+                        try:
+                            await asyncio.wait_for(evt.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            pass
+                    else:
+                        await asyncio.sleep(5.0)
                     
         except asyncio.CancelledError:
             logger.info("Job %s cancelled", job_id)
@@ -129,6 +137,11 @@ class DAGEngine:
         finally:
             self._running_jobs.pop(job_id, None)
             self._job_events.pop(job_id, None)
+
+    async def _execute_task_bounded(self, job_id: str, task: dict, provider_config: dict | None = None) -> None:
+        async with self._concurrency_semaphore:
+            await self._execute_task(job_id, task, provider_config)
+            self._notify_job_update(job_id)
 
     async def _execute_task(self, job_id: str, task: dict, provider_config: dict | None = None) -> None:
         task_id = task["id"]

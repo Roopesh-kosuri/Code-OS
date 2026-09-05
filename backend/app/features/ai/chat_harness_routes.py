@@ -544,7 +544,7 @@ async def test_direct_provider_call(payload: DirectProviderCallRequest) -> dict:
     from .provider_health import DEFAULT_PROVIDER_MODELS, DEFAULT_PROVIDER_URLS
     
     prov = payload.provider.lower()
-    model = payload.model or DEFAULT_PROVIDER_MODELS.get(prov, "openai/gpt-oss-120b" if prov == "groq" else "meta/llama-3.1-70b-instruct")
+    model = payload.model or DEFAULT_PROVIDER_MODELS.get(prov, "openai/gpt-oss-120b" if prov == "groq" else ("minimaxai/minimax-m3" if prov == "nvidia-nim" else "gpt-4o"))
     base_url = DEFAULT_PROVIDER_URLS.get(prov)
     
     from .schemas import ChatMessage

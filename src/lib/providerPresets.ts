@@ -7,8 +7,7 @@
  *  - what to show in the model name placeholder
  *
  * The wire protocol for all non-Ollama entries is "openai-compatible"
- * (OpenAI /chat/completions SSE streaming). The provider classes require
- * no changes — only the config layer was OpenAI-flavored before.
+ * (OpenAI /chat/completions SSE streaming).
  */
 
 export interface ProviderPreset {
@@ -29,8 +28,7 @@ export interface ProviderPreset {
   /** Optional key prefix hint (e.g. "nvapi-" for NVIDIA NIM) */
   api_key_prefix?: string;
   /**
-   * Informational note shown as a tooltip (ⓘ) next to the preset label.
-   * Use for important behavioural caveats (Anthropic system-msg limit, etc.)
+   * Informational note shown as a tooltip next to the preset label.
    */
   note?: string;
   /**
@@ -42,7 +40,7 @@ export interface ProviderPreset {
 }
 
 export const PROVIDER_PRESETS: ProviderPreset[] = [
-  // ── Local ──────────────────────────────────────────────────────────────────
+  // -- Local ------------------------------------------------------------------
   {
     id: "auto",
     label: "Auto Routing (default)",
@@ -59,20 +57,21 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "ollama",
     base_url: "http://127.0.0.1:11434",
     api_key_provider: null,
-    model_placeholder: "llama3, codellama, mistral…",
+    model_placeholder: "llama3, codellama, mistral...",
     model_example: "llama3",
     group: "local",
   },
 
-  // ── API providers ──────────────────────────────────────────────────────────
+  // -- API providers ----------------------------------------------------------
   {
     id: "openai",
     label: "OpenAI",
     provider: "openai-compatible",
     base_url: "https://api.openai.com/v1",
     api_key_provider: "openai",
-    model_placeholder: "gpt-4o, gpt-4o-mini, o3-mini…",
+    model_placeholder: "gpt-4o, gpt-4o-mini, o3-mini, gpt-5...",
     model_example: "gpt-4o",
+    api_key_prefix: "sk-",
     group: "api",
   },
   {
@@ -81,12 +80,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://api.anthropic.com/v1",
     api_key_provider: "anthropic",
-    model_placeholder: "claude-sonnet-4-5, claude-opus-4…",
-    model_example: "claude-sonnet-4-5",
+    model_placeholder: "claude-3-7-sonnet, claude-3-5-sonnet-latest...",
+    model_example: "claude-3-7-sonnet",
+    api_key_prefix: "sk-ant-",
     note:
-      "Anthropic's OpenAI-compatible endpoint only supports a single system message — " +
-      "multiple system messages are silently concatenated. This is a compatibility shim, not " +
-      "Anthropic's primary API path. For production multi-agent workflows, prefer their native SDK.",
+      "Anthropic's OpenAI-compatible endpoint supports reasoning and multi-turn chat.",
     group: "api",
   },
   {
@@ -95,18 +93,9 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
     api_key_provider: "gemini",
-    model_placeholder: "gemini-2.5-flash, gemini-2.5-pro…",
+    model_placeholder: "gemini-2.5-flash, gemini-2.5-pro, gemini-3.0-pro...",
     model_example: "gemini-2.5-flash",
-    group: "api",
-  },
-  {
-    id: "groq",
-    label: "Groq",
-    provider: "openai-compatible",
-    base_url: "https://api.groq.com/openai/v1",
-    api_key_provider: "groq",
-    model_placeholder: "openai/gpt-oss-120b, llama-3.3-70b-versatile, llama-3.1-8b-instant…",
-    model_example: "openai/gpt-oss-120b",
+    api_key_prefix: "AIza",
     group: "api",
   },
   {
@@ -115,8 +104,52 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://api.deepseek.com/v1",
     api_key_provider: "deepseek",
-    model_placeholder: "deepseek-chat, deepseek-reasoner…",
+    model_placeholder: "deepseek-chat, deepseek-reasoner, deepseek-coder...",
     model_example: "deepseek-chat",
+    api_key_prefix: "sk-",
+    group: "api",
+  },
+  {
+    id: "moonshot",
+    label: "Moonshot AI (Kimi)",
+    provider: "openai-compatible",
+    base_url: "https://api.moonshot.ai/v1",
+    api_key_provider: "moonshot",
+    model_placeholder: "moonshot-v1-128k, kimi-k2-0711-preview...",
+    model_example: "moonshot-v1-128k",
+    api_key_prefix: "sk-",
+    group: "api",
+  },
+  {
+    id: "glm",
+    label: "GLM (Zhipu AI)",
+    provider: "openai-compatible",
+    base_url: "https://open.bigmodel.cn/api/paas/v4",
+    api_key_provider: "glm",
+    model_placeholder: "glm-4-plus, glm-4-air, glm-4-flash...",
+    model_example: "glm-4-plus",
+    group: "api",
+  },
+  {
+    id: "qwen",
+    label: "Qwen (Alibaba DashScope)",
+    provider: "openai-compatible",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key_provider: "qwen",
+    model_placeholder: "qwen-max, qwen-plus, qwen2.5-coder-32b-instruct...",
+    model_example: "qwen-max",
+    api_key_prefix: "sk-",
+    group: "api",
+  },
+  {
+    id: "xai",
+    label: "xAI (Grok)",
+    provider: "openai-compatible",
+    base_url: "https://api.x.ai/v1",
+    api_key_provider: "xai",
+    model_placeholder: "grok-3, grok-3-mini, grok-2...",
+    model_example: "grok-3",
+    api_key_prefix: "xai-",
     group: "api",
   },
   {
@@ -125,22 +158,19 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://api.mistral.ai/v1",
     api_key_provider: "mistral",
-    model_placeholder: "mistral-large-latest, codestral-latest…",
+    model_placeholder: "mistral-large-latest, codestral-latest...",
     model_example: "mistral-large-latest",
     group: "api",
   },
   {
-    id: "openrouter",
-    label: "OpenRouter",
+    id: "groq",
+    label: "Groq",
     provider: "openai-compatible",
-    base_url: "https://openrouter.ai/api/v1",
-    api_key_provider: "openrouter",
-    model_placeholder: "openai/gpt-4o, anthropic/claude-3.5-sonnet…",
-    model_example: "openai/gpt-4o",
-    api_key_prefix: "sk-or-v1-",
-    note:
-      "OpenRouter is a meta-provider that routes to 100+ models from OpenAI, Anthropic, Google, " +
-      "Meta, Mistral, and others — all through one API key. Model name format: 'provider/model-name'.",
+    base_url: "https://api.groq.com/openai/v1",
+    api_key_provider: "groq",
+    model_placeholder: "openai/gpt-oss-120b, openai/gpt-oss-20b...",
+    model_example: "openai/gpt-oss-120b",
+    api_key_prefix: "gsk_",
     group: "api",
   },
   {
@@ -149,14 +179,45 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://integrate.api.nvidia.com/v1",
     api_key_provider: "nvidia-nim",
-    model_placeholder: "meta/llama-3.3-70b-instruct, deepseek/deepseek-r1…",
-    model_example: "meta/llama-3.3-70b-instruct",
+    model_placeholder: "minimaxai/minimax-m3, meta/llama-3.1-70b-instruct...",
+    model_example: "minimaxai/minimax-m3",
     api_key_prefix: "nvapi-",
     note:
-      "NVIDIA NIM hosts 100+ open-weight models (Llama, DeepSeek, Mistral, Nemotron, GLM…) on " +
-      "NVIDIA GPU infrastructure with a free tier. API keys start with 'nvapi-'. " +
-      "You can also self-host NIM containers on your own GPU and point to that URL instead.",
+      "NVIDIA NIM hosts accelerated open-weight models on NVIDIA GPU infrastructure.",
     supports_self_hosted: true,
+    group: "api",
+  },
+  {
+    id: "cohere",
+    label: "Cohere",
+    provider: "openai-compatible",
+    base_url: "https://api.cohere.com/v1",
+    api_key_provider: "cohere",
+    model_placeholder: "command-a-03-2025, command-r-plus-08-2024...",
+    model_example: "command-a-03-2025",
+    group: "api",
+  },
+  {
+    id: "llama",
+    label: "Meta Llama",
+    provider: "openai-compatible",
+    base_url: "https://api.groq.com/openai/v1",
+    api_key_provider: "groq",
+    model_placeholder: "llama-3.3-70b-versatile, llama-3.1-8b-instruct...",
+    model_example: "llama-3.3-70b-versatile",
+    group: "api",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    provider: "openai-compatible",
+    base_url: "https://openrouter.ai/api/v1",
+    api_key_provider: "openrouter",
+    model_placeholder: "openai/gpt-4o, anthropic/claude-3.7-sonnet...",
+    model_example: "openai/gpt-4o",
+    api_key_prefix: "sk-or-v1-",
+    note:
+      "OpenRouter routes to 100+ models from OpenAI, Anthropic, Google, Meta, Mistral through one key.",
     group: "api",
   },
   {
@@ -165,7 +226,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "",
     api_key_provider: "custom",
-    model_placeholder: "Enter model name…",
+    model_placeholder: "Enter model name...",
     model_example: "",
     group: "api",
   },
@@ -177,5 +238,6 @@ export function getPreset(id: string): ProviderPreset | undefined {
 }
 
 /** All preset IDs that require an API key */
-export const API_KEY_PRESET_IDS = PROVIDER_PRESETS.filter((p) => p.api_key_provider !== null && p.id !== "ollama" && p.id !== "custom")
-  .map((p) => p.api_key_provider as string);
+export const API_KEY_PRESET_IDS = PROVIDER_PRESETS.filter(
+  (p) => p.api_key_provider !== null && p.id !== "ollama" && p.id !== "custom"
+).map((p) => p.api_key_provider as string);

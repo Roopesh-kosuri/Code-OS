@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 server_manager.py — Background Server Session Manager for CODE OS.
 
@@ -8,8 +10,8 @@ Provides:
 - HTTP dispatching (GET/POST/PUT/DELETE) directly to running servers
 - Guaranteed process termination and orphan cleanup on exit
 """
-from __future__ import annotations
 
+import asyncio
 import atexit
 import json
 import logging
@@ -28,6 +30,7 @@ from typing import Any
 from ....core.paths import normalize_workspace
 from ...terminal.service import _build_safe_environment
 from ..agents.agent_tools import ToolResult
+from app.features.process_tracker import track_spawned_process, untrack_process
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +128,11 @@ def _server_session_start(workspace: str, command: str, port: int, host: str = "
         threading.Thread(target=_read_stderr, daemon=True).start()
 
         _active_server_sessions[session_id] = session
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(track_spawned_process(proc.pid, "server_session", str(norm_ws)))
+        except RuntimeError:
+            pass
 
         # Wait until port is open or process exits
         start_wait = time.time()
@@ -134,6 +142,11 @@ def _server_session_start(workspace: str, command: str, port: int, host: str = "
                 err_snippet = "\n".join(session.stderr_lines[-10:])
                 out_snippet = "\n".join(session.stdout_lines[-10:])
                 _active_server_sessions.pop(session_id, None)
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(untrack_process(proc.pid))
+                except RuntimeError:
+                    pass
                 return ToolResult(
                     tool_name="server_session",
                     success=False,

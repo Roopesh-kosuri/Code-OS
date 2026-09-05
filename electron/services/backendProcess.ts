@@ -1,6 +1,7 @@
 ﻿import { ChildProcessWithoutNullStreams, spawn, execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import { app, dialog } from "electron";
 
 const isDev = !app.isPackaged;
@@ -111,22 +112,56 @@ export class BackendProcess {
     ]);
   }
 
+  private _readSessionTokenFromFile(tokenPath: string): string | null {
+    try {
+      if (!fs.existsSync(tokenPath)) return null;
+      const raw = fs.readFileSync(tokenPath, "utf-8").trim();
+
+      // Try parsing as JSON (new format)
+      let token: string | null = null;
+      try {
+        const data = JSON.parse(raw);
+        token = data.token;
+        const expiresAt = data.expires_at;
+
+        // Check expiry
+        if (expiresAt && Date.now() / 1000 >= expiresAt) {
+          console.log("[backend] Session token expired, deleting");
+          try { fs.unlinkSync(tokenPath); } catch {}
+          token = null;
+        }
+      } catch (jsonError) {
+        // Legacy plain-text format (v3.0.0) - treat as expired
+        console.log("[backend] Legacy token format detected, treating as expired");
+        try { fs.unlinkSync(tokenPath); } catch {}
+        token = null;
+      }
+
+      if (token && token.length === 64) {
+        this.sessionToken = token;
+        console.log("[backend] Session token loaded from file");
+        return token;
+      }
+      return null;
+    } catch (err) {
+      console.warn("[backend] Could not read session token:", err);
+      return null;
+    }
+  }
+
   async start(): Promise<void> {
     if (this.process) return;
     this.lastError = null;
+    const tokenPath = path.join(os.homedir(), ".code-os", "session_token");
 
     if (isDev) {
       console.log("[backend] Dev mode: attaching to dev backend on 127.0.0.1:8000");
       for (let i = 0; i < 30; i++) {
-        try {
-          const os    = await import("node:os");
-          const path_ = await import("node:path");
-          const tp = path_.join(os.homedir(), ".code-os", "session_token");
-          if (fs.existsSync(tp)) {
-            const token = fs.readFileSync(tp, "utf-8").trim();
-            if (token.length === 64) { this.sessionToken = token; this._tokenResolve(token); console.log("[backend] token loaded"); return; }
-          }
-        } catch { /* retry */ }
+        const token = this._readSessionTokenFromFile(tokenPath);
+        if (token) {
+          this._tokenResolve(token);
+          return;
+        }
         await new Promise((r) => setTimeout(r, 500));
       }
       return;
@@ -134,15 +169,11 @@ export class BackendProcess {
 
     if (await this.isBackendHealthy()) {
       console.log("[backend] Reusing existing backend on 127.0.0.1:8000");
-      try {
-        const os    = await import("node:os");
-        const path_ = await import("node:path");
-        const tp = path_.join(os.homedir(), ".code-os", "session_token");
-        const token = fs.readFileSync(tp, "utf-8").trim();
-        this.sessionToken = token; this._tokenResolve(token);
-        console.log("[backend] token loaded from file");
-      } catch (err) { console.warn("[backend] Could not read session token:", err); }
-      return;
+      const token = this._readSessionTokenFromFile(tokenPath);
+      if (token) {
+        this._tokenResolve(token);
+        return;
+      }
     }
 
     // Strategy 1: Bundled PyInstaller binary (correct packaged build)

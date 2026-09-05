@@ -197,7 +197,7 @@ export function DuoPanel({ compact = false }: { compact?: boolean }) {
   const [applyingProposal, setApplyingProposal] = useState(false);
   const [appliedSuccess, setAppliedSuccess] = useState(false);
   const [recoveryProvider, setRecoveryProvider] = useState<string>("groq");
-  const [recoveryModel, setRecoveryModel] = useState<string>("llama-3.3-70b-versatile");
+  const [recoveryModel, setRecoveryModel] = useState<string>("openai/gpt-oss-120b");
 
   // Poll active session
   const fetchSession = async () => {
@@ -534,7 +534,7 @@ export function DuoPanel({ compact = false }: { compact?: boolean }) {
                     onClick={() => setRecoveryModel("minimaxai/minimax-m3")}
                     className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "minimaxai/minimax-m3" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
                   >
-                    minimax-m3 (Coding)
+                    minimax-m3 (Recommended)
                   </button>
                   <button
                     type="button"
@@ -548,7 +548,7 @@ export function DuoPanel({ compact = false }: { compact?: boolean }) {
                     onClick={() => setRecoveryModel("meta/llama-3.1-70b-instruct")}
                     className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${recoveryModel === "meta/llama-3.1-70b-instruct" ? "bg-primary text-[#001f24] border-primary font-bold shadow" : "bg-surface-variant/30 border-outline/40 hover:border-primary text-on-surface"}`}
                   >
-                    llama-3.1-70b (Recommended)
+                    llama-3.1-70b
                   </button>
                   <button
                     type="button"

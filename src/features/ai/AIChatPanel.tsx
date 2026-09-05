@@ -137,6 +137,78 @@ function ProposalCard({ path, original, updated }: { path: string; original: str
   );
 }
 
+function getRecoveryTitle(recovery: any): string {
+  if (recovery.is_429) return "Rate Limit / Quota Exceeded";
+  if (recovery.is_auth_error) return "Authentication / API Key Error";
+  if (recovery.is_404) return "Model Not Found";
+  const err = (recovery.error || "").toLowerCase();
+  if (err.includes("prose narration") || err.includes("no tools")) return "Execution Format Issue (Narration)";
+  if (err.includes("context") || err.includes("token")) return "Context Window Exceeded";
+  return "Inference Provider Failure";
+}
+
+function UnifiedRecoveryPanel({
+  recovery,
+  onSwitchAndRetry,
+  onDismiss,
+}: {
+  recovery: { error: string; suggested_models?: Array<{ provider: string; model: string; name: string }> };
+  onSwitchAndRetry: (provider: string, model: string) => void;
+  onDismiss: () => void;
+}) {
+  const suggestions = recovery.suggested_models || [
+    { provider: "groq", model: "openai/gpt-oss-120b", name: "Groq GPT-OSS 120B" },
+    { provider: "gemini", model: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { provider: "nvidia-nim", model: "minimaxai/minimax-m3", name: "NVIDIA MiniMax M3" },
+  ];
+
+  return (
+    <div className="mt-3 p-3.5 rounded-xl bg-[#1c1414] border border-rose-500/40 shadow-lg space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
+      <div className="flex items-start gap-2.5">
+        <div className="p-1.5 rounded-lg bg-rose-500/20 text-rose-400 shrink-0 mt-0.5">
+          <AlertTriangle size={16} />
+        </div>
+        <div className="flex-1 min-w-0">
+          <h4 className="font-bold text-xs text-rose-200">{getRecoveryTitle(recovery)}</h4>
+          <p className="text-[11px] text-rose-300/80 leading-relaxed break-words font-mono mt-0.5">
+            {recovery.error}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="p-1 text-on-surface-variant hover:text-on-surface hover:bg-white/10 rounded transition-colors cursor-pointer"
+          title="Dismiss"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="pt-2 border-t border-white/10 space-y-2">
+        <div className="flex items-center justify-between text-[11px]">
+          <span className="font-semibold text-on-surface flex items-center gap-1.5">
+            <Sparkles size={12} className="text-amber-400" />
+            Switch Model &amp; Try Again:
+          </span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+          {suggestions.map((m, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => onSwitchAndRetry(m.provider, m.model)}
+              className="flex items-center justify-between gap-1 px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-primary/20 text-on-surface hover:text-primary border border-white/10 hover:border-primary/40 text-[10.5px] font-medium transition-all cursor-pointer group"
+            >
+              <span className="truncate">{m.name}</span>
+              <ArrowRight size={11} className="opacity-60 group-hover:opacity-100 shrink-0" />
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function AIChatPanel() {
   const [prompt, setPrompt] = useState("");
   const [attachedPaths, setAttachedPaths] = useState<string[]>([]);
@@ -174,6 +246,9 @@ export function AIChatPanel() {
   const agentStatus = useAIStore((s) => s.agentStatus);
   const agentPlan = useAIStore((s) => s.agentPlan);
   const agentToolHistory = useAIStore((s) => s.agentToolHistory);
+  const retryStatus = useAIStore((s) => s.retryStatus);
+  const recoveryPayload = useAIStore((s) => s.recoveryPayload);
+  const clearRecovery = useAIStore((s) => s.clearRecovery);
   const pendingApproval = useAIStore((s) => s.pendingApproval);
   const pendingApprovals = useAIStore((s) => s.pendingApprovals);
   const pendingUserResponse = useAIStore((s) => s.pendingUserResponse);
@@ -222,6 +297,18 @@ export function AIChatPanel() {
   const fetchProviderHealth = useAIStore((s) => s.fetchProviderHealth);
 
   const workspace = useWorkspaceStore((s) => s.currentWorkspace);
+
+  const handleRecoverySwitch = async (prov: string, mod: string) => {
+    clearRecovery();
+    const preset = getPreset(prov);
+    if (preset) {
+      setPreset(preset.id);
+    } else {
+      setPreset(prov);
+    }
+    setModel(mod);
+    await regenerate();
+  };
 
   useEffect(() => {
     void loadThreads(workspace?.path);
@@ -997,8 +1084,31 @@ export function AIChatPanel() {
           </div>
         )}
 
+        {/* Unified Recovery Panel */}
+        {recoveryPayload && (
+          <UnifiedRecoveryPanel
+            recovery={recoveryPayload}
+            onSwitchAndRetry={handleRecoverySwitch}
+            onDismiss={clearRecovery}
+          />
+        )}
+
         <div ref={messagesEndRef} />
       </div>
+
+      {/* ── Active Retry Status Countdown Bar ── */}
+      {streaming && retryStatus && (
+        <div className={`px-3 py-1.5 border-t text-xs flex items-center justify-between font-medium animate-pulse shrink-0 ${
+          retryStatus.is_rate_limit
+            ? "bg-amber-500/15 border-amber-500/30 text-amber-300"
+            : "bg-sky-500/15 border-sky-500/30 text-sky-300"
+        }`}>
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={13} className={retryStatus.is_rate_limit ? "text-amber-400" : "text-sky-400"} />
+            <span>{retryStatus.message}</span>
+          </div>
+        </div>
+      )}
 
       {/* ── Docked Approval Card (Pinned Directly Above Chat Input) ───────── */}
       {pendingApproval && (

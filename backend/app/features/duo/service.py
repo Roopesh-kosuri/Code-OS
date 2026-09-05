@@ -54,22 +54,28 @@ def _extract_json(text: str) -> dict:
     """Extract the first JSON object from a (possibly prose-wrapped) LLM response."""
     # Try direct parse first
     try:
-        return json.loads(text.strip())
-    except json.JSONDecodeError:
+        data = json.loads(text.strip())
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
         pass
-    # Try extracting from markdown fence ```json … ``` or bare ```  ```
+    # Try extracting from markdown fence ```json { ... } ``` or bare ``` { ... } ```
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fence:
         try:
-            return json.loads(fence.group(1))
-        except json.JSONDecodeError:
+            data = json.loads(fence.group(1))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             pass
     # Greedy: find outermost { ... }
     match = _JSON_BLOCK_RE.search(text)
     if match:
         try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
+            data = json.loads(match.group(0))
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             pass
     raise ValueError(f"No valid JSON found in critic response: {text[:300]}")
 
@@ -112,7 +118,7 @@ async def _call_model(cfg: ModelConfig, messages: list[ChatMessage], timeout_sec
     except Exception as exc:
         if cfg.provider == "ollama":
             from ..ai.service import get_api_key
-            for kid, default_model in [("groq", "llama-3.3-70b-versatile"), ("openai", "gpt-4o"), ("gemini", "gemini-2.5-flash")]:
+            for kid, default_model in [("groq", "openai/gpt-oss-120b"), ("nvidia-nim", "minimaxai/minimax-m3"), ("openai", "gpt-4o"), ("gemini", "gemini-2.5-flash")]:
                 key = await get_api_key(kid)
                 if key:
                     logger.info("duo.loop.auto_fallback from ollama to %s (%s)", kid, default_model)
@@ -456,7 +462,7 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
                         elif action in ("switch_to_api", "change_model"):
                             auto_retries = 0
                             new_provider = decision_res.get("provider") or "groq"
-                            new_model = decision_res.get("model") or ("llama-3.3-70b-versatile" if new_provider == "groq" else "gpt-4o")
+                            new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("minimaxai/minimax-m3" if new_provider == "nvidia-nim" else "gpt-4o"))
                             new_key_provider = decision_res.get("api_key_provider") or new_provider
                             req.generator.provider = new_provider
                             req.generator.model = new_model
@@ -556,7 +562,7 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
                         elif action in ("switch_to_api", "change_model"):
                             auto_retries = 0
                             new_provider = decision_res.get("provider") or "groq"
-                            new_model = decision_res.get("model") or ("llama-3.3-70b-versatile" if new_provider == "groq" else "gpt-4o")
+                            new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("minimaxai/minimax-m3" if new_provider == "nvidia-nim" else "gpt-4o"))
                             new_key_provider = decision_res.get("api_key_provider") or new_provider
                             req.critic.provider = new_provider
                             req.critic.model = new_model
@@ -654,11 +660,11 @@ async def _resolve_model_config(cfg: ModelConfig) -> None:
             "openai": "gpt-4o",
             "anthropic": "claude-sonnet-4-5",
             "gemini": "gemini-2.5-flash",
-            "groq": "llama-3.3-70b-versatile",
+            "groq": "openai/gpt-oss-120b",
             "deepseek": "deepseek-chat",
             "mistral": "mistral-large-latest",
             "openrouter": "openai/gpt-4o",
-            "nvidia-nim": "meta/llama-3.3-70b-instruct",
+            "nvidia-nim": "minimaxai/minimax-m3",
             "custom": "gpt-4o"
         }
         provider_id = cfg.api_key_provider or "openai"

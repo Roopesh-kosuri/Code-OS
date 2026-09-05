@@ -7,7 +7,7 @@ import httpx
 
 from ....core.config import get_settings
 from ..schemas import ChatMessage, ModelDto, ProviderHealth
-from .base import AIProvider
+from .base import AIProvider, ProviderRequestError, ProviderStreamEvent, ProviderToolCall
 
 logger = logging.getLogger(__name__)
 
@@ -77,13 +77,14 @@ class OllamaProvider(AIProvider):
         logger.error("Ollama models retrieval failed for all URLs: %s", self._urls_to_try())
         return []
 
-    async def stream_chat(
+    async def stream_agent(
         self,
         model: str,
         messages: list[ChatMessage],
         temperature: float,
         tools: list[dict] | None = None,
-    ) -> AsyncIterator[str]:
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
         payload: dict[str, Any] = {
             "model": model,
             "messages": [message.model_dump() for message in messages],
@@ -110,18 +111,81 @@ class OllamaProvider(AIProvider):
                                 content = data.get("message", {}).get("content")
                                 if content:
                                     emitted = True
-                                    yield content
+                                    yield ProviderStreamEvent(type="text", content=content)
+                                raw_calls = data.get("message", {}).get("tool_calls") or []
+                                if raw_calls:
+                                    calls: list[ProviderToolCall] = []
+                                    for index, raw_call in enumerate(raw_calls):
+                                        fn = raw_call.get("function", {})
+                                        args = fn.get("arguments", {})
+                                        if isinstance(args, str):
+                                            try:
+                                                args = json.loads(args)
+                                            except json.JSONDecodeError:
+                                                args = None
+                                        calls.append(ProviderToolCall(
+                                            id=str(raw_call.get("id", index)), name=str(fn.get("name", "")),
+                                            arguments_json=json.dumps(args) if isinstance(args, dict) else str(args or ""),
+                                            arguments=args if isinstance(args, dict) else None,
+                                            complete=bool(fn.get("name") and isinstance(args, dict)),
+                                        ))
+                                    yield ProviderStreamEvent(
+                                        type="tool_calls" if all(call.complete for call in calls) else "incomplete_tool_call",
+                                        tool_calls=tuple(calls), finish_reason="tool_calls",
+                                    )
                     return
                 except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
                     last_exc = exc
+                    status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                    body = ""
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        try:
+                            if hasattr(exc.response, "aread"):
+                                await exc.response.aread()
+                            body = exc.response.text
+                        except Exception:
+                            body = ""
+                    category = "rate_limit" if status == 429 else ("authentication" if status in (401, 403) else ("not_found" if status == 404 else "transient"))
                     if emitted:
                         logger.error("Ollama stream_chat error mid-stream: %s", exc)
-                        yield _format_ollama_error(exc)
-                        return
+                        raise ProviderRequestError(_format_ollama_error(exc), status_code=status, body=body, category=category) from exc
                     if attempt < self.max_retries:
-                        await asyncio.sleep(0.3)
+                        backoff = 0.5 * (attempt + 1)
+                        is_rate_limit = status == 429
+                        msg = f"Rate limited — retrying in {int(backoff)}s (attempt {attempt + 1}/{self.max_retries + 1})" if is_rate_limit else f"Provider connection issue — retrying in {int(backoff)}s (attempt {attempt + 1}/{self.max_retries + 1})"
+                        yield ProviderStreamEvent(
+                            type="retry",
+                            content=msg,
+                            retry_after_seconds=backoff,
+                            attempt=attempt + 1,
+                            max_attempts=self.max_retries + 1,
+                            is_rate_limit=is_rate_limit,
+                        )
+                        await asyncio.sleep(backoff)
                     else:
                         break
 
         if last_exc:
-            yield _format_ollama_error(last_exc)
+            status = last_exc.response.status_code if isinstance(last_exc, httpx.HTTPStatusError) else None
+            body = ""
+            if isinstance(last_exc, httpx.HTTPStatusError):
+                try:
+                    if hasattr(last_exc.response, "aread"):
+                        await last_exc.response.aread()
+                    body = last_exc.response.text
+                except Exception:
+                    body = ""
+            category = "rate_limit" if status == 429 else ("authentication" if status in (401, 403) else ("not_found" if status == 404 else "transient"))
+            raise ProviderRequestError(_format_ollama_error(last_exc), status_code=status, body=body, category=category) from last_exc
+
+    async def stream_chat(
+        self,
+        model: str,
+        messages: list[ChatMessage],
+        temperature: float,
+        tools: list[dict] | None = None,
+    ) -> AsyncIterator[str]:
+        """Legacy text stream retained for non-agent callers."""
+        async for event in self.stream_agent(model, messages, temperature, tools=tools):
+            if event.type == "text":
+                yield event.content

@@ -68,7 +68,8 @@ export function SearchPanel() {
         case_sensitive: caseSensitive,
         whole_word: wholeWord,
       });
-      const list = Array.isArray(results) ? results : [];
+      const rawList = Array.isArray(results) ? results : [];
+      const list = rawList.slice(0, 1000);
       setMatches(list);
       // Select all matches by default
       const allKeys = new Set(list.map(matchKey));

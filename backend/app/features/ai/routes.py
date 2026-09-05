@@ -3,7 +3,7 @@ from fastapi import APIRouter, Query, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .schemas import ChatRequest, EditProposalDto, EditProposalRequest, ModelDto, ProviderHealth, ContextRequest
+from .schemas import ChatRequest, EditProposalDto, EditProposalRequest, ModelDto, ProviderHealth, ContextRequest, PendingApprovalDto
 from .service import apply_proposal, create_proposal, get_proposal, ollama_health, ollama_models, stream_chat, reject_proposal, list_proposals
 from .context_service import gather_context
 
@@ -18,6 +18,25 @@ async def ollama_health_route(base_url: str | None = Query(default=None)) -> Pro
 @router.get("/ollama/models", response_model=list[ModelDto])
 async def ollama_models_route(base_url: str | None = Query(default=None)) -> list[ModelDto]:
     return await ollama_models(base_url)
+
+
+@router.get("/providers")
+async def list_ai_providers() -> list[dict]:
+    """List all supported AI providers and their model counts."""
+    from .catalog import get_all_providers
+    return get_all_providers()
+
+
+@router.get("/providers/{provider_id}/models")
+async def list_models_for_provider(provider_id: str) -> list[dict]:
+    """List all models for a specific AI provider."""
+    from fastapi import HTTPException
+    from .catalog import PROVIDER_CATALOG
+    prov_key = provider_id.lower()
+    if prov_key not in PROVIDER_CATALOG:
+        raise HTTPException(status_code=404, detail=f"Provider '{provider_id}' not found in catalog")
+    models = PROVIDER_CATALOG[prov_key]
+    return [m.model_dump() for m in models]
 
 
 @router.get("/models", response_model=list[ModelDto])
@@ -264,3 +283,42 @@ async def sync_messages(thread_id: str, payload: MessageSyncRequest) -> dict:
     await db.commit()
     return {"status": "synced"}
 
+
+
+# --- Phase 3B: Pending Approvals Resurfacing ---
+
+@router.get("/pending-approvals", response_model=list[PendingApprovalDto])
+async def list_pending_approvals(workspace: str | None = Query(default=None)) -> list[dict]:
+    """Return all active persisted pending approvals for the given workspace or all workspaces."""
+    from .harness.approval_coordinator import get_all_pending_approvals
+    return await get_all_pending_approvals(workspace)
+
+
+class ApprovalDecisionPayload(BaseModel):
+    always_allow: bool = False
+    trust_pattern: str | None = None
+    feedback: str | None = None
+
+
+@router.post("/pending-approvals/{action_id}/approve")
+@router.post("/chat-agent/approve/{action_id}")
+async def approve_pending_action(action_id: str, payload: ApprovalDecisionPayload | None = None) -> dict:
+    from .harness.approval_coordinator import approve_action
+    always = payload.always_allow if payload else False
+    pattern = payload.trust_pattern if payload else None
+    ok = await approve_action(action_id, always_allow=always, trust_pattern=pattern)
+    if not ok:
+        logger.warning("approve_pending_action: action %s not found (may have already resolved)", action_id)
+        return {"status": "already_resolved", "action_id": action_id}
+    return {"status": "approved", "action_id": action_id}
+
+
+@router.post("/pending-approvals/{action_id}/reject")
+@router.post("/chat-agent/reject/{action_id}")
+async def reject_pending_action(action_id: str, payload: ApprovalDecisionPayload | None = None) -> dict:
+    from .harness.approval_coordinator import reject_action
+    ok = await reject_action(action_id)
+    if not ok:
+        logger.warning("reject_pending_action: action %s not found (may have already resolved)", action_id)
+        return {"status": "already_resolved", "action_id": action_id}
+    return {"status": "rejected", "action_id": action_id}

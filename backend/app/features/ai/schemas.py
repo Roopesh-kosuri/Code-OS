@@ -1,4 +1,11 @@
+from __future__ import annotations
+from typing import Optional, Any
 from pydantic import BaseModel, Field
+
+
+class ContextOverflowError(RuntimeError):
+    """Raised when an AI provider indicates context window or token limit was exceeded."""
+    pass
 
 
 class ChatMessage(BaseModel):
@@ -98,3 +105,59 @@ class ChatMessageExtendedDto(BaseModel):
 
 class MessageSyncRequest(BaseModel):
     messages: list[ChatMessageExtendedDto]
+
+
+class PendingApprovalDto(BaseModel):
+    action_id: str
+    task_id: str
+    workspace: str
+    action_type: str
+    detail: str
+    reason: str
+    command: Optional[str] = None
+    created_at: float
+    expires_at: float
+
+
+class ResumeResponse(BaseModel):
+    status: str
+    task_id: Optional[str] = None
+    job_id: Optional[str] = None
+
+
+class InterruptedTask(BaseModel):
+    id: str
+    job_id: Optional[str] = None
+    title: str
+    agent_role: str
+    status: str
+    workspace: Optional[str] = None
+
+
+class SubsystemHealth(BaseModel):
+    status: str
+    latency_ms: Optional[float] = None
+    active: Optional[int] = None
+    total: Optional[int] = None
+    files_indexed: Optional[int] = None
+    error: Optional[str] = None
+
+
+class HealthMetrics(BaseModel):
+    active_tasks: int
+    pending_approvals: int
+    memory_mb: float
+    open_connections: int
+
+
+class HealthCheckResponse(BaseModel):
+    status: str
+    version: str
+    uptime_seconds: float
+    subsystems: dict[str, SubsystemHealth]
+    metrics: HealthMetrics
+
+
+class ReadinessStatus(BaseModel):
+    status: str
+    services: dict[str, str]

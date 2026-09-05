@@ -1,3 +1,4 @@
+import json
 """
 test_session_token_auth.py
 
@@ -58,9 +59,13 @@ class TestGenerateAndStoreToken(unittest.TestCase):
 
         token_file = self.data_dir / "session_token"
         self.assertTrue(token_file.exists())
-        stored = token_file.read_text().strip()
-        self.assertEqual(stored, token)
-        self.assertEqual(len(token), 64)  # 32 bytes → 64 hex chars
+        stored_raw = token_file.read_text().strip()
+        data = json.loads(stored_raw)
+        self.assertEqual(data["token"], token)
+        self.assertIn("created_at", data)
+        self.assertIn("expires_at", data)
+        self.assertGreater(data["expires_at"], data["created_at"])
+        self.assertEqual(len(token), 64)  # 32 bytes -> 64 hex chars
 
     def test_token_file_mode_is_600(self):
         """On POSIX the token file must be mode 0600 (owner only)."""

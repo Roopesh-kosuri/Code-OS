@@ -21,6 +21,7 @@ import {
   Ban,
   HelpCircle,
   Eye,
+  AlertTriangle,
 } from "lucide-react";
 import {
   useAIStore,
@@ -156,17 +157,25 @@ export function AgentStatusIndicator({
           text: status.message || `Visual Inspection: ${status.detail || ""}`,
           colorClass: "border-primary/30 bg-primary/10 text-primary",
         };
+      case "retry":
+        return {
+          icon: <AlertTriangle size={13} className="text-amber-400 animate-pulse" />,
+          text: status.message || "Re-attempting request...",
+          colorClass: "border-amber-500/40 bg-amber-500/15 text-amber-300 font-semibold",
+        };
+      case "thinking_progress":
       case "thinking": {
-        const hbText = streaming && streamStartTimestamp
-          ? `${status.message || "Working"} — ${formatSeconds(totalElapsedSec)} (last token ${lastTokenSec}s ago)`
-          : status.message || "Reasoning...";
+        const hbText = status.message || (status.tokens ? `Thinking… (${status.tokens} tokens)` : (streaming && streamStartTimestamp
+          ? `Working — ${formatSeconds(totalElapsedSec)} (last token ${lastTokenSec}s ago)`
+          : "Reasoning..."));
         return {
           icon: <Loader2 size={13} className="animate-spin text-primary" />,
           text: hbText,
           colorClass: "border-primary/30 bg-primary/10 text-primary",
         };
       }
-      case "tool": {
+      case "tool":
+      case "tool_result": {
         let toolIcon = <Terminal size={13} className="text-secondary" />;
         if (status.tool === "read_file" || status.tool === "edit_file" || status.tool === "append_file") {
           toolIcon = <FileCode size={13} className="text-amber-400" />;
@@ -188,12 +197,15 @@ export function AgentStatusIndicator({
           toolIcon = <Eye size={13} className="text-primary" />;
         }
         const toolElapsedText = streaming && streamStartTimestamp ? ` (${formatSeconds(totalElapsedSec)} elapsed)` : "";
+        const resultSuffix = status.type === "tool_result"
+          ? (status.success ? " — completed" : " — failed")
+          : "";
         const desc = status.detail
           ? `${status.tool || "Working"}: ${status.detail}${toolElapsedText}`
           : `${status.message || `Running ${status.tool}...`}${toolElapsedText}`;
         return {
           icon: toolIcon,
-          text: desc,
+          text: `${desc}${resultSuffix}`,
           colorClass: status.tool === "take_screenshot" || status.tool === "inspect_visuals"
             ? "border-primary/30 bg-primary/10 text-primary"
             : "border-amber-500/30 bg-amber-500/10 text-amber-300",
@@ -415,6 +427,7 @@ export function AgentStatusIndicator({
                         )}
                         <span className="truncate text-on-surface-variant">
                           {item.detail || "Executed"}
+                          {item.state === "failed" ? ` — failed${item.reason ? ` (${item.reason})` : ""}` : item.state === "completed" ? " — completed" : item.state === "skipped" ? ` — skipped${item.reason ? ` (${item.reason})` : ""}` : " — running"}
                         </span>
                       </div>
                       <span className="shrink-0 text-[9px] text-outline-variant">

@@ -1,8 +1,12 @@
+import os
 import shutil
 import logging
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
 from fastapi import HTTPException
+from ...core.errors import AppError, ErrorCode
 
 from ...core.paths import IGNORED_DIRS, ensure_file, ensure_within_workspace, normalize_path
 from .schemas import FileNode
@@ -59,25 +63,194 @@ LANGUAGE_BY_SUFFIX = {
 }
 
 
-def _node(path: Path, depth: int, max_depth: int) -> FileNode:
+# ── LRU Directory Cache (Max 10,000 directories) ──────────────────────────────
+
+class DirectoryCache:
+    def __init__(self, max_size: int = 10000) -> None:
+        self.max_size = max_size
+        self._cache: OrderedDict[tuple[str, str], list[FileNode]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, workspace: str, path: str) -> list[FileNode] | None:
+        key = (workspace, path)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            return None
+
+    def set(self, workspace: str, path: str, nodes: list[FileNode]) -> None:
+        key = (workspace, path)
+        with self._lock:
+            self._cache[key] = nodes
+            self._cache.move_to_end(key)
+            if len(self._cache) > self.max_size:
+                self._cache.popitem(last=False)
+
+    def invalidate(self, workspace: str, path: str | None = None) -> None:
+        with self._lock:
+            if path is None:
+                keys_to_del = [k for k in self._cache if k[0] == workspace]
+                for k in keys_to_del:
+                    del self._cache[k]
+            else:
+                key = (workspace, path)
+                self._cache.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+
+directory_cache = DirectoryCache(max_size=10000)
+
+
+def invalidate_directory_cache(workspace: str, path: str | None = None) -> None:
+    directory_cache.invalidate(workspace, path)
+
+
+def _dir_has_children(dir_path: Path) -> bool:
+    """Fast O(1) check if a directory has any non-ignored children."""
+    try:
+        with os.scandir(dir_path) as it:
+            for entry in it:
+                if entry.name not in IGNORED_DIRS and not entry.name.startswith(".DS_Store"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def get_directory_children(workspace: str, dir_rel_path: str = "") -> list[FileNode]:
+    """Return immediate children of dir_rel_path with hasChildren flag and size."""
+    cached = directory_cache.get(workspace, dir_rel_path)
+    if cached is not None:
+        return cached
+
+    target = ensure_within_workspace(workspace, dir_rel_path) if dir_rel_path else normalize_path(workspace)
+    if not target.is_dir():
+        raise HTTPException(status_code=404, detail="Directory not found")
+
+    ws_norm = normalize_path(workspace)
+    children: list[FileNode] = []
+    try:
+        with os.scandir(target) as it:
+            entries = []
+            for entry in it:
+                if entry.name in IGNORED_DIRS or entry.name.startswith(".DS_Store"):
+                    continue
+                entries.append(entry)
+
+        # Sort: directories first, then alphabetically
+        entries.sort(key=lambda e: (not e.is_dir(), e.name.lower()))
+
+        for entry in entries:
+            entry_path = Path(entry.path)
+            try:
+                rel = str(entry_path.relative_to(ws_norm)).replace("\\", "/")
+            except ValueError:
+                rel = str(entry_path).replace("\\", "/")
+
+            if entry.is_dir():
+                has_sub = _dir_has_children(entry_path)
+                children.append(FileNode(
+                    name=entry.name,
+                    path=rel,
+                    type="directory",
+                    children=[],
+                    hasChildren=has_sub,
+                ))
+            else:
+                try:
+                    f_size = entry.stat().st_size
+                except OSError:
+                    f_size = 0
+                children.append(FileNode(
+                    name=entry.name,
+                    path=rel,
+                    type="file",
+                    children=[],
+                    hasChildren=False,
+                    size=f_size,
+                ))
+    except OSError as exc:
+        logger.warning("Error reading directory %s: %s", target, exc)
+
+    directory_cache.set(workspace, dir_rel_path, children)
+    return children
+
+
+def _node(path: Path, depth: int, max_depth: int, ws_path: Path | None = None) -> FileNode:
+    if ws_path is None:
+        ws_path = path
+
+    try:
+        rel = str(path.relative_to(ws_path)).replace("\\", "/") if path != ws_path else ""
+    except ValueError:
+        rel = str(path).replace("\\", "/")
+
     if path.is_dir():
         children: list[FileNode] = []
+        has_sub = False
         if depth < max_depth:
-            for child in sorted(path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
-                if child.name in IGNORED_DIRS or child.name.startswith(".DS_Store"):
-                    continue
-                children.append(_node(child, depth + 1, max_depth))
-        return FileNode(name=path.name, path=str(path), type="directory", children=children)
-    return FileNode(name=path.name, path=str(path), type="file")
+            try:
+                for child in sorted(path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+                    if child.name in IGNORED_DIRS or child.name.startswith(".DS_Store"):
+                        continue
+                    children.append(_node(child, depth + 1, max_depth, ws_path))
+                has_sub = len(children) > 0
+            except OSError:
+                pass
+        else:
+            has_sub = _dir_has_children(path)
+
+        return FileNode(
+            name=path.name,
+            path=str(path),
+            type="directory",
+            children=children,
+            hasChildren=has_sub,
+        )
+    else:
+        try:
+            f_size = path.stat().st_size
+        except OSError:
+            f_size = 0
+        return FileNode(
+            name=path.name,
+            path=str(path),
+            type="file",
+            children=[],
+            hasChildren=False,
+            size=f_size,
+        )
 
 
-def build_tree(workspace: str, max_depth: int = 4) -> FileNode:
-    logger.info("files.tree requested workspace=%s max_depth=%s", workspace, max_depth)
+def build_tree(workspace: str, max_depth: int = 4, path: str | None = None, depth: int | None = None) -> FileNode:
+    logger.info("files.tree requested workspace=%s max_depth=%s path=%s depth=%s", workspace, max_depth, path, depth)
     workspace_path = normalize_path(workspace)
     if not workspace_path.is_dir():
         logger.error("files.tree workspace not found path=%s exists=%s", workspace_path, workspace_path.exists())
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    root = _node(workspace_path, 0, max_depth)
+        raise AppError(ErrorCode.WORKSPACE_NOT_FOUND, "Workspace not found", status_code=404)
+
+    if depth == 1 or path is not None:
+        rel_target = path.strip("/") if path else ""
+        target_full = ensure_within_workspace(workspace, rel_target) if rel_target else workspace_path
+        children = get_directory_children(workspace, rel_target)
+        node_name = target_full.name if target_full != workspace_path else ""
+        return FileNode(
+            name=node_name,
+            path=str(target_full),
+            type="directory",
+            children=children,
+            hasChildren=len(children) > 0,
+        )
+
+    root = _node(workspace_path, 0, max_depth, workspace_path)
     logger.info("files.tree loaded workspace=%s child_count=%s", workspace_path, len(root.children))
     return root
 
@@ -108,6 +281,8 @@ def create_entry(workspace: str, path: str, entry_type: str) -> Path:
         target.write_text("", encoding="utf-8")
     else:
         raise HTTPException(status_code=400, detail="type must be file or directory")
+    
+    directory_cache.invalidate(workspace)
     return target
 
 
@@ -119,6 +294,7 @@ def delete_entry(workspace: str, path: str) -> None:
         target.unlink()
     else:
         raise HTTPException(status_code=404, detail="Path not found")
+    directory_cache.invalidate(workspace)
 
 
 def rename_entry(workspace: str, path: str, new_name: str) -> Path:
@@ -130,6 +306,7 @@ def rename_entry(workspace: str, path: str, new_name: str) -> Path:
     if destination.exists():
         raise HTTPException(status_code=409, detail="Destination exists")
     source.rename(destination)
+    directory_cache.invalidate(workspace)
     return destination
 
 
@@ -140,6 +317,7 @@ def move_entry(workspace: str, source: str, destination: str) -> Path:
         raise HTTPException(status_code=409, detail="Destination exists")
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source_path), str(destination_path))
+    directory_cache.invalidate(workspace)
     return destination_path
 
 
@@ -155,6 +333,7 @@ def duplicate_entry(workspace: str, path: str, destination: str | None = None) -
     else:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    directory_cache.invalidate(workspace)
     return target
 
 
@@ -176,6 +355,7 @@ def write_file(workspace: str, path: str, content: str) -> None:
         raise HTTPException(status_code=400, detail="Cannot write to a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+    directory_cache.invalidate(workspace)
 
 
 def reveal_entry(workspace: str, path: str) -> None:

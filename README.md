@@ -19,7 +19,7 @@
 
 🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/websitecodeos/)
 
-**[Getting Started](#-getting-started)** · **[Download](#-download)** · **[Features](#-what-it-can-do)** · **[New in v3.0.0](#-new-in-v300)** · **[Rony Agent](#-rony-agent--the-chat-harness)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
+**[Getting Started](#-getting-started)** · **[Download](#-download)** · **[Features](#-what-it-can-do)** · **[New in v3.1.0](#-what-s-new-in-v310)** • **[New in v3.0.0](#-new-in-v300)** · **[Rony Agent](#-rony-agent--the-chat-harness)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
 
 </div>
 

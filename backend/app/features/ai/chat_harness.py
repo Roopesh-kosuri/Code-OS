@@ -57,9 +57,9 @@ from .sandbox.executor import (
     MAX_COMMAND_TIMEOUT_SECONDS,
     MAX_COMMAND_MEMORY_BYTES,
 )
-from .schemas import ChatMessage, ChatRequest, EditProposalRequest, FileChange
+from .schemas import ChatMessage, ChatRequest, EditProposalRequest, FileChange, ContextOverflowError
 from app.features.search.semantic_service import semantic_search
-from .service import provider_for, create_proposal, PROPOSAL_RE
+from .service import provider_for, create_proposal, apply_proposal, reject_proposal, PROPOSAL_RE
 from .sessions.server_manager import (
     ActiveServerSession,
     ServerSessionManager,
@@ -88,6 +88,7 @@ from .agents.agent_tools import (
     _clean_rel_path,
     AGENT_TOOLS,
 )
+from .providers.base import ProviderStreamEvent, ProviderToolCall, ProviderRequestError
 from .context_service import gather_context
 
 # -----------------------------------------------------------------------------
@@ -95,6 +96,7 @@ from .context_service import gather_context
 # -----------------------------------------------------------------------------
 from .harness import (
     MAX_AGENT_ITERATIONS,
+    MAX_HUGE_TASK_ITERATIONS,
     MAX_QUICK_TASK_ITERATIONS,
     MAX_TOOL_CALLS_PER_ITERATION,
     MAX_RETRY_BEFORE_ESCALATE,
@@ -109,7 +111,7 @@ from .harness import (
     log_and_flag_failure,
     _sse_event, _sse_status, _sse_checkpoint, _sse_token, _sse_tier_routing,
     _sse_ask_user, _sse_memory_updated, _sse_plan, _sse_approval_request,
-    _sse_proposal, _sse_command_result, _sse_metrics, _sse_done, _sse_error,
+    _sse_proposal, _sse_command_result, _sse_metrics, _sse_done, _sse_error, StreamReasoningFilter,
     PendingApproval, PendingUserResponse,
     _pending_approvals, _pending_user_responses,
     approve_action, reject_action, respond_to_user_question, clear_all_pending,
@@ -125,6 +127,7 @@ from .harness import (
     _classify_rules, _classify_task_effort, _is_deep_query, _is_quick_task_query,
     _has_escalate_marker, _response_is_done, _declares_tool_intent,
     _extract_heuristic_tool_calls, _parse_tool_calls_extended, _has_tool_calls_extended,
+    step_matches_work,
     _clean_rel_path, _read_file_cached, _find_mismatch_context, _validate_smart_edit,
     _handle_append_file, _handle_list_tests, _handle_run_single_test,
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
@@ -161,6 +164,17 @@ class ChatAgentRequest:
     vision_model: str | None = None
     vision_provider: str | None = None
     vision_base_url: str | None = None
+
+
+def _finalization_succeeded(event: str) -> bool | None:
+    """Read the finalizer's explicit outcome without trusting status prose."""
+    if "event: finalization" not in event:
+        return None
+    try:
+        payload = event.split("data: ", 1)[1].strip()
+        return bool(json.loads(payload).get("success"))
+    except (IndexError, json.JSONDecodeError, TypeError):
+        return False
 
 
 async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
@@ -227,7 +241,12 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             "details": f"Routed to Tier {tier} ({tier_label}) - {tier_reason}",
         })
 
-        max_iterations = 1 if tier == 0 else (MAX_QUICK_TASK_ITERATIONS if tier == 1 else MAX_AGENT_ITERATIONS)
+        max_iterations = (
+            1 if tier == 0 else
+            MAX_QUICK_TASK_ITERATIONS if tier == 1 else
+            MAX_HUGE_TASK_ITERATIONS if tier >= 3 else
+            MAX_AGENT_ITERATIONS
+        )
 
         # ── Step 2: Context Gathering & Memory Loading ───────────────────────
         project_memory = _load_project_memory(workspace)
@@ -248,22 +267,24 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 except Exception as exc:
                     log_and_flag_failure("active_file_reading", exc, {"attached_paths": request.attached_paths})
         else:
-            # Tier 2 Deep Task: Full budgeted RAG with symbol search & semantic retrieval
-            yield _sse_status("thinking", "Analyzing workspace and gathering budgeted grounding snippets...")
+            # Tier 2 Deep Task: Compact prompt - explore via tools (search/read) instead of heavy pre-injected context
+            yield _sse_status("thinking", "Preparing compact task environment...")
             try:
-                context = await gather_context(
-                    workspace=workspace,
-                    active_path=request.attached_paths[0] if request.attached_paths else None,
-                    open_tabs=request.attached_paths,
-                    query=user_query,
-                    provider_config={"provider": request.provider, "preset": request.provider},
-                )
+                context = {
+                    "workspace": workspace,
+                    "open_tabs": [Path(p).name for p in request.attached_paths] if request.attached_paths else [],
+                }
+                if request.attached_paths:
+                    p = ensure_within_workspace(workspace, request.attached_paths[0])
+                    if p.is_file():
+                        raw_c = _read_file_cached(p)
+                        context["active_file"] = {"name": p.name, "content": raw_c[:1500]}
             except Exception as exc:
-                logger.warning("chat_harness: gather_context failed: %s", exc)
+                logger.warning("chat_harness: context preparation failed: %s", exc)
 
             if user_query.strip():
                 try:
-                    _, rag_snippets = await _gather_budgeted_rag_context(workspace, user_query, request.attached_paths)
+                    _, rag_snippets = await _gather_budgeted_rag_context(workspace, user_query, request.attached_paths, max_chars=2000)
                 except Exception as exc:
                     _, sse_warn = log_and_flag_failure("rag_context_gathering", exc, {"workspace": workspace, "query": user_query})
                     yield sse_warn
@@ -362,16 +383,18 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         tools_executed_last_turn: int = 0
         intent_retried = False
         truncation_retries = 0
+        context_overflow_retried = False
         idle_timeout_retries = 0
         zero_tools_retries = 0
         retry_prompt_injected_count = 0
+        self_repair_nudges = 0
         audit_retried = False
         read_dedup_cache: dict[tuple[str, int, int], tuple[float, int, int]] = {}
 
         iteration = 0
         while iteration < max_iterations:
             # ── Mid-Task Auto-Escalation Check ───────────────────────────────
-            if tier == 1 and (total_tools_executed >= 4 or consecutive_failures > 0):
+            if tier == 1 and consecutive_failures >= 2:
                 logger.info("chat_harness: auto-escalating from Tier 1 to Tier 2 (tools=%d, failures=%d)", total_tools_executed, consecutive_failures)
                 tier = 2
                 max_iterations = MAX_AGENT_ITERATIONS
@@ -391,12 +414,15 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 messages[0] = ChatMessage(role="system", content=_build_system_prompt(workspace, tier, context, rag_snippets, project_memory))
 
             status_msg = "Rony Agent is streaming answer..." if tier == 0 else (
-                "Rony Agent is thinking..." if iteration == 0 else f"Rony Agent is working (step {iteration + 1})..."
+                "Rony Agent is thinking..." if iteration == 0 else f"Rony Agent is working (step {iteration + 1}/{max_iterations})..."
             )
             yield _sse_status("thinking", status_msg, round=iteration + 1, tier=tier)
 
             effective_messages = _compact_conversation_history(messages)
             full_response: list[str] = []
+            native_tool_calls: list[ToolCall] = []
+            incomplete_native_tool_call = False
+            stream_finish_reason: str | None = None
 
             # Tool availability: Tier 0 passes no tools (pure streaming answer)
             if tier >= 1:
@@ -418,14 +444,52 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             else:
                 active_tools = None
 
+            # Calculate tier-aware reasoning effort (Groq uses 'low' to conserve TPM and keep turn latency ~1s)
+            reasoning_effort_val = "low" if (tier == 1 or effective_prov_key == "groq") else ("medium" if tier >= 2 else None)
+
             try:
-                if active_tools:
+                # OpenAI-compatible adapters expose typed agent events.  Mocks
+                # and legacy providers retain the text path as compatibility
+                # fallback only; structured calls are never serialized to text.
+                has_typed_stream = callable(getattr(type(provider), "stream_agent", None))
+                if has_typed_stream:
+                    stream = provider.stream_agent(
+                        chat_request.model,
+                        effective_messages,
+                        chat_request.temperature,
+                        tools=active_tools,
+                        reasoning_effort=reasoning_effort_val,
+                    )
+                elif active_tools:
                     try:
                         stream = provider.stream_chat(
                             chat_request.model,
                             effective_messages,
                             chat_request.temperature,
                             tools=active_tools,
+                            reasoning_effort=reasoning_effort_val,
+                        )
+                    except TypeError:
+                        try:
+                            stream = provider.stream_chat(
+                                chat_request.model,
+                                effective_messages,
+                                chat_request.temperature,
+                                tools=active_tools,
+                            )
+                        except TypeError:
+                            stream = provider.stream_chat(
+                                chat_request.model,
+                                effective_messages,
+                                chat_request.temperature,
+                            )
+                else:
+                    try:
+                        stream = provider.stream_chat(
+                            chat_request.model,
+                            effective_messages,
+                            chat_request.temperature,
+                            reasoning_effort=reasoning_effort_val,
                         )
                     except TypeError:
                         stream = provider.stream_chat(
@@ -433,45 +497,135 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             effective_messages,
                             chat_request.temperature,
                         )
-                else:
-                    stream = provider.stream_chat(
-                        chat_request.model,
-                        effective_messages,
-                        chat_request.temperature,
-                    )
 
-                # Hard per-token idle watchdog (90.0s)
+                # First-byte (30.0s) and Inter-chunk stall watchdog (20.0s) with StreamReasoningFilter
+                reasoning_filter = StreamReasoningFilter()
                 stream_iter = stream.__aiter__()
+                first_token_received = False
+                current_timeout = 30.0
                 while True:
                     try:
-                        token = await asyncio.wait_for(stream_iter.__anext__(), timeout=90.0)
-                        full_response.append(token)
-                        yield _sse_token(token)
+                        token = await asyncio.wait_for(stream_iter.__anext__(), timeout=current_timeout)
+                        first_token_received = True
+                        current_timeout = 20.0
+                        if isinstance(token, ProviderStreamEvent):
+                            if token.type == "tool_calls":
+                                for call in token.tool_calls:
+                                    if call.complete and call.arguments is not None:
+                                        native_tool_calls.append(ToolCall(name=call.name, arguments=call.arguments, raw_text=call.arguments_json))
+                                    else:
+                                        incomplete_native_tool_call = True
+                                stream_finish_reason = token.finish_reason or stream_finish_reason
+                                continue
+                            if token.type == "incomplete_tool_call":
+                                incomplete_native_tool_call = True
+                                stream_finish_reason = token.finish_reason or stream_finish_reason
+                                continue
+                            if token.type == "finish":
+                                stream_finish_reason = token.finish_reason or stream_finish_reason
+                                continue
+                            if token.type == "retry":
+                                yield _sse_status(
+                                    "retry", token.content,
+                                    retry_delay_seconds=token.retry_after_seconds,
+                                    attempt=token.attempt, max_attempts=token.max_attempts,
+                                    is_rate_limit=token.is_rate_limit,
+                                )
+                                if token.retry_after_seconds:
+                                    current_timeout = max(current_timeout, token.retry_after_seconds + 35.0)
+                                continue
+                            if token.type == "reasoning":
+                                yield _sse_status("thinking", token.content)
+                                yield _sse_status("thinking_progress", f"Thinking… ({len(token.content.split())} tokens)", tokens=len(token.content.split()))
+                                continue
+                            token_text = token.content
+                        else:
+                            token_text = str(token)
+                        full_response.append(token_text)
+                        for ev_type, ev_content in reasoning_filter.feed(token_text):
+                            if ev_type == "token":
+                                yield _sse_token(ev_content)
+                            elif ev_type == "thinking":
+                                yield _sse_status("thinking", ev_content)
+                            elif ev_type == "thinking_tokens":
+                                yield _sse_status("thinking_progress", f"Thinking… ({ev_content} tokens)", tokens=ev_content)
+                            elif ev_type == "retry":
+                                yield _sse_status("retry", ev_content)
+                                # Adapt watchdog timeout if provider is in an active rate-limit cooldown
+                                m_delay = re.search(r"retrying in\s*(\d+)s", str(ev_content))
+                                if m_delay:
+                                    current_timeout = max(current_timeout, float(m_delay.group(1)) + 35.0)
                     except StopAsyncIteration:
+                        for ev_type, ev_content in reasoning_filter.flush():
+                            if ev_type == "token":
+                                yield _sse_token(ev_content)
+                            elif ev_type == "thinking":
+                                yield _sse_status("thinking", ev_content)
+                            elif ev_type == "thinking_tokens":
+                                yield _sse_status("thinking_progress", f"Thinking… ({ev_content} tokens)", tokens=ev_content)
+                            elif ev_type == "retry":
+                                yield _sse_status("retry", ev_content)
                         break
             except asyncio.TimeoutError:
-                logger.warning("chat_harness: 90s hard idle watchdog fired on LLM token stream (iteration %d). Discarding partial buffer.", iteration)
+                logger.warning("chat_harness: Provider stalled watchdog fired (iteration %d).", iteration)
                 full_response.clear()
-                if idle_timeout_retries == 0:
-                    idle_timeout_retries += 1
-                    yield _sse_status("thinking", "Generation timed out waiting for response (90s idle) — retrying with fresh prompt...")
-                    messages.append(ChatMessage(
-                        role="user",
-                        content="The previous attempt timed out waiting for tokens. Please emit your tool calls or response concisely now without preamble."
-                    ))
-                    iteration += 1
+                yield _sse_error("provider stalled")
+                recovery_payload = {
+                    "error": "Provider stalled — no data received within timeout limit.",
+                    "provider": effective_prov_key,
+                    "model": chat_request.model,
+                    "is_429": False,
+                    "suggested_models": [
+                        {"provider": "groq", "model": "openai/gpt-oss-120b", "name": "Groq GPT-OSS 120B"},
+                        {"provider": "gemini", "model": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
+                        {"provider": "nvidia-nim", "model": "minimaxai/minimax-m3", "name": "NVIDIA MiniMax M3"},
+                    ]
+                }
+                yield _sse_done(False, "Task stopped: provider stalled", recovery=recovery_payload)
+                return
+            except ContextOverflowError as ctx_err:
+                if not context_overflow_retried:
+                    context_overflow_retried = True
+                    logger.warning("chat_harness: Context overflow on %s (iteration %d): %s. Compacting conversation and retrying once.", effective_prov_key, iteration, ctx_err)
+                    yield _sse_status("retry", "Context too large — compacting and retrying once")
+                    messages = _compact_conversation_history(messages, keep_recent_turns=1)
+                    effective_messages = messages
+                    full_response.clear()
                     continue
                 else:
-                    yield _sse_error("Provider generation timed out after 90s — server stopped responding.")
-                    yield _sse_done(False, "Task stopped: Provider generation timed out after 90s.")
+                    logger.error("chat_harness: Context overflow persisted after compaction: %s", ctx_err)
+                    yield _sse_error(f"Context too large: {ctx_err}")
+                    recovery_payload = {
+                        "error": str(ctx_err),
+                        "provider": effective_prov_key,
+                        "model": chat_request.model,
+                        "is_429": False,
+                        "is_context_overflow": True,
+                        "suggested_models": [
+                            {"provider": "groq", "model": "openai/gpt-oss-120b", "name": "Groq GPT-OSS 120B"},
+                            {"provider": "gemini", "model": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
+                            {"provider": "nvidia-nim", "model": "minimaxai/minimax-m3", "name": "NVIDIA MiniMax M3"},
+                        ]
+                    }
+                    yield _sse_done(False, f"Task stopped: Context window exceeded on '{effective_prov_key}'.", recovery=recovery_payload)
                     return
             except Exception as exc:
                 logger.error("chat_harness: stream_chat error (iteration %d): %s", iteration, exc)
-                is_429 = "429" in str(exc) or "rate limit" in str(exc).lower() or "quota" in str(exc).lower()
-                is_404 = "404" in str(exc) or "not exist" in str(exc).lower() or "not found" in str(exc).lower()
+                status_code = exc.status_code if isinstance(exc, ProviderRequestError) else None
+                error_body = exc.body if isinstance(exc, ProviderRequestError) else str(exc)[:200]
+                category = exc.category if isinstance(exc, ProviderRequestError) else "unknown"
+                # Only an actual HTTP 429 is a rate limit.  Legacy adapters
+                # without typed errors are deliberately treated as unknown.
+                is_429 = status_code == 429
+                is_404 = status_code == 404
+                is_auth_error = status_code in (401, 403) or category == "authentication"
+                
                 provider_health_tracker.record_outcome(effective_prov_key, success=False, error_msg=str(exc), is_429=is_429, is_404=is_404)
 
-                # Attempt automatic fallback on 404, 429, or server outage
+                settings = await list_settings()
+                allow_local_fallback = bool(settings.get("ai.allow_local_fallback", False))
+
+                # Attempt automatic fallback ONLY if transient 5xx/network AND allowed
                 attempted_providers.add(effective_prov_key)
                 configured_keys = {
                     "groq": await get_api_key("groq"),
@@ -482,12 +636,22 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     "deepseek": await get_api_key("deepseek"),
                     "mistral": await get_api_key("mistral"),
                 }
-                fallback = provider_health_tracker.find_fallback_provider(attempted_providers, configured_keys)
-                if fallback and (is_429 or is_404 or "server error" in str(exc).lower() or "502" in str(exc) or "503" in str(exc) or "504" in str(exc)):
+
+                is_transient = category == "transient" or status_code in (500, 502, 503, 504)
+                can_fallback = is_transient and not is_auth_error and not is_404 and not is_429
+
+                fallback = None
+                if can_fallback:
+                    fallback = provider_health_tracker.find_fallback_provider(
+                        attempted_providers,
+                        configured_keys,
+                        allow_local_fallback=allow_local_fallback,
+                    )
+
+                if fallback:
                     fb_prov, fb_model, fb_url = fallback
                     attempted_providers.add(fb_prov)
-                    reason_label = "429 Rate Limit" if is_429 else ("404 Unknown Model" if is_404 else "Server Error")
-                    yield _sse_status("thinking", f"Provider '{effective_prov_key}' failed ({reason_label}). Automatically falling back to {fb_prov} ({fb_model})...")
+                    yield _sse_status("thinking", f"Provider '{effective_prov_key}' had transient issue. Trying fallback: {fb_prov} ({fb_model})...")
                     chat_request.provider = fb_prov
                     chat_request.model = fb_model
                     chat_request.base_url = fb_url
@@ -495,26 +659,104 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     effective_prov_key = fb_prov
                     try:
                         provider = await provider_for(chat_request)
-                        # Do not consume iteration count on provider switch
                         continue
                     except Exception as fb_err:
                         logger.error("Fallback provider initialization error: %s", fb_err)
 
+                # If no fallback or hard error, yield structured recovery payload
                 yield _sse_error(f"AI provider request error: {exc}")
-                consecutive_failures += 1
+                
+                # Build suggested alternative models from configured providers
+                suggested_alternatives = []
+                for prov_id, key_val in configured_keys.items():
+                    if key_val and prov_id != effective_prov_key:
+                        alt_model = "openai/gpt-oss-120b" if prov_id == "groq" else ("gemini-2.5-flash" if prov_id == "gemini" else ("minimaxai/minimax-m3" if prov_id == "nvidia-nim" else "gpt-4o"))
+                        suggested_alternatives.append({
+                            "provider": prov_id,
+                            "model": alt_model,
+                            "name": f"{prov_id.capitalize()} ({alt_model})"
+                        })
+                if not suggested_alternatives:
+                    suggested_alternatives.append({"provider": "groq", "model": "openai/gpt-oss-120b", "name": "Groq GPT-OSS 120B"})
+                    suggested_alternatives.append({"provider": "gemini", "model": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"})
+                    suggested_alternatives.append({"provider": "nvidia-nim", "model": "minimaxai/minimax-m3", "name": "NVIDIA MiniMax M3"})
 
-                if tier == 0 or consecutive_failures >= MAX_RETRY_BEFORE_ESCALATE:
-                    yield _sse_error(f"AI provider error: {exc}")
-                    yield _sse_done(False, f"AI provider error ({exc}). Please check your API key/rate limits or switch models in the dropdown.")
-                    return
+                recovery_payload = {
+                    "error": str(exc),
+                    "http_status": status_code,
+                    "error_body": error_body,
+                    "category": category,
+                    "provider": effective_prov_key,
+                    "model": chat_request.model,
+                    "is_auth_error": is_auth_error,
+                    "is_404": is_404,
+                    "is_429": is_429,
+                    "suggested_models": suggested_alternatives[:3],
+                }
 
-                messages.append(ChatMessage(role="assistant", content=f"[Error: AI provider call failed: {exc}]"))
-                iteration += 1
-                continue
+                if is_429:
+                    done_msg = f"Rate limit / quota reached on '{effective_prov_key}'. Please choose an alternative model or wait for quota reset."
+                elif is_auth_error:
+                    done_msg = f"Authentication error on '{effective_prov_key}'. Please check your API key in Settings."
+                elif is_404:
+                    done_msg = f"Model '{chat_request.model}' not found on '{effective_prov_key}'. Please select a different model."
+                elif category == "context_overflow":
+                    done_msg = f"Context window exceeded on '{effective_prov_key}'."
+                elif category == "transient":
+                    done_msg = f"Provider connection issue on '{effective_prov_key}'. Please try again or switch models."
+                else:
+                    done_msg = f"Provider request failed ({exc})."
 
+                yield _sse_done(False, done_msg, recovery=recovery_payload)
+                return
 
             response_text = "".join(full_response)
-            messages.append(ChatMessage(role="assistant", content=response_text))
+            # A native tool call is executable only after the adapter has
+            # accumulated every delta and validated the entire arguments JSON.
+            # Do not let compatibility text parsers inspect an incomplete call.
+            if incomplete_native_tool_call or (stream_finish_reason == "length" and not native_tool_calls):
+                if response_text.strip():
+                    messages.append(ChatMessage(role="assistant", content=_clean_response_text(response_text)))
+                if truncation_retries < 3:
+                    truncation_retries += 1
+                    yield _sse_status(
+                        "thinking",
+                        "Tool call was truncated — requesting one complete structured call before continuing...",
+                    )
+                    messages.append(ChatMessage(
+                        role="user",
+                        content=(
+                            "Your previous structured tool call was incomplete and was NOT executed. "
+                            "Emit ONE tool call only, with complete valid JSON arguments. For a large file, "
+                            "use the next sequential write_file/edit_file or append_file chunk; do not repeat prior chunks."
+                        ),
+                    ))
+                    iteration += 1
+                    continue
+                yield _sse_error("Tool call remained incomplete after continuation attempts; no partial action was executed.")
+                yield _sse_done(False, "Task stopped: provider repeatedly truncated a structured tool call.")
+                return
+            # Strip status retries, reasoning blocks, and think tags before saving to history
+            clean_hist = re.sub(r"\[STATUS_RETRY:[^\]]*\]\n?", "", response_text)
+            clean_hist = re.sub(r"<reasoning>[\s\S]*?</reasoning>", "", clean_hist, flags=re.IGNORECASE)
+            clean_hist = re.sub(r"<think>[\s\S]*?</think>", "", clean_hist, flags=re.IGNORECASE)
+            clean_hist = re.sub(r"<thought>[\s\S]*?</thought>", "", clean_hist, flags=re.IGNORECASE)
+            clean_hist = re.sub(r"<\|start\|>thought[\s\S]*?<\|end\|>", "", clean_hist, flags=re.IGNORECASE).strip()
+
+            if native_tool_calls:
+                synth_tcs = "\n".join(
+                    f"[TOOL_CALL: {tc.name}]\n{tc.raw_text or json.dumps(tc.arguments)}\n[/TOOL_CALL]"
+                    for tc in native_tool_calls
+                )
+                combined = f"{clean_hist}\n{synth_tcs}".strip() if clean_hist else synth_tcs
+                messages.append(ChatMessage(role="assistant", content=combined))
+            elif clean_hist:
+                messages.append(ChatMessage(role="assistant", content=clean_hist))
+            elif "[TOOL_CALL:" in response_text:
+                tool_calls_only = "\n".join(re.findall(r"\[TOOL_CALL:[^\]]+\][\s\S]*?\[/TOOL_CALL\]", response_text, re.IGNORECASE))
+                messages.append(ChatMessage(role="assistant", content=tool_calls_only or response_text))
+            else:
+                messages.append(ChatMessage(role="assistant", content=response_text))
 
             # Record success and daily token usage
             provider_health_tracker.record_outcome(effective_prov_key, success=True)
@@ -552,7 +794,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 return
 
             # ── Zero-Tool Permission, Retry & Give-Up Interceptor & Repetition Breaker ────
-            has_tools = _has_tool_calls_extended(response_text)
+            # Structured provider calls are the sole primary execution path.
+            # Text formats below remain a compatibility fallback for adapters
+            # that have no typed stream implementation.
+            has_tools = bool(native_tool_calls) or _has_tool_calls_extended(response_text, user_query)
             curr_prefix = re.sub(r"\s+", " ", response_text[:200]).strip().lower()
             clean_resp_lower = response_text.strip().lower()
 
@@ -618,24 +863,23 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             prev_response_prefix = curr_prefix
 
             # ── Truncation / Timeout Detection & Recovery Guard ────────────────
-            if _is_response_truncated(response_text):
-                if truncation_retries == 0:
+            if _is_response_truncated(response_text) or "[TRUNCATED" in response_text:
+                if truncation_retries < 3:
                     truncation_retries += 1
-                    yield _sse_status("thinking", "Response was cut off or timed out — instructing agent to chunk and shrink chunk size...")
+                    yield _sse_status("thinking", "Response was cut off or timed out — instructing agent to chunk and requesting continuation...")
                     messages.append(ChatMessage(
                         role="user",
                         content=(
-                            "Your previous response was cut off or timed out. "
-                            "Progressive Chunk Shrink Rule: Make the next chunk at most HALF the size of the one that timed out (around ~150–200 lines maximum). "
-                            "Use edit_file with original='' for part 1, then use append_file for subsequent smaller chunks. "
-                            "Please emit the first smaller chunk now."
+                            "Your previous output was cut off and was NOT executed. "
+                            "Emit ONE complete tool call with valid JSON only. For a large file, write the next sequential chunk "
+                            "using edit_file for its first chunk or append_file for later chunks. Do not write multiple files in one turn."
                         )
                     ))
                     iteration += 1
                     continue
                 else:
                     yield _sse_error("output too large for one response — chunking required")
-                    yield _sse_done(False, "Task stopped: Output exceeded provider limit or timed out.")
+                    yield _sse_done(False, "Task stopped: Output exceeded provider limit.")
                     return
 
             # ── Plan Parsing & Dynamic Tracking ──────────────────────────────
@@ -654,7 +898,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 return
 
             # ── Tool Execution ───────────────────────────────────────────────
-            tool_calls = _parse_tool_calls_extended(response_text) if has_tools else []
+            tool_calls = native_tool_calls or (_parse_tool_calls_extended(response_text, user_query) if has_tools else [])
 
             if not tool_calls and (iteration == 0 or _declares_tool_intent(response_text)):
                 heuristic_calls = _extract_heuristic_tool_calls(response_text, user_query)
@@ -675,6 +919,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             if tool_calls:
                 tools_executed_this_turn = 0
                 tool_results_list: list[str] = []
+                turn_all_tools_successful = True
+                executed_tools_this_turn: list[dict[str, Any]] = []
 
                 for tc in tool_calls[:MAX_TOOL_CALLS_PER_ITERATION]:
                     detail = tc.arguments.get("path") or tc.arguments.get("command") or tc.arguments.get("query") or tc.arguments.get("question") or tc.arguments.get("fact") or tc.arguments.get("target") or ""
@@ -687,7 +933,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     # Repeat-failure breaker
                     if consecutive_tool_failures.get(tool_sig, 0) >= 2:
                         skip_msg = f"Skipped after 2 failed attempts: {tc.name} ({detail})" if detail else f"Skipped after 2 failed attempts: {tc.name}"
-                        yield _sse_status("tool_skipped", skip_msg, tool=tc.name, detail=detail, reason="Failed twice consecutively")
+                        yield _sse_status("tool_skipped", skip_msg, tool=tc.name, detail=detail, reason="consecutive_failures")
                         skip_desc = f"{tc.name} ({detail})" if detail else tc.name
                         if skip_desc not in skipped_items:
                             skipped_items.append(skip_desc)
@@ -695,9 +941,34 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             tool_name=tc.name,
                             success=False,
                             output="",
-                            error=f"Tool call skipped: signature {tc.name} failed twice in a row."
+                            error=f"Tool call skipped: signature {tc.name} failed twice in a row.",
+                            failure_reason="consecutive_failures",
+                            failure_detail=skip_msg,
                         )
+                        turn_all_tools_successful = False
                         tool_results_list.append(f"[TOOL_RESULT: {tc.name}]\nSKIPPED: {result.error}\n[/TOOL_RESULT]")
+                        yield _sse_status(
+                            "tool_result",
+                            f"{tc.name} skipped",
+                            tool=tc.name, detail=detail, success=False,
+                            output=result.error,
+                            reason="consecutive_failures",
+                        )
+                        _append_activity_log(workspace, {
+                            "action_type": f"tool_{tc.name}",
+                            "target": detail or tc.name,
+                            "outcome": "skipped",
+                            "tier": tier,
+                            "token_count": 0,
+                            "details": result.error,
+                        })
+                        executed_tools_this_turn.append({
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                            "success": False,
+                            "output": "",
+                            "error": result.error,
+                        })
                         continue
 
                     # Execute tool
@@ -869,10 +1140,15 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 staged_changes[existing_idx] = change
                             else:
                                 staged_changes.append(change)
+                            try:
+                                parent_dir = ensure_within_workspace(workspace, str(Path(change.path).parent))
+                                parent_dir.mkdir(parents=True, exist_ok=True)
+                            except Exception:
+                                pass
                             result = ToolResult(
                                 tool_name="edit_file",
                                 success=True,
-                                output=f"Staged modification for '{change.path}'.",
+                                output=f"Successfully staged '{change.path}' ({len(change.updated)} chars). Changes are held in staging and will be written to disk on task completion. Proceed to create or edit remaining files.",
                                 error=""
                             )
                         else:
@@ -899,40 +1175,78 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             limit = min(max(1, int(tc.arguments.get("limit", 250) or 250)), 500)
                         except (ValueError, TypeError):
                             limit = 250
-                        cache_key = (rel_path, start_line, limit)
 
-                        target_stat = None
-                        try:
-                            target_file = ensure_within_workspace(workspace, rel_path)
-                            if target_file.is_file():
-                                st = target_file.stat()
-                                target_stat = (st.st_mtime, st.st_size)
-                        except Exception:
+                        # Check in-memory staged changes first
+                        staged_match = next((c for c in staged_changes if c.path == rel_path or Path(c.path).as_posix() == Path(rel_path).as_posix()), None)
+                        if staged_match:
+                            content_str = staged_match.updated
+                            lines = content_str.splitlines(keepends=True)
+                            total_lines = len(lines)
+                            end_idx = min(start_line - 1 + limit, total_lines)
+                            chunk = "".join(lines[start_line - 1:end_idx])
+                            result = ToolResult(
+                                tool_name="read_file",
+                                success=True,
+                                output=f"=== FILE: {rel_path} (Lines {start_line}-{end_idx} of {total_lines}, staged in-memory) ===\n{chunk}",
+                                error=""
+                            )
+                        else:
+                            cache_key = (rel_path, start_line, limit)
                             target_stat = None
+                            try:
+                                target_file = ensure_within_workspace(workspace, rel_path)
+                                if target_file.is_file():
+                                    st = target_file.stat()
+                                    target_stat = (st.st_mtime, st.st_size)
+                            except Exception:
+                                target_stat = None
 
-                        if target_stat and cache_key in read_dedup_cache:
-                            cached_mtime, cached_size, cached_turn = read_dedup_cache[cache_key]
-                            if cached_mtime == target_stat[0] and cached_size == target_stat[1]:
-                                receipt_output = (
-                                    f"=== FILE: {rel_path} (Lines {start_line}) ===\n"
-                                    f"(unchanged since turn {cached_turn} — refer to earlier full read)"
-                                )
-                                result = ToolResult(
-                                    tool_name="read_file",
-                                    success=True,
-                                    output=receipt_output,
-                                    error="",
-                                )
+                            if target_stat and cache_key in read_dedup_cache:
+                                cached_mtime, cached_size, cached_turn = read_dedup_cache[cache_key]
+                                if cached_mtime == target_stat[0] and cached_size == target_stat[1]:
+                                    receipt_output = (
+                                        f"=== FILE: {rel_path} (Lines {start_line}) ===\n"
+                                        f"(unchanged since turn {cached_turn} — refer to earlier full read)"
+                                    )
+                                    result = ToolResult(
+                                        tool_name="read_file",
+                                        success=True,
+                                        output=receipt_output,
+                                        error="",
+                                    )
+                                else:
+                                    result = _handle_read_file(workspace, tc.arguments)
+                                    if result.success and target_stat:
+                                        read_dedup_cache[cache_key] = (target_stat[0], target_stat[1], iteration + 1)
                             else:
                                 result = _handle_read_file(workspace, tc.arguments)
                                 if result.success and target_stat:
                                     read_dedup_cache[cache_key] = (target_stat[0], target_stat[1], iteration + 1)
-                        else:
-                            result = _handle_read_file(workspace, tc.arguments)
-                            if result.success and target_stat:
-                                read_dedup_cache[cache_key] = (target_stat[0], target_stat[1], iteration + 1)
                     elif tc.name == "list_directory":
+                        raw_dir = tc.arguments.get("path", ".")
+                        rel_dir = _clean_rel_path(raw_dir)
                         result = _handle_list_directory(workspace, tc.arguments)
+                        staged_in_dir = [
+                            c for c in staged_changes
+                            if rel_dir in (".", "") or c.path.startswith(rel_dir.rstrip("/") + "/")
+                        ]
+                        if staged_in_dir and not result.success:
+                            staged_lines = [f"├── {c.path} ({len(c.updated)} chars) [staged in-memory]" for c in staged_in_dir]
+                            result = ToolResult(
+                                tool_name="list_directory",
+                                success=True,
+                                output=f"=== DIRECTORY: {rel_dir}/ (staged in-memory) ===\n" + "\n".join(staged_lines),
+                                error=""
+                            )
+                        elif staged_changes and result.success:
+                            staged_lines = [f"  [STAGED IN-MEMORY] {c.path} ({len(c.updated)} chars)" for c in staged_changes]
+                            extra = "\n\nStaged files (held in-memory, will be finalized on task completion):\n" + "\n".join(staged_lines)
+                            result = ToolResult(
+                                tool_name="list_directory",
+                                success=True,
+                                output=(result.output.rstrip() + extra).strip(),
+                                error=""
+                            )
                     elif tc.name == "search_code":
                         result = _handle_search_code(workspace, tc.arguments)
                     elif tc.name == "semantic_search":
@@ -1194,10 +1508,27 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
                     total_tools_executed += 1
                     tools_executed_this_turn += 1
+                    executed_tools_this_turn.append({
+                        "name": tc.name,
+                        "arguments": tc.arguments,
+                        "success": bool(result.success),
+                        "output": str(result.output or ""),
+                        "error": str(result.error or ""),
+                    })
+                    if tc.name not in ("run_test", "run_command"):
+                        _append_activity_log(workspace, {
+                            "action_type": f"tool_{tc.name}",
+                            "target": detail or tc.name,
+                            "outcome": "success" if result.success else "failed",
+                            "tier": tier,
+                            "token_count": 0,
+                            "details": (str(result.output) if result.success else str(result.error))[:200],
+                        })
 
                     if result.success:
                         consecutive_tool_failures.pop(tool_sig, None)
                     else:
+                        turn_all_tools_successful = False
                         consecutive_tool_failures[tool_sig] = consecutive_tool_failures.get(tool_sig, 0) + 1
                         # Re-plan if DAG step failed
                         if dag_plan_steps and current_step < len(dag_plan_steps):
@@ -1209,12 +1540,26 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         tool_results_list.append(f"[TOOL_RESULT: {tc.name}]\n{result.output}\n[/TOOL_RESULT]")
                     else:
                         tool_results_list.append(f"[TOOL_RESULT: {tc.name}]\nERROR: {result.error}\n[/TOOL_RESULT]")
+                    failure_reason_str = result.failure_reason if isinstance(getattr(result, "failure_reason", None), str) else ""
+                    yield _sse_status(
+                        "tool_result",
+                        f"{tc.name} {'completed' if result.success else 'failed'}",
+                        tool=tc.name, detail=detail, success=bool(result.success),
+                        output=(str(result.output) if result.success else str(result.error))[:1000],
+                        reason=failure_reason_str,
+                    )
 
                 tools_executed_last_turn = tools_executed_this_turn
                 tool_results_text = "\n\n".join(tool_results_list)
 
-                # Advance DAG plan step if successful
-                if dag_plan_steps and current_step < len(dag_plan_steps):
+                # Advance DAG plan step if successful and mapped work completed
+                if (
+                    dag_plan_steps
+                    and current_step < len(dag_plan_steps)
+                    and tools_executed_this_turn
+                    and turn_all_tools_successful
+                    and step_matches_work(dag_plan_steps[current_step], executed_tools_this_turn)
+                ):
                     dag_plan_steps[current_step].status = "done"
                     current_step = min(current_step + 1, len(dag_plan_steps) - 1)
                     if current_step < len(dag_plan_steps) and dag_plan_steps[current_step].status == "pending":
@@ -1242,8 +1587,16 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         else:
                             yield _sse_status("audit", "✓ Post-generation structural audit passed cleanly.")
 
+                    finalization_ok = not staged_changes
                     async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
                         yield event
+                        outcome = _finalization_succeeded(event)
+                        if outcome is not None:
+                            finalization_ok = outcome
+                    if not finalization_ok:
+                        yield _sse_error("Task changes were not verified/applied; refusing a successful completion.")
+                        yield _sse_done(False, "Task stopped: staged changes failed final verification or approval.")
+                        return
                     duration_ms = (time.time() - start_time) * 1000.0
                     tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
                     _clear_interrupted_state(workspace)
@@ -1272,10 +1625,25 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     if has_any_error else ""
                 )
 
+                staged_names = {Path(c.path).name.lower() for c in staged_changes}
+                query_targets = re.findall(r"\b[\w-]+\.(?:py|java|c|cpp|h|hpp|ts|tsx|js|jsx|html|css|go|rs|rb|php|cs|json|md)\b", user_query.lower())
+                remaining_targets = [t for t in query_targets if t.lower() not in staged_names]
+
+                staged_summary = ""
+                if staged_changes:
+                    staged_summary = f"\nCurrently staged files ({len(staged_changes)}): " + ", ".join(c.path for c in staged_changes) + "\n"
+
+                next_step_hint = ""
+                if remaining_targets:
+                    next_step_hint = f"Next target to stage: '{remaining_targets[0]}'. (Do NOT re-create already staged files. Proceed directly to stage '{remaining_targets[0]}').\n"
+                elif staged_changes and not remaining_targets:
+                    next_step_hint = "All requested files have been successfully staged! Summarize your work and output [DONE].\n"
+
                 messages.append(ChatMessage(
                     role="user",
                     content=(
-                        f"Tool observation results:\n\n{tool_results_text}{error_recovery_note}\n\n"
+                        f"Tool observation results:\n\n{tool_results_text}{error_recovery_note}{staged_summary}\n"
+                        f"{next_step_hint}\n"
                         "Inspect the results above and directly answer the user's question or continue executing the next required step. If all tasks or checks are complete, summarize the outcome and output [DONE]."
                     )
                 ))
@@ -1316,24 +1684,36 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     else:
                         yield _sse_status("audit", "✓ Post-generation structural audit passed cleanly.")
 
-                # Honest completion guard: If generation query produced nothing
-                if _is_deep_query(user_query.lower(), request.attached_paths) and not staged_changes and total_tools_executed == 0:
-                    if zero_tools_retries == 0:
+                # Honest completion guard: In agent mode (Tier >= 1), require executed tools or staged proposals
+                if tier >= 1 and not staged_changes and total_tools_executed == 0:
+                    if zero_tools_retries < 1:
                         zero_tools_retries += 1
-                        yield _sse_status("thinking", "Plan registered. Prompting agent to emit execution tool calls for Step 1...")
+                        yield _sse_status("thinking", "Agent described actions without emitting tool calls — injecting self-repair nudge...")
                         messages.append(ChatMessage(
                             role="user",
-                            content="Plan registered. Please proceed immediately to execute Step 1 by emitting the required tool calls (e.g. edit_file or run_command). Do not output plain conversational prose."
+                            content=(
+                                "You described actions or tool calls but executed none. "
+                                "Emit the required tool call now in the required format (e.g. edit_file with original='' for new files or run_command). "
+                                "Do not output plain conversational narration or unexecuted descriptions."
+                            )
                         ))
                         iteration += 1
                         continue
                     else:
-                        yield _sse_error("Nothing was generated for requested artifact. Agent emitted prose instead of tool calls.")
-                        yield _sse_done(False, "Task failed: Nothing was generated for requested artifact.")
+                        yield _sse_error("Task failed: No tools were executed or proposals staged.")
+                        yield _sse_done(False, "Task failed: Agent emitted prose narration without executing tools.")
                         return
 
+                finalization_ok = not staged_changes
                 async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
                     yield event
+                    outcome = _finalization_succeeded(event)
+                    if outcome is not None:
+                        finalization_ok = outcome
+                if not finalization_ok:
+                    yield _sse_error("Task changes were not verified/applied; refusing a successful completion.")
+                    yield _sse_done(False, "Task stopped: staged changes failed final verification or approval.")
+                    return
 
                 duration_ms = (time.time() - start_time) * 1000.0
                 tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
@@ -1352,23 +1732,35 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
             if not has_tools:
                 tools_executed_last_turn = 0
-                if _is_deep_query(user_query.lower(), request.attached_paths) and not staged_changes and total_tools_executed == 0:
-                    if zero_tools_retries == 0:
+                if tier >= 1 and not staged_changes and total_tools_executed == 0:
+                    if zero_tools_retries < 1:
                         zero_tools_retries += 1
-                        yield _sse_status("thinking", "Plan registered. Prompting agent to emit execution tool calls for Step 1...")
+                        yield _sse_status("thinking", "Agent described actions without emitting tool calls — injecting self-repair nudge...")
                         messages.append(ChatMessage(
                             role="user",
-                            content="Plan registered. Please proceed immediately to execute Step 1 by emitting the required tool calls (e.g. edit_file or run_command). Do not output plain conversational prose."
+                            content=(
+                                "You described actions or tool calls but executed none. "
+                                "Emit the required tool call now in the required format (e.g. edit_file with original='' for new files or run_command). "
+                                "Do not output plain conversational narration or unexecuted descriptions."
+                            )
                         ))
                         iteration += 1
                         continue
                     else:
-                        yield _sse_error("Nothing was generated for requested artifact. Agent emitted prose instead of tool calls.")
-                        yield _sse_done(False, "Task failed: Nothing was generated for requested artifact.")
+                        yield _sse_error("Task failed: No tools were executed or proposals staged.")
+                        yield _sse_done(False, "Task failed: Agent emitted prose narration without executing tools.")
                         return
 
+                finalization_ok = not staged_changes
                 async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
                     yield event
+                    outcome = _finalization_succeeded(event)
+                    if outcome is not None:
+                        finalization_ok = outcome
+                if not finalization_ok:
+                    yield _sse_error("Task changes were not verified/applied; refusing a successful completion.")
+                    yield _sse_done(False, "Task stopped: staged changes failed final verification or approval.")
+                    return
 
                 duration_ms = (time.time() - start_time) * 1000.0
                 tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
@@ -1376,13 +1768,16 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 _append_activity_log(workspace, {
                     "action_type": "session_done",
                     "target": user_query[:100],
-                    "outcome": "success",
+                    "outcome": "success" if (total_tools_executed > 0 or staged_changes) else "failed",
                     "tier": tier,
                     "token_count": tokens_used,
                     "details": f"Completed in {iteration + 1} iterations, {total_tools_executed} tools",
                 })
                 yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
-                yield _sse_done(True)
+                if total_tools_executed > 0 or staged_changes:
+                    yield _sse_done(True, "All tasks completed and verified successfully.")
+                else:
+                    yield _sse_done(False, "Task completed with zero tools executed.")
                 return
 
             iteration += 1

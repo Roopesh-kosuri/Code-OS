@@ -8,7 +8,11 @@ from typing import Any, Dict, List, Optional
 
 from app.core.paths import ensure_within_workspace
 from app.features.ai.schemas import EditProposalRequest, FileChange
-from app.features.ai.service import create_proposal
+from app.features.ai.service import (
+    create_proposal as _svc_create_proposal,
+    apply_proposal as _svc_apply_proposal,
+    reject_proposal as _svc_reject_proposal,
+)
 from app.features.ai.indexing.code_intelligence import _scan_for_secrets, _update_architecture_doc
 from .approval_coordinator import PendingApproval, _pending_approvals, _ensure_git_checkpoint
 from .tool_executor import EDIT_APPROVAL_TIMEOUT_SECONDS
@@ -22,10 +26,35 @@ from .sse_streamer import (
 
 logger = logging.getLogger(__name__)
 
+def _get_create_proposal():
+    try:
+        from app.features.ai import chat_harness
+        return getattr(chat_harness, 'create_proposal', _svc_create_proposal)
+    except Exception:
+        return _svc_create_proposal
+
+def _get_apply_proposal():
+    try:
+        from app.features.ai import chat_harness
+        if hasattr(chat_harness, 'apply_proposal'):
+            return getattr(chat_harness, 'apply_proposal')
+    except Exception:
+        pass
+    return _svc_apply_proposal
+
+def _get_reject_proposal():
+    try:
+        from app.features.ai import chat_harness
+        if hasattr(chat_harness, 'reject_proposal'):
+            return getattr(chat_harness, 'reject_proposal')
+    except Exception:
+        pass
+    return _svc_reject_proposal
+
 def _get_edit_approval_timeout() -> float:
     try:
         from app.features.ai import chat_harness
-        return getattr(chat_harness, "EDIT_APPROVAL_TIMEOUT_SECONDS", 300.0)
+        return getattr(chat_harness, 'EDIT_APPROVAL_TIMEOUT_SECONDS', 300.0)
     except Exception:
         return 300.0
 
@@ -55,6 +84,7 @@ async def _finalize_staged_changes(
                     "details": critique_fb,
                 })
                 yield _sse_command_result("self_critique", critique_fb, 1, False)
+                yield _sse_event("finalization", {"success": False, "reason": "self_critique_rejected"})
                 return
             else:
                 yield _sse_status("self_critique", "✓ Self-critique passed: surgical changes match request intent.", outcome="passed")
@@ -80,6 +110,7 @@ async def _finalize_staged_changes(
             })
             yield _sse_command_result("secret_scan", secret_err, 1, False)
             yield _sse_error(secret_err)
+            yield _sse_event("finalization", {"success": False, "reason": "secret_scan_rejected"})
             return
 
         proposal_payload = EditProposalRequest(
@@ -87,7 +118,8 @@ async def _finalize_staged_changes(
             summary=f"Rony Agent: {len(staged_changes)} file(s) created/modified",
             changes=staged_changes,
         )
-        proposal = await create_proposal(proposal_payload)
+        create_proposal_fn = _get_create_proposal()
+        proposal = await create_proposal_fn(proposal_payload)
         proposal_id = proposal.id if hasattr(proposal, "id") else str(proposal)
         
         for change in staged_changes:
@@ -136,6 +168,7 @@ async def _finalize_staged_changes(
                 if err and "sensitive file" in err.lower():
                     yield _sse_error(err)
                     yield _sse_done(False, err)
+                    yield _sse_event("finalization", {"success": False, "reason": "checkpoint_failed"})
                     return
                 if new_init:
                     yield _sse_status("checkpoint", "initialized git repo for turn checkpoints")
@@ -147,8 +180,8 @@ async def _finalize_staged_changes(
                 if ran_test_before:
                     yield _sse_status("regression_guard", f"Baseline tests before apply: {sum_before}", phase="before", passed=p_before, failed=f_before)
 
-                from app.features.ai.service import apply_proposal
-                await apply_proposal(proposal_id)
+                apply_proposal_fn = _get_apply_proposal()
+                await apply_proposal_fn(proposal_id)
                 yield _sse_status("tool", f"Approved: Applied changes to {summary_paths}", tool="edit_file", detail=summary_paths)
                 yield _sse_command_result(f"edit {summary_paths}", f"Successfully applied changes to {summary_paths} (Proposal: {proposal_id})", 0, True)
 
@@ -179,17 +212,34 @@ async def _finalize_staged_changes(
                             })
 
                 # Post-Apply Read-Back: Confirm modified files exist on disk with updated content
+                read_back_verified = True
                 for c in staged_changes:
                     try:
                         full_p = ensure_within_workspace(workspace, c.path)
                         if full_p.is_file():
                             disk_content = full_p.read_text(encoding="utf-8", errors="replace")
-                            target_sample = c.updated[:100].strip()
-                            if target_sample in disk_content or not target_sample:
+                            target_updated = c.updated.strip()
+                            if not target_updated:
+                                matched = True
+                            elif len(target_updated) <= 2000:
+                                matched = target_updated in disk_content
+                            else:
+                                head_chunk = target_updated[:200]
+                                mid_idx = len(target_updated) // 2
+                                mid_chunk = target_updated[mid_idx:mid_idx + 200]
+                                tail_chunk = target_updated[-200:]
+                                matched = (head_chunk in disk_content) and (mid_chunk in disk_content) and (tail_chunk in disk_content)
+
+                            if matched:
                                 yield _sse_status("verified_disk", f"✓ change verified on disk: '{c.path}'", path=c.path, confirmed=True)
                             else:
+                                read_back_verified = False
                                 yield _sse_status("verified_disk", f"⚠️ Warning: Target content not fully confirmed on disk for '{c.path}'", path=c.path, confirmed=False)
+                        else:
+                            read_back_verified = False
+                            yield _sse_status("verified_disk", f"⚠️ Target file missing after apply: '{c.path}'", path=c.path, confirmed=False)
                     except Exception as rb_exc:
+                        read_back_verified = False
                         logger.warning("chat_harness: post-apply read-back failed for %s: %s", c.path, rb_exc)
 
                 # Living Architecture Document: Auto-update on multi-file changes or new modules
@@ -209,10 +259,22 @@ async def _finalize_staged_changes(
 
                 if commit_h:
                     yield _sse_checkpoint(turn_number, commit_h, touched_paths)
+
+                regressed = bool(ran_test_before and 'has_regression' in locals() and has_regression)
+                final_reason = "verified"
+                if not read_back_verified:
+                    final_reason = "read_back_failed"
+                elif regressed:
+                    final_reason = "test_regression"
+
+                yield _sse_event("finalization", {
+                    "success": read_back_verified and not regressed,
+                    "reason": final_reason,
+                })
             else:
-                from app.features.ai.service import reject_proposal
+                reject_proposal_fn = _get_reject_proposal()
                 try:
-                    await reject_proposal(proposal_id)
+                    await reject_proposal_fn(proposal_id)
                 except Exception:
                     pass
                 _append_activity_log(workspace, {
@@ -223,6 +285,7 @@ async def _finalize_staged_changes(
                     "details": f"User rejected changes to {summary_paths}",
                 })
                 yield _sse_command_result(f"edit {summary_paths}", f"User rejected changes to {summary_paths}.", 1, False)
+                yield _sse_event("finalization", {"success": False, "reason": "user_rejected"})
         except asyncio.TimeoutError:
             _append_activity_log(workspace, {
                 "action_type": "edit_proposal",
@@ -232,9 +295,11 @@ async def _finalize_staged_changes(
                 "details": f"Approval timed out after {int(_get_edit_approval_timeout())}s",
             })
             yield _sse_command_result(f"edit {summary_paths}", f"Edit approval timed out after {int(_get_edit_approval_timeout())}s.", 1, False)
+            yield _sse_event("finalization", {"success": False, "reason": "approval_timeout"})
         finally:
             _pending_approvals.pop(action_id, None)
 
     except Exception as exc:
-        logger.error("chat_harness: failed to create edit proposal: %s", exc)
+        logger.exception("chat_harness: failed to create edit proposal: %s", exc)
         yield _sse_error(f"Failed to create edit proposal: {exc}")
+        yield _sse_event("finalization", {"success": False, "reason": "finalizer_exception", "detail": str(exc)[:200]})

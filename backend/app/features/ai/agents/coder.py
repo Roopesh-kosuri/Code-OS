@@ -456,6 +456,13 @@ class CoderAgent(BaseAgent):
                 logs.append(f"[ERROR] LLM call failed during {phase_name} (auto-retry {auto_retries}/{max_retries_for_call}): {exc}")
                 await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
+                # Check if rate limit or circuit open to pause gracefully
+                try:
+                    from ..harness.tool_executor import handle_rate_limit_or_circuit_break
+                    await handle_rate_limit_or_circuit_break(job_id, task_id, exc)
+                except Exception as pause_err:
+                    logger.debug("Rate limit pause handler: %s", pause_err)
+
                 # Escalate to user after exhausting auto-retries
                 if auto_retries >= max_retries_for_call:
                     decision_res = await self.handle_llm_failure(job_id, task_id, exc)
@@ -468,7 +475,7 @@ class CoderAgent(BaseAgent):
                     elif action in ("switch_to_api", "change_model"):
                         auto_retries = 0  # Reset for new provider
                         new_provider = decision_res.get("provider") or "openai-compatible"
-                        new_model = decision_res.get("model") or "llama-3.3-70b-versatile"
+                        new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("minimaxai/minimax-m3" if new_provider == "nvidia-nim" else "llama-3.3-70b-versatile"))
                         new_key_provider = decision_res.get("api_key_provider") or new_provider
                         new_base_url = decision_res.get("base_url")
 

@@ -205,9 +205,10 @@ async def test_quality_gate_repair_loop(tmp_path):
     workspace = str(tmp_path)
 
     turn_count = 0
+    applied_content = ""
     mock_provider = MagicMock()
     async def mock_stream(*args, **kwargs):
-        nonlocal turn_count
+        nonlocal turn_count, applied_content
         turn_count += 1
         if turn_count == 1:
             # Turn 1: Emits HTML with broken anchor and unclosed tag, then attempts [DONE]
@@ -254,7 +255,8 @@ async def test_quality_gate_repair_loop(tmp_path):
         status_messages = [e for e in events if "event: status" in e]
         assert any("structural audit" in s.lower() for s in status_messages)
         
-        # Verify that turn 2 repaired the file and finalized successfully
+        # The mocked apply_proposal intentionally does not write to disk.  A
+        # repair is not a verified success until the finalizer can read it back.
         assert turn_count == 2
         done_events = [e for e in events if "event: done" in e]
-        assert any('"success": true' in d or '"success":true' in d for d in done_events)
+        assert any('"success": false' in d or '"success":false' in d for d in done_events)

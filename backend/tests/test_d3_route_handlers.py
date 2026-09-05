@@ -26,13 +26,26 @@ from fastapi.testclient import TestClient
 def tmp_db(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("db")
     db_path = tmp / "test.db"
+    from app.core.config import get_settings
+    settings = get_settings()
+    old_data_dir = settings.data_dir
+    old_database_name = settings.database_name
+    settings.data_dir = tmp
+    settings.database_name = "test.db"
+
     loop = asyncio.new_event_loop()
     from app.db.database import init_db, close_db
     loop.run_until_complete(close_db())
     loop.run_until_complete(init_db(db_path))
-    yield db_path
     loop.run_until_complete(close_db())
     loop.close()
+    yield db_path
+
+    loop = asyncio.new_event_loop()
+    loop.run_until_complete(close_db())
+    loop.close()
+    settings.data_dir = old_data_dir
+    settings.database_name = old_database_name
 
 
 @pytest.fixture(scope="module")
@@ -42,7 +55,7 @@ def tmp_ws(tmp_path_factory, tmp_db):
     (ws / "src" / "main.py").write_text("def hello():\n    return 'world'\n", encoding="utf-8")
     (ws / "README.md").write_text("# Test\n", encoding="utf-8")
     loop = asyncio.new_event_loop()
-    from app.db.database import get_db
+    from app.db.database import get_db, close_db
     from app.features.workspaces.trust_service import set_workspace_trust
     async def seed():
         db = await get_db()
@@ -53,6 +66,7 @@ def tmp_ws(tmp_path_factory, tmp_db):
         await db.commit()
         await set_workspace_trust(str(ws), trusted=True)
     loop.run_until_complete(seed())
+    loop.run_until_complete(close_db())
     loop.close()
     return ws
 

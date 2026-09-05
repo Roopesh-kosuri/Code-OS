@@ -1,5 +1,5 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
-SEMANTIC_SEARCH_TOP_K = 10
 """
 prompt_builder.py - System prompt construction, budgeted RAG context gathering, test snapshots, and critique.
 """
@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+SEMANTIC_SEARCH_TOP_K = 10
+
 from app.core.paths import normalize_workspace, ensure_within_workspace
 from app.features.ai.agents.agent_tools import _handle_search_code
 from app.features.search.semantic_service import semantic_search
@@ -22,7 +24,7 @@ import difflib
 import sys
 from app.features.ai.schemas import FileChange
 from app.features.ai.indexing.code_intelligence import _load_architecture_doc, _load_style_conventions_summary
-from .tool_executor import MAX_AGENT_ITERATIONS, MAX_TOOL_CALLS_PER_ITERATION, _read_file_cached
+from .tool_executor import MAX_AGENT_ITERATIONS, MAX_HUGE_TASK_ITERATIONS, MAX_QUICK_TASK_ITERATIONS, MAX_TOOL_CALLS_PER_ITERATION, _read_file_cached
 
 
 # ── System Prompts ───────────────────────────────────────────────────────────
@@ -89,98 +91,6 @@ You have direct, sandboxed access to the workspace through tools.
 
 Rules: Up to {max_tools} tools per turn, maximum {max_iterations} total turns. Output [DONE] when finished.
 """
-
-
-def _build_system_prompt(
-    workspace: str,
-    tier: int,
-    context: dict,
-    rag_snippet_summary: str = "",
-    project_memory: str = "",
-) -> str:
-    """Construct appropriate system prompt based on adaptive effort tier."""
-    if tier == 0:
-        return _LEAN_CHAT_SYSTEM_PROMPT
-
-    if tier == 1:
-        parts = [_QUICK_TASK_SYSTEM_PROMPT, f"\n## Workspace Root: {workspace}\n"]
-        if project_memory:
-            parts.append(f"\n## Project Memory (from RONY.md):\n{project_memory}\n")
-        active = context.get("active_file")
-        if active and isinstance(active, dict) and active.get("content"):
-            name = active.get("name", "unknown")
-            content = active["content"][:1200]
-            parts.append(f"\n## Active File ({name}):\n<untrusted_file_content path=\"{name}\">\n{content}\n</untrusted_file_content>")
-        return "\n".join(parts)
-
-    # Tier 2 Deep Task Prompt
-    base_prompt = (
-        _DEEP_TASK_SYSTEM_PROMPT
-        .replace("{max_tools}", str(MAX_TOOL_CALLS_PER_ITERATION))
-        .replace("{max_iterations}", str(MAX_AGENT_ITERATIONS))
-    )
-    prompt_parts = [base_prompt, f"\n## Workspace Root: {workspace}\n"]
-
-    if project_memory:
-        prompt_parts.append(f"\n## Project Memory (from RONY.md):\n{project_memory}\n")
-
-    git_info = context.get("git_status")
-    if git_info and isinstance(git_info, dict) and git_info.get("branch"):
-        prompt_parts.append(f"Git branch: {git_info['branch']}")
-        modified_files: list[str] = []
-        if isinstance(git_info.get("unstaged"), list):
-            modified_files.extend(str(f) for f in git_info["unstaged"] if f)
-        if isinstance(git_info.get("staged"), list):
-            modified_files.extend(str(f) for f in git_info["staged"] if f)
-        if modified_files:
-            prompt_parts.append(f"Modified files: {', '.join(modified_files[:10])}")
-
-    active = context.get("active_file")
-    if active and isinstance(active, dict) and active.get("content"):
-        name = active.get("name", "unknown")
-        content = active["content"][:1500]
-        prompt_parts.append(f"\n## Active File in Editor ({name}):\n<untrusted_file_content path=\"{name}\">\n{content}\n</untrusted_file_content>")
-
-    if rag_snippet_summary:
-        prompt_parts.append(f"\n{rag_snippet_summary}\n")
-
-    deps = context.get("dependencies", [])
-    if deps and isinstance(deps, list):
-        dep_str = ", ".join(f"{d['name']}@{d.get('version', '')}" for d in deps[:15] if isinstance(d, dict))
-        if dep_str:
-            prompt_parts.append(f"\nProject dependencies: {dep_str}")
-
-    # Inject Living Architecture Document (if present)
-    arch_doc = _load_architecture_doc(workspace)
-    if arch_doc:
-        prompt_parts.append(f"\n## Architecture Overview (from ARCHITECTURE.md):\n{arch_doc}\n")
-
-    # Inject Workspace Style Conventions
-    style_summary = _load_style_conventions_summary(workspace)
-    if style_summary:
-        prompt_parts.append(f"\n## Workspace Style & Conventions:\n{style_summary}\n")
-
-    try:
-        from app.features.mcp.mcp_manager import mcp_manager
-        active_mcp_tools = mcp_manager.get_all_tools()
-        if active_mcp_tools:
-            mcp_lines = ["\n## Available MCP (Model Context Protocol) Tools:"]
-            chars_budget = 1500
-            total_chars = 0
-            for t in active_mcp_tools:
-                line = f"- `{t.namespaced_name}`: {t.description[:100]}"
-                if total_chars + len(line) < chars_budget:
-                    mcp_lines.append(line)
-                    total_chars += len(line)
-                else:
-                    mcp_lines.append(f"- ... and {len(active_mcp_tools) - len(mcp_lines) + 1} more MCP tools.")
-                    break
-            prompt_parts.append("\n".join(mcp_lines))
-    except Exception:
-        pass
-
-    return "\n".join(prompt_parts)
-
 
 
 _CHAT_AGENT_SYSTEM_PROMPT = _DEEP_TASK_SYSTEM_PROMPT
@@ -300,10 +210,10 @@ async def _discover_and_run_test_snapshot(workspace: str, touched_files: list[st
         # Parse pytest output: e.g. "5 passed, 1 failed in 0.12s" or "3 passed in 0.05s" or "1 failed in 0.02s"
         passed_m = re.search(r"(\d+)\s+passed", combined_output)
         failed_m = re.search(r"(\d+)\s+failed", combined_output)
-        
+
         passed = int(passed_m.group(1)) if passed_m else 0
         failed = int(failed_m.group(1)) if failed_m else 0
-        
+
         if not passed_m and not failed_m and res.returncode == 0:
             passed = 1
         elif not passed_m and not failed_m and res.returncode != 0:
@@ -321,6 +231,7 @@ async def _gather_budgeted_rag_context(
     query: str,
     recent_files: list[str] | None = None,
     token_budget: int = 1200,
+    max_chars: int | None = None,
 ) -> tuple[list[dict], str]:
     """Gather symbol-aware code definitions and snippet windows under a fixed token budget."""
     if not query.strip() or not workspace:
@@ -328,7 +239,7 @@ async def _gather_budgeted_rag_context(
 
     grounding_blocks: list[str] = []
     total_chars = 0
-    max_chars = token_budget * 4
+    limit_chars = max_chars if max_chars is not None else (token_budget * 4)
 
     # 1. Symbol Search: extract identifiers (camelCase, PascalCase, snake_case)
     symbols = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", query))
@@ -369,7 +280,7 @@ async def _gather_budgeted_rag_context(
 
     top_matches = semantic_results[:3]
     for m in top_matches:
-        if total_chars >= max_chars:
+        if total_chars >= limit_chars:
             break
         rel_p = m.get("relative_path", m.get("path", ""))
         if not rel_p:
@@ -423,7 +334,7 @@ def _build_system_prompt(
     base_prompt = (
         _DEEP_TASK_SYSTEM_PROMPT
         .replace("{max_tools}", str(MAX_TOOL_CALLS_PER_ITERATION))
-        .replace("{max_iterations}", str(MAX_AGENT_ITERATIONS))
+        .replace("{max_iterations}", str(MAX_QUICK_TASK_ITERATIONS if tier == 1 else (MAX_HUGE_TASK_ITERATIONS if tier >= 3 else MAX_AGENT_ITERATIONS)))
     )
     prompt_parts = [base_prompt, f"\n## Workspace Root: {workspace}\n"]
 

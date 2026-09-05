@@ -1,4 +1,4 @@
-﻿"""
+"""
 test_coverage_security_boundaries.py - Comprehensive Behavioral Security Boundary Tests (Phase 1).
 
 Tests critical logic, boundary cases, and failure modes across:
@@ -838,6 +838,7 @@ async def test_python_debugger_commands_and_lifecycle(tmp_path):
     mock_client.request = AsyncMock(return_value={"status": "ok"})
 
     dummy_proc = MagicMock()
+    dummy_proc.pid = 99999
     dummy_proc.returncode = 0
     mock_session = DebugSession(
         process=dummy_proc,
@@ -847,30 +848,31 @@ async def test_python_debugger_commands_and_lifecycle(tmp_path):
         output_task=MagicMock(),
     )
 
-    # 1. continue
-    res_cont = await _handle_command(mock_client, mock_session, {"command": "continue"})
-    assert res_cont == {"status": "ok"}
-    mock_client.request.assert_called_with("continue", {"threadId": 1})
+    with patch("app.features.debug.python_debugger.untrack_process", new_callable=AsyncMock):
+        # 1. continue
+        res_cont = await _handle_command(mock_client, mock_session, {"command": "continue"})
+        assert res_cont == {"status": "ok"}
+        mock_client.request.assert_called_with("continue", {"threadId": 1})
 
-    # 2. step_over
-    await _handle_command(mock_client, mock_session, {"command": "step_over"})
-    mock_client.request.assert_called_with("next", {"threadId": 1})
+        # 2. step_over
+        await _handle_command(mock_client, mock_session, {"command": "step_over"})
+        mock_client.request.assert_called_with("next", {"threadId": 1})
 
-    # 3. step_in
-    await _handle_command(mock_client, mock_session, {"command": "step_in"})
-    mock_client.request.assert_called_with("stepIn", {"threadId": 1})
+        # 3. step_in
+        await _handle_command(mock_client, mock_session, {"command": "step_in"})
+        mock_client.request.assert_called_with("stepIn", {"threadId": 1})
 
-    # 4. step_out
-    await _handle_command(mock_client, mock_session, {"command": "step_out"})
-    mock_client.request.assert_called_with("stepOut", {"threadId": 1})
+        # 4. step_out
+        await _handle_command(mock_client, mock_session, {"command": "step_out"})
+        mock_client.request.assert_called_with("stepOut", {"threadId": 1})
 
-    # 5. get_stack
-    await _handle_command(mock_client, mock_session, {"command": "get_stack"})
-    mock_client.request.assert_called_with("stackTrace", {"threadId": 1})
+        # 5. get_stack
+        await _handle_command(mock_client, mock_session, {"command": "get_stack"})
+        mock_client.request.assert_called_with("stackTrace", {"threadId": 1})
 
-    # 6. stop terminates session
-    stop_res = await _handle_command(mock_client, mock_session, {"command": "stop"})
-    assert stop_res == {"success": True}
+        # 6. stop terminates session
+        stop_res = await _handle_command(mock_client, mock_session, {"command": "stop"})
+        assert stop_res == {"success": True}
 
 
 def test_approval_coordinator_undo_and_user_response(tmp_path):

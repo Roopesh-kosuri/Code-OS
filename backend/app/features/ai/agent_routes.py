@@ -1,3 +1,4 @@
+from .schemas import ResumeResponse, InterruptedTask
 import logging
 logger = logging.getLogger(__name__)
 import uuid
@@ -261,3 +262,50 @@ async def run_coder_mode(payload: CoderModeRequest) -> dict:
 
 
 
+
+
+@router.post("/{task_id}/resume", response_model=ResumeResponse)
+async def resume_agent_task(task_id: str) -> dict:
+    """Resume a paused agent task or job."""
+    from ...db.database import get_db
+    db = await get_db()
+    
+    # 1. Try finding by task_id in agent_tasks
+    cur = await db.execute("SELECT id, job_id, status FROM agent_tasks WHERE id = ?", (task_id,))
+    task_row = await cur.fetchone()
+    if task_row:
+        job_id = task_row["job_id"]
+        from .job_service import resume_job
+        await resume_job(job_id)
+        from .agents import permission_state as perm_state
+        if task_id in perm_state.pending_permission_events:
+            perm_state.pending_permission_decisions[task_id] = "retry"
+            perm_state.pending_permission_events[task_id].set()
+        return {"status": "resumed", "task_id": task_id, "job_id": job_id}
+
+    # 2. Try finding by job_id in agent_jobs
+    cur = await db.execute("SELECT id, status FROM agent_jobs WHERE id = ?", (task_id,))
+    job_row = await cur.fetchone()
+    if job_row:
+        from .job_service import resume_job
+        await resume_job(task_id)
+        return {"status": "resumed", "job_id": task_id}
+
+    raise HTTPException(status_code=404, detail="Task or Job not found")
+
+
+@router.post("/jobs/{job_id}/resume")
+async def resume_agent_job(job_id: str) -> dict:
+    """Resume a paused agent job."""
+    from .job_service import resume_job
+    ok = await resume_job(job_id)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Job is not in paused status or not found")
+    return {"status": "resumed", "job_id": job_id}
+
+
+@router.get("/interrupted", response_model=list[InterruptedTask])
+async def list_interrupted_tasks() -> list[dict]:
+    """Return all interrupted tasks that can be resumed after backend crash."""
+    from .step_tracker import get_interrupted_tasks
+    return await get_interrupted_tasks()

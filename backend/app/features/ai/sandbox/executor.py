@@ -289,9 +289,9 @@ async def _execute_command_async(
         )
         fail_reason = "not_found" if is_not_found else "exit_code"
         fail_detail = (
-            f"Command not found: {command}"
+            f"Command not found: {command}. Output: {raw_output.strip()[:300]}"
             if is_not_found
-            else f"Process exited with code {proc.returncode}"
+            else f"Process exited with code {proc.returncode}. Output: {raw_output.strip()[:400] or '(no stderr)'}"
         )
         return ToolResult(
             tool_name="run_command",
@@ -308,19 +308,18 @@ async def _execute_command_async(
             failure_detail=fail_detail,
         )
     except Exception as exc:
+        import traceback
         monitor.capture_exception(exc, context={"workspace": workspace, "command": command})
         is_fnf = isinstance(exc, FileNotFoundError)
         exc_reason = "not_found" if is_fnf else "exit_code"
-        exc_detail = f"Execution error: {exc}"
+        tb_lines = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)[-3:])
+        exc_msg = str(exc).strip() or type(exc).__name__
+        exc_detail = f"Execution error: {exc_msg}\n{tb_lines}".strip()
         return ToolResult(
             tool_name="run_command",
             success=False,
             output="",
-            error=json.dumps({
-                "reason": exc_reason,
-                "detail": exc_detail,
-                "command": command,
-            }),
+            error=json.dumps({"reason": exc_reason, "detail": exc_detail, "command": command}),
             failure_reason=exc_reason,
             failure_detail=exc_detail,
         )

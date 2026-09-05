@@ -6,6 +6,8 @@ class FileNode(BaseModel):
     path: str
     type: str
     children: list["FileNode"] = []
+    hasChildren: bool | None = None
+    size: int | None = None
 
 
 class TreeResponse(BaseModel):
@@ -56,4 +58,3 @@ class WriteRequest(BaseModel):
 class RevealRequest(BaseModel):
     workspace: str
     path: str
-

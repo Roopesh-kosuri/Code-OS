@@ -183,7 +183,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
   const [clarificationAnswer, setClarificationAnswer] = useState("");
   const [actionInProgress, setActionInProgress] = useState(false);
   const [recoveryProvider, setRecoveryProvider] = useState<string>("groq");
-  const [recoveryModel, setRecoveryModel] = useState<string>("llama-3.3-70b-versatile");
+  const [recoveryModel, setRecoveryModel] = useState<string>("openai/gpt-oss-120b");
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -539,9 +539,9 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                   { id: "groq/compound", label: "compound" },
                 ],
                 "nvidia-nim": [
-                  { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Coding" },
+                  { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Recommended" },
                   { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
-                  { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b", tag: "Recommended" },
+                  { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b" },
                   { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
                   { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
                   { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
@@ -810,9 +810,9 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                           { id: "gemma2-9b-it", label: "gemma2-9b" },
                         ],
                         "nvidia-nim": [
-                          { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Coding" },
+                          { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Recommended" },
                           { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
-                          { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b", tag: "Recommended" },
+                          { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b" },
                           { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
                           { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
                           { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },

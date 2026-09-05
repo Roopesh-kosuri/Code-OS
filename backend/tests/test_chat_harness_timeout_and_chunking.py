@@ -15,6 +15,7 @@ from app.features.ai.chat_harness import (
 )
 from app.features.ai.schemas import FileChange, EditProposalRequest
 from app.features.ai.providers.openai_compatible import OpenAICompatibleProvider
+from app.features.ai.providers.base import ProviderStreamEvent, ProviderToolCall
 
 
 def test_is_response_truncated_markers():
@@ -177,3 +178,53 @@ async def test_truncation_recovery_chunked_success(tmp_path):
         # Verify proposal was created
         proposal_events = [e for e in events if "event: proposal" in e or "prop-123" in e]
         assert len(proposal_events) > 0
+
+
+@pytest.mark.asyncio
+async def test_harness_executes_typed_call_without_text_parsing(tmp_path):
+    """The core loop must execute a complete ProviderToolCall before legacy parsing."""
+    workspace = str(tmp_path)
+
+    class TypedProvider:
+        def __init__(self):
+            self.turn = 0
+
+        async def stream_agent(self, *args, **kwargs):
+            self.turn += 1
+            if self.turn == 1:
+                yield ProviderStreamEvent(
+                    type="tool_calls",
+                    tool_calls=(ProviderToolCall(
+                        id="call_1", name="edit_file",
+                        arguments_json='{"path":"typed.py","original":"","updated":"value = 1\\n"}',
+                        arguments={"path": "typed.py", "original": "", "updated": "value = 1\n"},
+                        complete=True,
+                    ),),
+                    finish_reason="tool_calls",
+                )
+            else:
+                yield ProviderStreamEvent(type="text", content="Created and verified. [DONE]")
+
+        async def stream_chat(self, *args, **kwargs):
+            raise AssertionError("typed provider must not use the text compatibility path")
+
+    provider = TypedProvider()
+    req = ChatAgentRequest(
+        provider="mock", model="mock", workspace=workspace,
+        messages=[{"role": "user", "content": "create typed.py"}],
+    )
+    with patch("app.features.ai.chat_harness.provider_for", AsyncMock(return_value=provider)), \
+         patch("app.features.ai.chat_harness.create_proposal", AsyncMock(return_value=MagicMock(id="typed-prop"))), \
+         patch("app.features.ai.service.apply_proposal", AsyncMock()):
+        events = []
+        async for event in run_chat_agent(req):
+            events.append(event)
+            if "approval_request" in event:
+                match = re.search(r'"action_id":\s*"([^"]+)"', event)
+                if match:
+                    from app.features.ai.chat_harness import approve_action
+                    await approve_action(match.group(1))
+
+    full = "".join(events)
+    assert "Staging edit for typed.py" in full
+    assert '"success": true' in full

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from ...core.auth import get_token
 from ...core.paths import normalize_path, ensure_within_workspace
+from app.features.process_tracker import track_spawned_process, untrack_process
 from ..ai.sandbox.executor import MAX_COMMAND_MEMORY_BYTES, MAX_COMMAND_TIMEOUT_SECONDS, _monitor_process_governor
 
 router = APIRouter()
@@ -62,6 +63,7 @@ async def _enforce_timeout(process: asyncio.subprocess.Process) -> None:
 
 
 async def _terminate(session: DebugSession) -> None:
+    await untrack_process(session.process.pid)
     if session.process.returncode is None:
         session.process.kill()
         await session.process.wait()
@@ -71,6 +73,7 @@ async def _terminate(session: DebugSession) -> None:
 
 
 async def _reap_session(process_id: int, session: DebugSession) -> None:
+    await untrack_process(process_id)
     await session.process.wait()
     for task in (session.governor_task, session.timeout_task, session.output_task):
         if not task.done():
@@ -113,6 +116,7 @@ async def start_debugger(payload: DebugStartRequest) -> dict[str, int]:
         workspace=str(norm_workspace),
     )
     _sessions[process.pid] = session
+    await track_spawned_process(process.pid, 'python_debugger', str(norm_workspace))
     asyncio.create_task(_discard_output(process.stderr))
     asyncio.create_task(_reap_session(process.pid, session))
     return {"debug_port": port, "process_id": process.pid}

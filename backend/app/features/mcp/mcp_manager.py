@@ -6,7 +6,8 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+import secrets
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 
@@ -63,6 +64,8 @@ class MCPServerInstance:
         self.read_task: Optional[asyncio.Task] = None
         self.pending_requests: Dict[int, asyncio.Future] = {}
         self.request_counter: int = 0
+        self.concurrency_semaphore = asyncio.Semaphore(3)
+        self._pending_approvals: Set[str] = set()
 
     def _append_log(self, message: str):
         timestamp = time.strftime("%H:%M:%S")
@@ -569,7 +572,13 @@ class MCPManager:
                 all_tools.extend(instance.tools)
         return all_tools
 
-    async def call_tool(self, namespaced_tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    async def call_tool(
+        self,
+        namespaced_tool_name: str,
+        arguments: Dict[str, Any],
+        approval_future: Optional[asyncio.Future] = None,
+        action_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         parts = namespaced_tool_name.split("__")
         if len(parts) < 3 or parts[0] != "mcp":
             raise ValueError(f"Invalid namespaced tool name: '{namespaced_tool_name}' (expected mcp__<server>__<tool>)")
@@ -584,22 +593,53 @@ class MCPManager:
         if instance.status != "running":
             raise RuntimeError(f"MCP server '{server_id}' status is '{instance.status}', not running.")
 
-        res = await instance.send_request("tools/call", {
-            "name": raw_tool_name,
-            "arguments": arguments
-        })
+        # 1. If tool requires human approval, await approval without acquiring execution semaphore
+        if approval_future is not None:
+            aid = action_id or secrets.token_hex(8)
+            instance._pending_approvals.add(aid)
+            logger.info("MCP tool %s pending approval (not counted against semaphore)", raw_tool_name)
+            try:
+                approved = await approval_future
+                if not approved:
+                    return {
+                        "content": [{"type": "text", "text": "Tool call rejected by user"}],
+                        "is_error": True,
+                    }
+            finally:
+                instance._pending_approvals.discard(aid)
+            logger.info("MCP tool %s approved, acquiring semaphore", raw_tool_name)
 
-        if "error" in res:
+        # 2. Acquire semaphore for actual concurrent subprocess execution
+        if instance.concurrency_semaphore.locked():
+            logger.info("MCP tool %s queued (semaphore full)", raw_tool_name)
+
+        try:
+            async with asyncio.timeout(10.0):
+                await instance.concurrency_semaphore.acquire()
+        except asyncio.TimeoutError:
+            logger.error("MCP tool %s queue timeout (>10s)", raw_tool_name)
+            raise TimeoutError(f"MCP tool call queued for >10s: Server '{server_id}' busy with concurrent executions")
+
+        try:
+            logger.info("MCP tool %s executing concurrently", raw_tool_name)
+            res = await instance.send_request("tools/call", {
+                "name": raw_tool_name,
+                "arguments": arguments
+            })
+
+            if "error" in res:
+                return {
+                    "content": [{"type": "text", "text": res["error"].get("message", "Tool execution error")}],
+                    "is_error": True
+                }
+
+            result_obj = res.get("result", {})
             return {
-                "content": [{"type": "text", "text": res["error"].get("message", "Tool execution error")}],
-                "is_error": True
+                "content": result_obj.get("content", []),
+                "is_error": result_obj.get("isError", False)
             }
-
-        result_obj = res.get("result", {})
-        return {
-            "content": result_obj.get("content", []),
-            "is_error": result_obj.get("isError", False)
-        }
+        finally:
+            instance.concurrency_semaphore.release()
 
     async def shutdown(self):
         for instance in list(self.instances.values()):

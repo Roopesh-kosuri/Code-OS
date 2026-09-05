@@ -166,6 +166,8 @@ async def get_job(job_id: str) -> dict | None:
         "logs": json.loads(job_row["logs"]),
         "workspace_manifest": job_row["workspace_manifest"] if "workspace_manifest" in job_row.keys() else "{}",
         "user_request": job_row["user_request"] if "user_request" in job_row.keys() else "",
+        "pause_reason": job_row["pause_reason"] if "pause_reason" in job_row.keys() else "",
+        "retry_after": float(job_row["retry_after"]) if "retry_after" in job_row.keys() and job_row["retry_after"] is not None else 0.0,
         "tasks": tasks
     }
 
@@ -207,3 +209,41 @@ def register_subscribers() -> None:
             await add_job_log(job_id, message)
             
     event_bus.subscribe("agent_log", on_agent_log)
+
+
+async def pause_job(job_id: str, pause_reason: str, retry_after: float = 60.0) -> None:
+    """Pause an agent job due to rate limiting or circuit breaker with retry delay."""
+    db = await get_db()
+    await db.execute(
+        """
+        UPDATE agent_jobs
+        SET status = 'paused', errors = ?, pause_reason = ?, retry_after = ?
+        WHERE id = ?
+        """,
+        (pause_reason, pause_reason, retry_after, job_id)
+    )
+    await db.execute(
+        "UPDATE agent_tasks SET status = 'paused' WHERE job_id = ? AND status = 'running'",
+        (job_id,)
+    )
+    await db.commit()
+
+
+async def resume_job(job_id: str) -> bool:
+    """Resume a paused agent job."""
+    db = await get_db()
+    cursor = await db.execute("SELECT status FROM agent_jobs WHERE id = ?", (job_id,))
+    row = await cursor.fetchone()
+    await cursor.close()
+    if not row or row["status"] != "paused":
+        return False
+    await db.execute(
+        "UPDATE agent_jobs SET status = 'running', errors = '', pause_reason = '', retry_after = 0.0 WHERE id = ?",
+        (job_id,)
+    )
+    await db.execute(
+        "UPDATE agent_tasks SET status = 'running' WHERE job_id = ? AND status = 'paused'",
+        (job_id,)
+    )
+    await db.commit()
+    return True

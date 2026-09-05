@@ -6,12 +6,13 @@ Preserves the exact frontend event contract expected by aiStore.ts and Monaco ed
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
 def _sse_event(event_type: str, data: dict[str, Any]) -> str:
     """Format a typed Server-Sent Event conforming to the SSE wire standard."""
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    return f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
 def _sse_status(status_type: str, message: str, **kwargs: Any) -> str:
@@ -154,6 +155,117 @@ def _sse_error(message: str, **kwargs: Any) -> str:
     payload = {"message": message}
     payload.update(kwargs)
     return _sse_event("error", payload)
+
+
+class StreamReasoningFilter:
+    """Stream filter that intercepts reasoning tags, retry signals, and channel tokens.
+    Routes reasoning text to thinking events with periodic token counts and clean user text to token events.
+    """
+
+    def __init__(self) -> None:
+        self.buffer = ""
+        self.in_thought = False
+        self.thought_tag_close = ""
+        self.accumulated_thought = ""
+        self.last_reported_thought_tokens = 0
+
+    def feed(self, token: str) -> list[tuple[str, Any]]:
+        events: list[tuple[str, Any]] = []
+        self.buffer += token
+
+        # Intercept explicit retry events if yielded
+        if "[STATUS_RETRY:" in self.buffer:
+            m_retry = re.search(r"\[STATUS_RETRY:\s*([^\]]+)\]\n?", self.buffer)
+            if m_retry:
+                retry_msg = m_retry.group(1).strip()
+                events.append(("retry", retry_msg))
+                self.buffer = self.buffer[:m_retry.start()] + self.buffer[m_retry.end():]
+
+        while self.buffer:
+            if not self.in_thought:
+                m_open = re.search(r"(<think>|<thought>|<reasoning>|<\|start\|>thought|commentary\s+to=|<\|start\|>to=)", self.buffer, re.IGNORECASE)
+                if m_open:
+                    prefix = self.buffer[:m_open.start()]
+                    matched_str = m_open.group(0)
+                    if prefix:
+                        events.append(("token", prefix))
+                    self.in_thought = True
+                    matched_lower = matched_str.lower()
+                    if "<|start|>thought" in matched_lower or "<|start|>to=" in matched_lower:
+                        self.thought_tag_close = "<|end|>"
+                    elif "<think>" in matched_lower:
+                        self.thought_tag_close = "</think>"
+                    elif "<thought>" in matched_lower:
+                        self.thought_tag_close = "</thought>"
+                    elif "<reasoning>" in matched_lower:
+                        self.thought_tag_close = "</reasoning>"
+                    elif "commentary" in matched_lower:
+                        self.thought_tag_close = "\n"
+                    self.buffer = self.buffer[m_open.end():]
+                else:
+                    m_part = re.search(r"(<[^\n]{0,20}|commentary[^\n]{0,5})$", self.buffer, re.IGNORECASE)
+                    if m_part:
+                        safe_len = m_part.start()
+                        if safe_len > 0:
+                            events.append(("token", self.buffer[:safe_len]))
+                            self.buffer = self.buffer[safe_len:]
+                        break
+                    else:
+                        events.append(("token", self.buffer))
+                        self.buffer = ""
+                        break
+            else:
+                if self.thought_tag_close:
+                    idx = self.buffer.find(self.thought_tag_close)
+                    if idx != -1:
+                        thought_content = self.buffer[:idx]
+                        self.accumulated_thought += thought_content
+                        clean_thought = self.accumulated_thought.strip()
+                        if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
+                            token_estimate = max(1, len(clean_thought) // 4)
+                            events.append(("thinking", clean_thought))
+                            events.append(("thinking_tokens", token_estimate))
+                        self.buffer = self.buffer[idx + len(self.thought_tag_close):]
+                        self.in_thought = False
+                        self.thought_tag_close = ""
+                        self.accumulated_thought = ""
+                        self.last_reported_thought_tokens = 0
+                    else:
+                        self.accumulated_thought += self.buffer
+                        clean_thought = self.accumulated_thought.strip()
+                        if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
+                            token_estimate = max(1, len(clean_thought) // 4)
+                            # Emit token count every ~50 tokens
+                            if token_estimate - self.last_reported_thought_tokens >= 30:
+                                self.last_reported_thought_tokens = token_estimate
+                                events.append(("thinking_tokens", token_estimate))
+                        self.buffer = ""
+                        break
+                else:
+                    self.in_thought = False
+
+        return events
+
+    def flush(self) -> list[tuple[str, Any]]:
+        events: list[tuple[str, Any]] = []
+        if self.buffer:
+            if not self.in_thought:
+                events.append(("token", self.buffer))
+            else:
+                clean_thought = (self.accumulated_thought + self.buffer).strip()
+                if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
+                    token_estimate = max(1, len(clean_thought) // 4)
+                    events.append(("thinking", clean_thought))
+                    events.append(("thinking_tokens", token_estimate))
+            self.buffer = ""
+        elif self.in_thought and self.accumulated_thought:
+            clean_thought = self.accumulated_thought.strip()
+            if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
+                token_estimate = max(1, len(clean_thought) // 4)
+                events.append(("thinking", clean_thought))
+                events.append(("thinking_tokens", token_estimate))
+            self.accumulated_thought = ""
+        return events
 
 
 class SSEStreamer:

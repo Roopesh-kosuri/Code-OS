@@ -12,51 +12,39 @@ If you discover a security vulnerability in CODE OS, please report it responsibl
 
 ---
 
-## Summary of Security Controls
+## Security Controls Implemented in v3.1.0
 
-CODE OS implements defense-in-depth security measures across all layers:
+CODE OS v3.1.0 incorporates enterprise defense-in-depth security measures:
 
-1. **Workspace Trust Management**:
-   - Workspace paths must be explicitly trusted by the user before write operations or terminal executions are allowed.
-   - Restricted Mode blocks file modifications, command executions, and destructive git mutations.
+1. **Workspace Trust Management & Path Containment**:
+   - Workspace paths must be explicitly trusted before file writes or terminal commands execute.
+   - All paths are validated via `ensure_within_workspace` with symlink resolution, UNC/device path rejection (`\\`, `//`), tilde rejection (`~`), and null byte rejection (`\x00`).
+   - Verified via automated **Hypothesis property-based tests**.
 
-2. **Strict Path Sandboxing**:
-   - Every file system request resolves real paths to prevent symlink bypasses and `..` path traversal.
-   - Tilde (`~`) path expansion is strictly forbidden on client-supplied API parameters.
+2. **Durable Execution & State Machine Integrity (Phase 3)**:
+   - SQLite Write-Ahead Logging (WAL) ensures ACID transactions and crash consistency.
+   - Automated orphan job reaper reclaims crashed worker leases on startup.
+   - Persistent approval state machine with cryptographic step hashes prevents execution tampering.
 
-3. **Session Token Authentication**:
-   - High-privilege API routes require a 256-bit ephemeral session token (`Authorization: Bearer <session-token>`).
-   - Constant-time comparison (`secrets.compare_digest`) prevents timing side-channel attacks.
+3. **MCP Security & SSRF Defense (Phase 2.6)**:
+   - External MCP discovery is strictly confined to `github.com` domains.
+   - All discovered MCP servers require explicit user approval before execution (`enabled=False` by default).
 
-4. **Terminal Environment Sanitization**:
-   - Terminal subprocesses are executed with a strictly scoped environment allowlist.
-   - Sensitive credentials (`AWS_SECRET_ACCESS_KEY`, `GITHUB_TOKEN`, `DATABASE_PASSWORD`) are filtered out.
+4. **Encrypted Storage for Multi-Provider AI Keys (Phase 4 & 4B)**:
+   - API keys for all 14 providers (OpenAI, Anthropic, Gemini, DeepSeek, Moonshot Kimi, Qwen, GLM, xAI, Mistral, Groq, Cohere, NVIDIA NIM, OpenRouter, Ollama) are encrypted at rest using AES-GCM / OS Keyring.
+   - Session authentication uses 256-bit cryptographically secure tokens.
 
-5. **Encrypted Rest Storage for API Keys**:
-   - Master Fernet keys are stored in OS-native secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service via `keyring`).
-   - Fallback file key storage enforces POSIX `0600` permissions (`chmod 600`).
+5. **Fuzzed Parser Hardening (Phase 5)**:
+   - Code diff proposal parsers, URL extractors, and JSON processors undergo 30,000 automated fuzzing iterations with zero crashes or hangs.
 
-6. **Content Security Policy (CSP)**:
-   - Renderer window enforces restrictive CSP headers limiting frame ancestry, script origins, and network connections.
+6. **Supply Chain & Dependency Audit (Phase 5)**:
+   - All backend dependencies strictly pinned with `==` in `requirements.txt`.
+   - `pip-audit` reports **0 known vulnerabilities**.
+   - Software Bill of Materials documented in `docs/SBOM.md`.
 
 ---
 
 ## Known Limitations
 
-- **No Executable Code Signing**: Release binaries are not currently signed with Apple or Microsoft digital certificates.
-- **Third-Party AI Endpoint Exposure**: Outbound HTTP requests to external AI provider APIs (e.g. Anthropic, OpenAI) transmit prompt data to third-party endpoints as configured by the user.
-
----
-
-## Threat Model Summary
-
-- **In-Scope**:
-  - Path traversal & arbitrary file read/write escaping workspace boundary.
-  - Remote code execution (RCE) via untrusted backend API requests.
-  - Unauthorized access to stored AI provider API keys.
-  - Exfiltration of environment credentials via terminal subshells.
-
-- **Out-of-Scope**:
-  - Physical access or root-level privilege escalation on the host OS.
-  - Vulnerabilities in user-installed third-party OS packages or local LLM runtimes (Ollama).
-
+- **No Executable Code Signing**: Release binaries are currently unsigned (see `docs/CODE_SIGNING_PLAN.md` for rollout schedule).
+- **Third-Party AI Endpoint Exposure**: Outbound HTTP requests to external AI provider APIs transmit prompt data to configured third-party endpoints.

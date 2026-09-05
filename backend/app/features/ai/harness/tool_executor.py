@@ -21,12 +21,14 @@ from .compaction_manager import _generate_diff_summary
 logger = logging.getLogger(__name__)
 
 PROJECT_MEMORY_MAX_CHARS = 4000
-_file_cache: dict[str, tuple[float, str]] = {}
 
 # ── Constants & Limits ───────────────────────────────────────────────────────
 
-MAX_AGENT_ITERATIONS = 12
-MAX_QUICK_TASK_ITERATIONS = 4
+# Leashes cap one task's tool turns; they do not cap total file size because
+# large files are produced through sequential append_file turns.
+MAX_AGENT_ITERATIONS = 50
+MAX_HUGE_TASK_ITERATIONS = 150
+MAX_QUICK_TASK_ITERATIONS = 10
 MAX_TOOL_CALLS_PER_ITERATION = 5
 MAX_RETRY_BEFORE_ESCALATE = 3
 SEMANTIC_SEARCH_TOP_K = 10
@@ -34,7 +36,6 @@ COMMAND_APPROVAL_TIMEOUT_SECONDS = 60.0
 EDIT_APPROVAL_TIMEOUT_SECONDS = 300.0
 APPROVAL_TIMEOUT_SECONDS = 120.0
 COMPACTION_THRESHOLD_TURNS = 5
-PROJECT_MEMORY_MAX_CHARS = 1500
 
 # Strict allowlist for terminal commands that can run without interactive approval.
 # Fail CLOSED: anything not on this list requires explicit user approval.
@@ -209,6 +210,143 @@ OPENAI_HARNESS_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "edit_file",
+            "description": "Create a new file or edit an existing file in the workspace. To create a new file, set original to ''.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the file inside the workspace (e.g. 'src/Calculator.java').",
+                    },
+                    "original": {
+                        "type": "string",
+                        "description": "The exact verbatim text snippet to replace in the file, or '' if creating a new file.",
+                    },
+                    "updated": {
+                        "type": "string",
+                        "description": "The complete replacement content for the file or snippet.",
+                    },
+                },
+                "required": ["path", "original", "updated"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "append_file",
+            "description": "Append text content to a staged or existing file without requiring verbatim original. Used for chunked large-file generation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the file inside the workspace.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Content chunk to append to the file.",
+                    },
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read file contents from the workspace with optional pagination.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the file inside the workspace.",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Line number to start reading from (1-indexed). Default 1.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to read (default 250, max 500).",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_directory",
+            "description": "List files and subdirectories in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to directory inside workspace. Use '' or '.' for root.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_code",
+            "description": "Perform fast ripgrep/regex search across workspace files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Text pattern or regex to search for.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Execute a shell or terminal command in the workspace directory (e.g. 'javac Calculator.java && java Calculator', 'pytest', 'npm test').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The exact shell command line string to execute.",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_test",
+            "description": "Run the test suite or a specific test file/command in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Test command to execute (e.g. 'pytest', 'npm test', 'mvn test').",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "list_tests",
             "description": "Discover all pytest test node IDs in the workspace without executing them (runs pytest --collect-only -q). Read-only.",
             "parameters": {
@@ -231,6 +369,115 @@ OPENAI_HARNESS_TOOLS = [
                     },
                 },
                 "required": ["test_node_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "take_screenshot",
+            "description": "Capture visual rendering screenshot of active HTML preview or application window.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["preview", "app_window"],
+                        "description": "Target rendering mode ('preview' for HTML or 'app_window' for desktop shell).",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Relative path to the HTML file or URL to preview.",
+                    },
+                    "question": {
+                        "type": "string",
+                        "description": "Visual question to analyze.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": "Ask the user a clarifying multiple-choice or confirmation question.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to ask the user.",
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of options for user selection.",
+                    },
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory_write",
+            "description": "Persist a long-term user preference or project convention into .code-os/MEMORY.md.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fact": {
+                        "type": "string",
+                        "description": "The project fact, rule, or preference to remember.",
+                    },
+                },
+                "required": ["fact"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_references",
+            "description": "Find all code references for a given symbol in the workspace AST index.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Symbol name to find references for.",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "go_to_definition",
+            "description": "Locate definition location (file, line, column) for a given symbol.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Symbol name to locate definition for.",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Get structured git diff of uncommitted workspace changes.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
             },
         },
     },
@@ -311,11 +558,16 @@ def _is_command_safe(command: str, workspace: str = "") -> bool:
 def _read_file_cached(full_path: Path) -> str:
     """Read file content, reusing cached result if file mtime hasn't changed."""
     str_path = str(full_path.resolve())
-    mtime = full_path.stat().st_mtime
+    try:
+        mtime = full_path.stat().st_mtime
+    except Exception:
+        mtime = 0.0
     cached = _file_read_cache.get(str_path)
     if cached and cached[0] == mtime:
         return cached[1]
     content = full_path.read_text(encoding="utf-8", errors="replace")
+    if len(_file_read_cache) >= 1000:
+        _file_read_cache.pop(next(iter(_file_read_cache)), None)
     _file_read_cache[str_path] = (mtime, content)
     return content
 
@@ -610,3 +862,115 @@ def _handle_run_single_test(workspace: str, arguments: dict) -> ToolResult:
         return ToolResult(tool_name="run_single_test", success=False, output="", error=f"Test timed out after 30s: {node_id_clean}")
     except Exception as exc:
         return ToolResult(tool_name="run_single_test", success=False, output="", error=f"Execution error: {exc}")
+
+async def handle_rate_limit_or_circuit_break(job_id: str, task_id: str, exc: Exception) -> bool:
+    """
+    Detects 429 rate limit or open circuit breaker errors and transitions the task/job
+    to 'paused' status instead of 'failed'.
+    """
+    from ..provider_health import CircuitOpenError, RateLimitError
+    from ..job_service import pause_job, add_job_log
+
+    is_rate_limit = isinstance(exc, RateLimitError) or "429" in str(exc) or "rate limit" in str(exc).lower()
+    is_circuit_open = isinstance(exc, CircuitOpenError) or "circuit" in str(exc).lower() and "open" in str(exc).lower()
+    is_disk_full = (isinstance(exc, OSError) and (getattr(exc, "errno", None) == 28 or "space" in str(exc).lower())) or "disk full" in str(exc).lower()
+
+    if is_rate_limit or is_circuit_open or is_disk_full:
+        retry_after = getattr(exc, "retry_after", 60.0)
+        if is_disk_full:
+            pause_reason = f"Disk full: {exc}"
+        else:
+            pause_reason = f"Provider rate limit or circuit open: {exc}"
+        await pause_job(job_id, pause_reason, retry_after=retry_after)
+        await add_job_log(job_id, f"[PAUSED] Task paused due to {pause_reason}. Retry after: {retry_after}s.")
+        return True
+
+    return False
+
+from dataclasses import dataclass, asdict
+
+@dataclass
+class ToolResult:
+    success: bool
+    output: str = ""
+    error: str = ""
+    data: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "success": self.success,
+            "output": self.output,
+            "error": self.error,
+            "data": self.data or {},
+        }
+
+
+async def execute_tool_idempotent(
+    task_id: str,
+    job_id: str,
+    step_num: int,
+    tool_name: str,
+    tool_args: dict,
+    executor_fn: Optional[Any] = None,
+) -> ToolResult:
+    """Execute a tool with hash-based idempotency check and write-ahead logging."""
+    import hashlib
+    import asyncio
+    step_id = f"step_{task_id}_{step_num}"
+    payload = {"tool": tool_name, "args": tool_args}
+    payload_hash = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    
+    from app.db.database import get_pool
+    pool = await get_pool()
+    
+    # 1. Check if this exact step was already completed in task_steps
+    rows = await pool.read_query(
+        "SELECT result_json FROM task_steps WHERE task_id = ? AND payload_hash = ? AND status = 'completed'",
+        (task_id, payload_hash)
+    )
+    if rows and rows[0]["result_json"]:
+        logger.info("Step %d for task %s already completed, returning cached result", step_num, task_id)
+        try:
+            res_dict = json.loads(rows[0]["result_json"])
+            return ToolResult(
+                success=res_dict.get("success", True),
+                output=res_dict.get("output", ""),
+                error=res_dict.get("error", ""),
+                data=res_dict.get("data", {}),
+            )
+        except Exception:
+            pass
+
+    # 2. Write-ahead log: pending -> running
+    from ..step_tracker import log_step_pending, mark_step_running, mark_step_completed, mark_step_failed
+    await log_step_pending(task_id, job_id, step_num, "tool_call", payload)
+    await mark_step_running(step_id)
+
+    try:
+        if executor_fn is not None:
+            if asyncio.iscoroutinefunction(executor_fn):
+                raw_res = await executor_fn(tool_name, tool_args)
+            else:
+                raw_res = executor_fn(tool_name, tool_args)
+        else:
+            raw_res = ToolResult(success=True, output=f"Executed {tool_name} successfully", data=tool_args)
+
+        if isinstance(raw_res, ToolResult):
+            result = raw_res
+        elif isinstance(raw_res, dict):
+            result = ToolResult(
+                success=raw_res.get("success", True),
+                output=raw_res.get("output", str(raw_res)),
+                error=raw_res.get("error", ""),
+                data=raw_res,
+            )
+        else:
+            result = ToolResult(success=True, output=str(raw_res))
+
+        await mark_step_completed(step_id, result.to_dict())
+        return result
+    except Exception as exc:
+        await mark_step_failed(step_id, str(exc))
+        # Check if rate limit or circuit break to pause task gracefully
+        await handle_rate_limit_or_circuit_break(job_id, task_id, exc)
+        raise
