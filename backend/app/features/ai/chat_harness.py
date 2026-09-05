@@ -1003,6 +1003,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         status_desc = "Scanning for unreferenced / orphaned files..."
                     elif tc.name == "update_architecture_doc":
                         status_desc = "Refreshing ARCHITECTURE.md..."
+                    elif tc.name.startswith("browser_"):
+                        status_desc = f"Browser: {tc.name} ({detail})..."
+                    elif tc.name in ("screen_screenshot", "mouse_click", "keyboard_type", "hotkey", "open_app", "list_windows", "focus_window"):
+                        status_desc = f"Computer: {tc.name} ({detail})..."
                     elif tc.name.startswith("mcp__"):
                         status_desc = f"Executing MCP tool: {tc.name}..."
 
@@ -1029,6 +1033,198 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         result = _find_dead_code(workspace, tc.arguments.get("paths"))
                     elif tc.name == "update_architecture_doc":
                         result = _update_architecture_doc(workspace, tc.arguments.get("reason") or "Manual tool invocation")
+                    elif tc.name.startswith("browser_"):
+                        from app.features.automation.browser_controller import (
+                            get_browser_controller, is_browser_trusted, trust_browser
+                        )
+                        b_ctrl = get_browser_controller(workspace)
+                        if not is_browser_trusted(workspace) and not getattr(chat_request, "_browser_approved_this_session", False):
+                            action_id = str(uuid.uuid4())
+                            pending_b = PendingApproval(
+                                action_id=action_id,
+                                action_type="browser",
+                                detail=f"{tc.name} {detail}".strip(),
+                                reason="Rony Agent requests permission to launch and control the browser in this workspace.",
+                                workspace=workspace,
+                                command=tc.name,
+                            )
+                            _pending_approvals[action_id] = pending_b
+                            yield _sse_approval_request(
+                                action_id=action_id,
+                                action_type="browser",
+                                detail=pending_b.detail,
+                                reason=pending_b.reason,
+                                command=tc.name,
+                            )
+                            try:
+                                await asyncio.wait_for(pending_b.event.wait(), timeout=COMMAND_APPROVAL_TIMEOUT_SECONDS)
+                                if pending_b.approved:
+                                    setattr(chat_request, "_browser_approved_this_session", True)
+                                    if pending_b.always_allow:
+                                        trust_browser(workspace)
+                                    yield _sse_status("tool", f"Approved: Browser access granted ({tc.name})...", tool=tc.name)
+                                else:
+                                    denied_msg = f"Browser action '{tc.name}' was rejected by user."
+                                    yield _sse_status("tool", denied_msg, tool=tc.name)
+                                    result = ToolResult(tool_name=tc.name, success=False, output="", error=denied_msg, failure_reason="user_denied", failure_detail=denied_msg)
+                                    _pending_approvals.pop(action_id, None)
+                                    continue
+                            except asyncio.TimeoutError:
+                                timeout_msg = "Approval timed out for browser access."
+                                yield _sse_status("tool_error", timeout_msg, tool=tc.name)
+                                result = ToolResult(tool_name=tc.name, success=False, output="", error=timeout_msg, failure_reason="approval_timeout", failure_detail=timeout_msg)
+                                _pending_approvals.pop(action_id, None)
+                                continue
+                            finally:
+                                _pending_approvals.pop(action_id, None)
+
+                        try:
+                            if tc.name == "browser_open":
+                                u = tc.arguments.get("url", "")
+                                res_open = await b_ctrl.open(u)
+                                result = ToolResult(
+                                    tool_name="browser_open",
+                                    success=res_open.get("success", True),
+                                    output=f"Opened {res_open.get('url')} [Status: {res_open.get('status')}] - Title: '{res_open.get('title')}'",
+                                    data=res_open,
+                                )
+                            elif tc.name == "browser_screenshot":
+                                res_shot = await b_ctrl.screenshot(tc.arguments.get("filename"))
+                                yield _sse_status(
+                                    "tool",
+                                    f"Screenshot captured: {res_shot.get('filename')}",
+                                    tool="browser_screenshot",
+                                    screenshot_path=res_shot.get("path"),
+                                    screenshot_base64=res_shot.get("base64"),
+                                )
+                                result = ToolResult(
+                                    tool_name="browser_screenshot",
+                                    success=True,
+                                    output=f"Screenshot captured at: {res_shot['path']} ({res_shot['size_bytes']} bytes)",
+                                    data=res_shot,
+                                )
+                            elif tc.name == "browser_console_logs":
+                                logs = await b_ctrl.console_logs(tc.arguments.get("level", "error"))
+                                log_txt = json.dumps(logs, indent=2) if logs else "No console errors detected."
+                                result = ToolResult(
+                                    tool_name="browser_console_logs",
+                                    success=True,
+                                    output=f"Browser Console Logs ({len(logs)} entries):\n{log_txt}",
+                                    data={"logs": logs},
+                                )
+                            elif tc.name == "browser_network_errors":
+                                net_errs = await b_ctrl.network_errors()
+                                net_txt = json.dumps(net_errs, indent=2) if net_errs else "No network errors detected."
+                                result = ToolResult(
+                                    tool_name="browser_network_errors",
+                                    success=True,
+                                    output=f"Browser Network Errors ({len(net_errs)} entries):\n{net_txt}",
+                                    data={"errors": net_errs},
+                                )
+                            elif tc.name == "browser_click":
+                                c_res = await b_ctrl.click(tc.arguments.get("selector", ""))
+                                result = ToolResult(tool_name="browser_click", success=True, output=f"Clicked selector: {tc.arguments.get('selector')}", data=c_res)
+                            elif tc.name == "browser_type":
+                                t_res = await b_ctrl.type(tc.arguments.get("selector", ""), tc.arguments.get("text", ""))
+                                result = ToolResult(tool_name="browser_type", success=True, output=f"Typed text into {tc.arguments.get('selector')}", data=t_res)
+                            elif tc.name == "browser_wait_for":
+                                w_res = await b_ctrl.wait_for(tc.arguments.get("selector", ""), float(tc.arguments.get("timeout", 10.0)))
+                                result = ToolResult(tool_name="browser_wait_for", success=True, output=f"Element ready: {tc.arguments.get('selector')}", data=w_res)
+                            elif tc.name == "browser_scroll":
+                                s_res = await b_ctrl.scroll(tc.arguments.get("direction", "down"))
+                                result = ToolResult(tool_name="browser_scroll", success=True, output=f"Scrolled {tc.arguments.get('direction', 'down')}", data=s_res)
+                            elif tc.name == "browser_close":
+                                await b_ctrl.close()
+                                result = ToolResult(tool_name="browser_close", success=True, output="Browser context closed.")
+                            else:
+                                result = ToolResult(tool_name=tc.name, success=False, error=f"Unknown browser tool: {tc.name}")
+                        except Exception as b_exc:
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=f"Browser error: {b_exc}")
+
+                    elif tc.name in ("screen_screenshot", "mouse_click", "keyboard_type", "hotkey", "open_app", "list_windows", "focus_window"):
+                        from app.features.automation.computer_controller import get_computer_controller
+                        from app.features.settings.service import get_setting
+
+                        comp_enabled = await get_setting("automation.computer_use_enabled")
+                        if str(comp_enabled).lower() != "true":
+                            err_msg = "Computer use is disabled in Settings. Enable 'Computer Use' under Settings > Automation to authorize."
+                            yield _sse_status("tool_error", err_msg, tool=tc.name)
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=err_msg, failure_reason="computer_use_disabled")
+                        else:
+                            c_ctrl = get_computer_controller(workspace)
+                            action_id = str(uuid.uuid4())
+                            pending_c = PendingApproval(
+                                action_id=action_id,
+                                action_type="computer",
+                                detail=f"{tc.name} ({detail})",
+                                reason=f"Authorization required for desktop action: {tc.name}",
+                                workspace=workspace,
+                                command=tc.name,
+                            )
+                            _pending_approvals[action_id] = pending_c
+                            yield _sse_approval_request(
+                                action_id=action_id,
+                                action_type="computer",
+                                detail=pending_c.detail,
+                                reason=pending_c.reason,
+                                command=tc.name,
+                            )
+                            try:
+                                await asyncio.wait_for(pending_c.event.wait(), timeout=COMMAND_APPROVAL_TIMEOUT_SECONDS)
+                                if pending_c.approved:
+                                    yield _sse_status("tool", f"Approved: Executing desktop action {tc.name}...", tool=tc.name)
+                                    if tc.name == "screen_screenshot":
+                                        shot = await c_ctrl.screen_screenshot()
+                                        yield _sse_status(
+                                            "tool",
+                                            f"Screen captured: {shot.get('filename')}",
+                                            tool="screen_screenshot",
+                                            screenshot_path=shot.get("path"),
+                                            screenshot_base64=shot.get("base64"),
+                                        )
+                                        result = ToolResult(tool_name="screen_screenshot", success=True, output=f"Screen captured: {shot['path']}", data=shot)
+                                    elif tc.name == "mouse_click":
+                                        x_val = int(tc.arguments.get("x", 0))
+                                        y_val = int(tc.arguments.get("y", 0))
+                                        clk_res = await c_ctrl.mouse_click(x_val, y_val, tc.arguments.get("button", "left"), int(tc.arguments.get("clicks", 1)))
+                                        result = ToolResult(tool_name="mouse_click", success=True, output=f"Clicked at ({x_val}, {y_val})", data=clk_res)
+                                    elif tc.name == "keyboard_type":
+                                        typ_res = await c_ctrl.keyboard_type(tc.arguments.get("text", ""))
+                                        result = ToolResult(tool_name="keyboard_type", success=True, output=f"Typed {typ_res['length']} characters", data=typ_res)
+                                    elif tc.name == "hotkey":
+                                        hk_res = await c_ctrl.hotkey(tc.arguments.get("keys", []))
+                                        result = ToolResult(tool_name="hotkey", success=True, output=f"Pressed hotkey: {'+'.join(tc.arguments.get('keys', []))}", data=hk_res)
+                                    elif tc.name == "open_app":
+                                        app_res = await c_ctrl.open_app(tc.arguments.get("name", ""))
+                                        result = ToolResult(tool_name="open_app", success=True, output=f"Launched application: {tc.arguments.get('name')}", data=app_res)
+                                    elif tc.name == "list_windows":
+                                        win_res = await c_ctrl.list_windows()
+                                        result = ToolResult(tool_name="list_windows", success=True, output=f"Active windows ({len(win_res['windows'])}):\n" + "\n".join(f"- {w}" for w in win_res['windows']), data=win_res)
+                                    elif tc.name == "focus_window":
+                                        foc_res = await c_ctrl.focus_window(tc.arguments.get("title", ""))
+                                        result = ToolResult(tool_name="focus_window", success=foc_res.get("success", True), output=f"Focused window: {tc.arguments.get('title')}", data=foc_res)
+                                    else:
+                                        result = ToolResult(tool_name=tc.name, success=False, error=f"Unknown computer tool: {tc.name}")
+                                    
+                                    _append_activity_log(workspace, {
+                                        "action_type": f"computer_{tc.name}",
+                                        "target": detail or tc.name,
+                                        "outcome": "success" if result.success else "failed",
+                                        "tier": tier,
+                                        "token_count": 0,
+                                        "details": str(result.data or result.output)[:200],
+                                    })
+                                else:
+                                    denied_msg = f"Computer action '{tc.name}' denied by user."
+                                    yield _sse_status("tool", denied_msg, tool=tc.name)
+                                    result = ToolResult(tool_name=tc.name, success=False, output="", error=denied_msg, failure_reason="user_denied", failure_detail=denied_msg)
+                            except asyncio.TimeoutError:
+                                timeout_msg = f"Approval timed out for computer action: {tc.name}."
+                                yield _sse_status("tool_error", timeout_msg, tool=tc.name)
+                                result = ToolResult(tool_name=tc.name, success=False, output="", error=timeout_msg, failure_reason="approval_timeout", failure_detail=timeout_msg)
+                            finally:
+                                _pending_approvals.pop(action_id, None)
+
                     elif tc.name.startswith("mcp__"):
                         parts = tc.name.split("__")
                         server_id = parts[1] if len(parts) >= 2 else "unknown"

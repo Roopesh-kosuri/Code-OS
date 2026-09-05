@@ -260,15 +260,58 @@ async def _finalize_staged_changes(
                 if commit_h:
                     yield _sse_checkpoint(turn_number, commit_h, touched_paths)
 
+                # Tightened Auto-Verify Trigger Scope (Phase 7A4)
+                browser_verified = True
+                browser_verify_reason = ""
+                try:
+                    from app.features.settings.service import get_setting
+                    from app.features.automation.verifier import should_trigger_auto_verify, run_browser_verification
+
+                    b_enabled = (await get_setting("automation.browser_control_enabled")) != "false"
+                    v_enabled = (await get_setting("automation.auto_verify_web_projects")) != "false"
+
+                    if should_trigger_auto_verify(
+                        staged_changes,
+                        user_query=user_query,
+                        browser_control_enabled=b_enabled,
+                        auto_verify_enabled=v_enabled,
+                    ):
+                        yield _sse_status("browser_verify", "Verifying in browser...")
+                        v_report = await run_browser_verification(workspace, staged_changes, user_query=user_query)
+                        if v_report.get("success", False):
+                            yield _sse_status(
+                                "browser_verify",
+                                f"✓ Browser verified: '{v_report.get('page_title', '')}' (0 console errors)",
+                                screenshot_path=v_report.get("screenshot_path"),
+                                screenshot_base64=v_report.get("screenshot_base64"),
+                                outcome="verified",
+                            )
+                        else:
+                            browser_verified = False
+                            browser_verify_reason = v_report.get("status", "browser_verification_failed")
+                            err_count = len(v_report.get("console_errors", []))
+                            net_count = len(v_report.get("network_errors", []))
+                            yield _sse_status(
+                                "browser_repair",
+                                f"⚠️ Browser verification failed: {err_count} console error(s), {net_count} network error(s).",
+                                screenshot_path=v_report.get("screenshot_path"),
+                                screenshot_base64=v_report.get("screenshot_base64"),
+                                outcome="failed",
+                            )
+                except Exception as b_err:
+                    logger.warning("stage_finalizer: auto-verify encountered non-fatal error: %s", b_err)
+
                 regressed = bool(ran_test_before and 'has_regression' in locals() and has_regression)
                 final_reason = "verified"
                 if not read_back_verified:
                     final_reason = "read_back_failed"
                 elif regressed:
                     final_reason = "test_regression"
+                elif not browser_verified:
+                    final_reason = browser_verify_reason or "browser_verification_failed"
 
                 yield _sse_event("finalization", {
-                    "success": read_back_verified and not regressed,
+                    "success": read_back_verified and not regressed and browser_verified,
                     "reason": final_reason,
                 })
             else:

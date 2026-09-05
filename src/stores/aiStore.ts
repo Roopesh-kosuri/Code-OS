@@ -40,7 +40,10 @@ export interface AgentStatus {
     | "replan"
     | "partial_report"
     | "audit"
-    | "vision";
+    | "vision"
+    | "browser_open"
+    | "browser_verify"
+    | "browser_repair";
   message: string;
   tool?: string;
   detail?: string;
@@ -60,6 +63,9 @@ export interface AgentStatus {
   max_attempts?: number;
   success?: boolean;
   output?: string;
+  screenshot_path?: string;
+  screenshot_base64?: string;
+  outcome?: string;
 }
 
 export interface SuggestedRecoveryModel {
@@ -114,6 +120,8 @@ export interface ToolEvent {
   output_preview?: string;
   state?: "running" | "completed" | "failed" | "skipped";
   reason?: string;
+  screenshot_path?: string;
+  screenshot_base64?: string;
 }
 
 export interface CommandExecution {
@@ -384,6 +392,8 @@ export function createSSEStreamHandler(
             detail: statusObj.detail,
             timestamp: new Date().toISOString(),
             state: "running",
+            screenshot_path: data.screenshot_path,
+            screenshot_base64: data.screenshot_base64,
           });
         } else if ((statusObj.type === "tool_result" || statusObj.type === "tool_error" || statusObj.type === "tool_skipped") && statusObj.tool) {
           const previous = [...newHistory].reverse().findIndex((entry) => entry.tool === statusObj.tool && entry.state === "running");
@@ -398,6 +408,8 @@ export function createSSEStreamHandler(
               state: stateVal,
               output_preview: data.output || data.message || "",
               reason: data.reason || "",
+              screenshot_path: data.screenshot_path || newHistory[index].screenshot_path,
+              screenshot_base64: data.screenshot_base64 || newHistory[index].screenshot_base64,
             };
           } else if (statusObj.type === "tool_skipped") {
             newHistory.push({
@@ -408,6 +420,8 @@ export function createSSEStreamHandler(
               success: false,
               output_preview: data.message || "",
               reason: data.reason || "consecutive_failures",
+              screenshot_path: data.screenshot_path,
+              screenshot_base64: data.screenshot_base64,
             });
           }
         }

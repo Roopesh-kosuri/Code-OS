@@ -21,9 +21,10 @@ import {
   Clock,
   Plus,
   Download,
-  Search,
-  History,
   RefreshCw,
+  Search,
+  Globe,
+  Monitor,
 } from "lucide-react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useAIStore } from "../../stores/aiStore";
@@ -38,7 +39,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Category = "general" | "providers" | "editor" | "terminal" | "toolchains" | "git" | "mcp" | "agents" | "timeline" | "theme" | "security" | "about";
+type Category = "general" | "providers" | "editor" | "terminal" | "toolchains" | "git" | "mcp" | "agents" | "automation" | "timeline" | "theme" | "security" | "about";
 
 interface ThemeSwatch {
   id: string;
@@ -143,6 +144,23 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   );
   const [gitDefaultBranch, setGitDefaultBranch] = useState(
     () => localStorage.getItem("code-os:git.defaultBranch") || "main"
+  );
+
+  // Automation options (Phase 7)
+  const [browserControlEnabled, setBrowserControlEnabled] = useState(
+    () => localStorage.getItem("code-os:automation.browser_control_enabled") !== "false"
+  );
+  const [autoVerifyWebProjects, setAutoVerifyWebProjects] = useState(
+    () => localStorage.getItem("code-os:automation.auto_verify_web_projects") !== "false"
+  );
+  const [browserHeadless, setBrowserHeadless] = useState(
+    () => localStorage.getItem("code-os:automation.browser_headless") === "true"
+  );
+  const [browserChannel, setBrowserChannel] = useState(
+    () => localStorage.getItem("code-os:automation.browser_channel") || "auto"
+  );
+  const [computerUseEnabled, setComputerUseEnabled] = useState(
+    () => localStorage.getItem("code-os:automation.computer_use_enabled") === "true"
   );
 
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -578,6 +596,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     { id: "git", label: "Git & Source Control", icon: "account_tree" },
     { id: "mcp", label: "MCP Servers", icon: "hub" },
     { id: "agents", label: "Agents & Approval Memory", icon: "psychology" },
+    { id: "automation", label: "Automation (Browser & OS)", icon: "public" },
     { id: "timeline", label: "Activity Timeline", icon: "history" },
     { id: "theme", label: "Theme & Palette", icon: "palette" },
     { id: "security", label: "Security & Privacy", icon: "security" },
@@ -1214,6 +1233,148 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
                 {/* Trusted Workspace Commands (Approval Memory) */}
                 {renderTrustedCommandsCard()}
+              </div>
+            )}
+
+            {/* ── Category: Automation (Browser & OS) ───────────────────────── */}
+            {activeCategory === "automation" && (
+              <div className="space-y-6">
+                <div>
+                  <h2 className="font-headline-md text-headline-md text-on-surface mb-1 font-bold">Automation &amp; Computer Use</h2>
+                  <p className="font-ui-label-reg text-ui-label-reg text-on-surface-variant">Control autonomous browser interaction, web verification loops, and host OS automation.</p>
+                </div>
+
+                {/* Browser Control Section */}
+                <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/30 p-6 space-y-5 shadow-md">
+                  <div className="flex items-center gap-2.5 pb-2 border-b border-surface-container-high/40">
+                    <Globe size={18} className="text-primary" />
+                    <span className="font-bold text-xs uppercase tracking-wider text-on-surface">Browser Control (Playwright Engine)</span>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Enable Browser Control</div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">Allows Rony Agent to navigate pages, inspect DOM, capture screenshots, and read console logs.</div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={browserControlEnabled}
+                        onChange={(e) => {
+                          setBrowserControlEnabled(e.target.checked);
+                          localStorage.setItem("code-os:automation.browser_control_enabled", String(e.target.checked));
+                          void saveSetting("automation.browser_control_enabled", String(e.target.checked));
+                          showFeedback(`Browser control ${e.target.checked ? "enabled" : "disabled"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                    <div>
+                      <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Auto-Verify Web Projects (Tightened Scope)</div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                        Only triggers automatically for newly scaffolded projects or when explicitly requested in prompt. Minor edits to existing files are skipped.
+                      </div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoVerifyWebProjects}
+                        onChange={(e) => {
+                          setAutoVerifyWebProjects(e.target.checked);
+                          localStorage.setItem("code-os:automation.auto_verify_web_projects", String(e.target.checked));
+                          void saveSetting("automation.auto_verify_web_projects", String(e.target.checked));
+                          showFeedback(`Auto-verify ${e.target.checked ? "enabled" : "disabled"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
+
+                  <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                    <div>
+                      <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Headless Browser Mode</div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">Run browser quietly in the background without opening a visible application window.</div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={browserHeadless}
+                        onChange={(e) => {
+                          setBrowserHeadless(e.target.checked);
+                          localStorage.setItem("code-os:automation.browser_headless", String(e.target.checked));
+                          void saveSetting("automation.browser_headless", String(e.target.checked));
+                          showFeedback(`Headless mode ${e.target.checked ? "enabled" : "disabled"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
+
+                  <div className="border-t border-surface-container-high/40 pt-4">
+                    <label className="font-caption text-caption text-on-surface-variant mb-1 block">Browser Channel</label>
+                    <select
+                      value={browserChannel}
+                      onChange={(e) => {
+                        setBrowserChannel(e.target.value);
+                        localStorage.setItem("code-os:automation.browser_channel", e.target.value);
+                        void saveSetting("automation.browser_channel", e.target.value);
+                        showFeedback(`Browser channel set to ${e.target.value}`);
+                      }}
+                      className="w-full bg-[#131318] border border-surface-container-high rounded-lg p-2.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none"
+                    >
+                      <option value="auto">Auto-detect (System Edge or Chrome)</option>
+                      <option value="msedge">Microsoft Edge</option>
+                      <option value="chrome">Google Chrome</option>
+                      <option value="chromium">Chromium</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Computer Use Section (Fail-Closed, Opt-In) */}
+                <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/30 p-6 space-y-5 shadow-md">
+                  <div className="flex items-center gap-2.5 pb-2 border-b border-surface-container-high/40">
+                    <Monitor size={18} className="text-amber-400" />
+                    <span className="font-bold text-xs uppercase tracking-wider text-on-surface">Computer Use (Host OS Automation)</span>
+                  </div>
+
+                  <div className="p-3 bg-amber-500/10 border border-amber-500/25 rounded-lg text-xs space-y-1 text-amber-200">
+                    <div className="flex items-center gap-1.5 font-semibold text-amber-300">
+                      <ShieldAlert size={14} />
+                      <span>Security &amp; Safety Leash (Fail-Closed)</span>
+                    </div>
+                    <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                      Enabling Computer Use grants Rony Agent the ability to simulate mouse clicks, keyboard keystrokes, and window management on your host OS.
+                      Every action requires an interactive approval card. Move mouse to screen corner (Fail-safe) to immediately abort.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Enable Computer Use (Opt-In)</div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">Disabled by default. When enabled, agent can request mouse, keyboard, and window actions.</div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={computerUseEnabled}
+                        onChange={(e) => {
+                          setComputerUseEnabled(e.target.checked);
+                          localStorage.setItem("code-os:automation.computer_use_enabled", String(e.target.checked));
+                          void saveSetting("automation.computer_use_enabled", String(e.target.checked));
+                          showFeedback(`Computer use ${e.target.checked ? "enabled" : "disabled"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
+                </div>
               </div>
             )}
 

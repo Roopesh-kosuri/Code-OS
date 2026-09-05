@@ -322,3 +322,24 @@ async def reject_pending_action(action_id: str, payload: ApprovalDecisionPayload
         logger.warning("reject_pending_action: action %s not found (may have already resolved)", action_id)
         return {"status": "already_resolved", "action_id": action_id}
     return {"status": "rejected", "action_id": action_id}
+
+
+class VerifyBrowserPayload(BaseModel):
+    workspace: str
+    target: str | None = None
+
+
+@router.post("/verify-browser")
+async def verify_browser_on_demand(payload: VerifyBrowserPayload) -> dict:
+    """Manually trigger browser verification for a workspace (Phase 7C1)."""
+    from app.features.automation.verifier import run_browser_verification
+    res = await run_browser_verification(payload.workspace, manual_override=True)
+    return res
+
+
+@router.post("/emergency-stop")
+async def emergency_stop_automation() -> dict:
+    """Global emergency stop for browser & computer automation."""
+    from app.features.automation.computer_controller import trigger_emergency_stop
+    trigger_emergency_stop("API trigger")
+    return {"status": "stopped"}

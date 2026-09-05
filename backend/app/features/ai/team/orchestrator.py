@@ -1,0 +1,407 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Any, Callable, Coroutine, Optional
+
+from ..agents.agent_factory import AgentFactory
+from ..step_tracker import (
+    log_step_pending,
+    mark_step_running,
+    mark_step_completed,
+    mark_step_failed,
+)
+from .handoff import (
+    create_diff_handoff,
+    create_files_handoff,
+    create_review_notes_handoff,
+    create_test_output_handoff,
+    create_stack_trace_handoff,
+    format_handoff_for_prompt,
+)
+from .roles import get_role_instance, BaseTeamRole
+from .team_schemas import (
+    HandoffArtifact,
+    HandoffType,
+    TeamConfig,
+    TeamRole,
+    TeamSSEEvent,
+    TeamTask,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class TeamOrchestrator:
+    """Multi-Agent Team Orchestrator with DAG scheduling, concurrency limiting,
+
+    step-level write-ahead durability, and structured artifact handoffs.
+    """
+
+    def __init__(
+        self,
+        team_config: Optional[TeamConfig] = None,
+        workspace: Optional[str] = None,
+        task_executor: Optional[
+            Callable[[TeamTask, list[HandoffArtifact]], Coroutine[Any, Any, dict[str, Any]]]
+        ] = None,
+    ) -> None:
+        self.team_config = team_config or TeamConfig(workspace=workspace or ".")
+        self.workspace = self.team_config.workspace
+        self.max_concurrency = max(1, self.team_config.max_concurrency)
+        self._semaphore = asyncio.Semaphore(self.max_concurrency)
+
+        # DAG and execution state tracking
+        self.completed_task_ids: set[str] = set()
+        self.failed_task_ids: set[str] = set()
+        self.running_task_ids: set[str] = set()
+        self.task_results: dict[str, Any] = {}
+        self.task_handoffs: dict[str, HandoffArtifact] = {}
+        self.execution_order: list[str] = []
+
+        # Concurrency monitoring
+        self.active_concurrency: int = 0
+        self.peak_concurrency: int = 0
+
+        # Custom task executor for testing / custom pipelines
+        self._custom_task_executor = task_executor
+
+        # Event stream subscribers
+        self._event_subscribers: list[Callable[[TeamSSEEvent], Any]] = []
+
+    def subscribe(self, subscriber: Callable[[TeamSSEEvent], Any]) -> None:
+        """Register an event listener for live TeamSSEEvent emissions."""
+        self._event_subscribers.append(subscriber)
+
+    def emit_event(self, event_name: str, data: dict[str, Any]) -> None:
+        """Emit a structured TeamSSEEvent to all registered subscribers."""
+        event = TeamSSEEvent(event=event_name, data=data)
+        for sub in self._event_subscribers:
+            try:
+                sub(event)
+            except Exception as exc:
+                logger.debug("Event subscriber error: %s", exc)
+
+    async def execute_dag(
+        self,
+        tasks: list[TeamTask],
+        job_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Execute a directed acyclic graph (DAG) of team tasks with bounded parallelism,
+
+        strict dependency resolution, step_tracker write-ahead durability, and handoffs.
+        """
+        if not tasks:
+            return {"status": "completed", "tasks": {}, "duration": 0.0}
+
+        start_time = time.time()
+        effective_job_id = job_id or tasks[0].job_id or f"job_{int(start_time)}"
+
+        tasks_by_id = {t.task_id: t for t in tasks}
+        all_task_ids = set(tasks_by_id.keys())
+        running_tasks: dict[str, asyncio.Task] = {}
+
+        self.emit_event("team_status", {
+            "job_id": effective_job_id,
+            "status": "running",
+            "task_count": len(tasks),
+            "max_concurrency": self.max_concurrency,
+        })
+
+        while len(self.completed_task_ids) + len(self.failed_task_ids) < len(tasks):
+            # Check for cascade failures (tasks whose dependencies failed)
+            for t in tasks:
+                if (
+                    t.task_id not in self.completed_task_ids
+                    and t.task_id not in self.failed_task_ids
+                    and t.task_id not in running_tasks
+                ):
+                    if any(dep in self.failed_task_ids for dep in t.dependencies):
+                        failed_dep = next(dep for dep in t.dependencies if dep in self.failed_task_ids)
+                        t.status = "failed"
+                        t.error = f"Dependency '{failed_dep}' failed."
+                        self.failed_task_ids.add(t.task_id)
+                        self.emit_event("team_step_update", {
+                            "task_id": t.task_id,
+                            "status": "failed",
+                            "error": t.error,
+                        })
+
+            # Identify all currently runnable tasks
+            runnable = [
+                t for t in tasks
+                if t.task_id not in self.completed_task_ids
+                and t.task_id not in self.failed_task_ids
+                and t.task_id not in running_tasks
+                and all(dep in self.completed_task_ids for dep in t.dependencies)
+            ]
+
+            # Dispatch runnable tasks concurrently
+            for task in runnable:
+                # Gather prior handoffs from completed dependencies
+                prior_handoffs = [
+                    self.task_handoffs[dep]
+                    for dep in task.dependencies
+                    if dep in self.task_handoffs
+                ]
+
+                coro = self._run_task_with_semaphore(task, prior_handoffs)
+                async_task = asyncio.create_task(coro, name=f"team_task_{task.task_id}")
+                running_tasks[task.task_id] = async_task
+
+            if not running_tasks:
+                # No tasks are running and not all tasks are finished -> Deadlock / circular dependency
+                if len(self.completed_task_ids) + len(self.failed_task_ids) < len(tasks):
+                    unresolved = all_task_ids - (self.completed_task_ids | self.failed_task_ids)
+                    logger.error("DAG deadlock detected. Unresolved tasks: %s", unresolved)
+                    for tid in unresolved:
+                        dead_task = tasks_by_id[tid]
+                        dead_task.status = "failed"
+                        dead_task.error = "Unresolvable dependency or cycle detected in DAG."
+                        self.failed_task_ids.add(tid)
+                break
+
+            # Await the next task completion
+            done, _ = await asyncio.wait(running_tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+            for dt in done:
+                # Find matching task_id
+                tid = next(k for k, v in running_tasks.items() if v == dt)
+                del running_tasks[tid]
+
+                task = tasks_by_id[tid]
+                exc = dt.exception()
+                if exc:
+                    logger.error("Task %s failed with exception: %s", tid, exc)
+                    task.status = "failed"
+                    task.error = str(exc)
+                    self.failed_task_ids.add(tid)
+                    self.emit_event("team_step_update", {
+                        "task_id": tid,
+                        "status": "failed",
+                        "error": str(exc),
+                    })
+
+        duration = time.time() - start_time
+        final_status = "completed" if not self.failed_task_ids else "failed"
+
+        self.emit_event("team_status", {
+            "job_id": effective_job_id,
+            "status": final_status,
+            "completed_tasks": list(self.completed_task_ids),
+            "failed_tasks": list(self.failed_task_ids),
+            "duration": duration,
+        })
+
+        return {
+            "job_id": effective_job_id,
+            "status": final_status,
+            "completed_count": len(self.completed_task_ids),
+            "failed_count": len(self.failed_task_ids),
+            "duration": duration,
+            "peak_concurrency": self.peak_concurrency,
+            "execution_order": self.execution_order,
+            "tasks": {t.task_id: t.model_dump() for t in tasks},
+        }
+
+    async def _run_task_with_semaphore(
+        self,
+        task: TeamTask,
+        prior_handoffs: list[HandoffArtifact],
+    ) -> None:
+        """Run a task bounded by the concurrency semaphore, logging step durability."""
+        async with self._semaphore:
+            self.active_concurrency += 1
+            self.peak_concurrency = max(self.peak_concurrency, self.active_concurrency)
+            self.running_task_ids.add(task.task_id)
+            task.status = "running"
+            task.started_at = time.time()
+
+            self.emit_event("team_step_update", {
+                "task_id": task.task_id,
+                "status": "running",
+                "role": task.role.value,
+                "active_concurrency": self.active_concurrency,
+            })
+
+            # ── 1. Step Tracker Durability: Log Pending & Running ───────
+            step_id = f"step_{task.task_id}_1"
+            step_logged = False
+            try:
+                step_id = await log_step_pending(
+                    task_id=task.task_id,
+                    job_id=task.job_id,
+                    step_num=1,
+                    step_type=f"team_role_{task.role.value}",
+                    payload={
+                        "title": task.title,
+                        "role": task.role.value,
+                        "dependencies": task.dependencies,
+                    },
+                )
+                await mark_step_running(step_id)
+                step_logged = True
+            except Exception as exc:
+                logger.warning("Step tracker write-ahead log error: %s", exc)
+
+            try:
+                # ── 2. Execute Task Logic ───────────────────────────────
+                result = await self._execute_task_dispatch(task, prior_handoffs)
+
+                # ── 3. Step Tracker Durability: Mark Completed ──────────
+                if step_logged:
+                    await mark_step_completed(step_id, result=result)
+
+                task.status = "completed"
+                task.completed_at = time.time()
+                task.result = result
+                self.completed_task_ids.add(task.task_id)
+                self.execution_order.append(task.task_id)
+                self.task_results[task.task_id] = result
+
+                # ── 4. Produce Handoff Artifact ────────────────────────
+                handoff = self._create_task_handoff(task, result)
+                self.task_handoffs[task.task_id] = handoff
+                task.handoff = handoff
+
+                self.emit_event("team_step_update", {
+                    "task_id": task.task_id,
+                    "status": "completed",
+                    "role": task.role.value,
+                })
+
+                if handoff:
+                    self.emit_event("team_handoff", {
+                        "task_id": task.task_id,
+                        "from_role": handoff.from_role.value,
+                        "to_role": handoff.to_role.value,
+                        "type": handoff.type.value,
+                        "summary": handoff.summary,
+                    })
+
+            except Exception as exc:
+                # ── 5. Step Tracker Durability: Mark Failed ─────────────
+                if step_logged:
+                    try:
+                        await mark_step_failed(step_id, error=str(exc))
+                    except Exception:
+                        pass
+
+                task.status = "failed"
+                task.completed_at = time.time()
+                task.error = str(exc)
+                self.failed_task_ids.add(task.task_id)
+                self.emit_event("team_step_update", {
+                    "task_id": task.task_id,
+                    "status": "failed",
+                    "error": str(exc),
+                })
+                raise
+
+            finally:
+                self.running_task_ids.discard(task.task_id)
+                self.active_concurrency -= 1
+
+    async def _execute_task_dispatch(
+        self,
+        task: TeamTask,
+        prior_handoffs: list[HandoffArtifact],
+    ) -> dict[str, Any]:
+        """Dispatch task execution to custom executor, AgentFactory, or role handler."""
+        # 1. Check for custom executor (e.g. testing or injected mock runner)
+        if self._custom_task_executor is not None:
+            return await self._custom_task_executor(task, prior_handoffs)
+
+        # 2. Get provider configuration for role from TeamConfig
+        provider_config = self.team_config.get_role_provider_config(task.role)
+
+        # 3. Format prior handoff context for agent
+        handoff_prompt = ""
+        if prior_handoffs:
+            handoff_blocks = [format_handoff_for_prompt(h) for h in prior_handoffs]
+            handoff_prompt = "\n\n".join(handoff_blocks)
+
+        # 4. Role handler instantiation and tool execution
+        role_handler = get_role_instance(task.role)
+
+        # 5. Dispatch via AgentFactory
+        agent = AgentFactory.create_agent(task.role.value, provider_config=provider_config)
+
+        # If agent implements execute:
+        full_context = task.context.copy()
+        if handoff_prompt:
+            full_context["handoff_context"] = handoff_prompt
+
+        output = await agent.execute(
+            job_id=task.job_id,
+            task_id=task.task_id,
+            title=task.title,
+            context=full_context,
+            workspace=self.workspace,
+        )
+
+        return {
+            "role": task.role.value,
+            "status": getattr(output, "status", "completed"),
+            "reasoning": getattr(output, "reasoning", ""),
+            "proposals": [p.model_dump() for p in getattr(output, "proposals", [])] if hasattr(output, "proposals") else [],
+            "test_results": getattr(output, "test_results", None),
+        }
+
+    def _create_task_handoff(self, task: TeamTask, result: dict[str, Any]) -> HandoffArtifact:
+        """Package a task's output into a structured HandoffArtifact for dependent tasks."""
+        role = task.role
+
+        if role == TeamRole.CODER:
+            proposals = result.get("proposals", [])
+            modified_files = [p.get("path", "") for p in proposals if isinstance(p, dict)]
+            return create_diff_handoff(
+                from_role=TeamRole.CODER,
+                to_role=TeamRole.REVIEWER,
+                diffs=proposals,
+                modified_files=modified_files,
+                summary=f"Coder generated {len(proposals)} proposal(s).",
+                task_id=task.task_id,
+            )
+
+        elif role == TeamRole.TESTER:
+            test_res = result.get("test_results") or {}
+            passed = test_res.get("passed", True) if isinstance(test_res, dict) else True
+            output_str = str(test_res.get("output", result.get("reasoning", "")))
+            return create_test_output_handoff(
+                from_role=TeamRole.TESTER,
+                to_role=TeamRole.REVIEWER,
+                test_output=output_str,
+                passed=passed,
+                summary=f"Tester completed test suite: {'PASSED' if passed else 'FAILED'}",
+                task_id=task.task_id,
+            )
+
+        elif role == TeamRole.REVIEWER:
+            reasoning = result.get("reasoning", "")
+            return create_review_notes_handoff(
+                from_role=TeamRole.REVIEWER,
+                to_role=TeamRole.ARCHITECT,
+                notes=reasoning or "Code review sign-off completed.",
+                approved=True,
+                summary="Reviewer audit signed off.",
+                task_id=task.task_id,
+            )
+
+        elif role == TeamRole.DEVOPS:
+            return create_stack_trace_handoff(
+                from_role=TeamRole.DEVOPS,
+                to_role=TeamRole.ARCHITECT,
+                traces=result.get("reasoning", ""),
+                summary="DevOps deployment / verification complete.",
+                task_id=task.task_id,
+            )
+
+        else:  # ARCHITECT or other
+            return create_files_handoff(
+                from_role=TeamRole.ARCHITECT,
+                to_role=TeamRole.CODER,
+                files=[result.get("reasoning", "")],
+                summary="Architectural specification and task breakdown.",
+                task_id=task.task_id,
+            )

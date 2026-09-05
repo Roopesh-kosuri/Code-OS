@@ -37,7 +37,7 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { api } from "../../lib/api";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { DockedApprovalCard } from "./DockedApprovalCard";
-import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink, AlertTriangle } from "lucide-react";
+import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink, AlertTriangle, Globe } from "lucide-react";
 
 function parseProposals(text: string) {
   const proposals: { path: string; original: string; updated: string }[] = [];
@@ -219,6 +219,7 @@ export function AIChatPanel() {
   const [historySearch, setHistorySearch] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [clarificationInput, setClarificationInput] = useState("");
+  const [isVerifyingBrowser, setIsVerifyingBrowser] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -259,6 +260,21 @@ export function AIChatPanel() {
   const approveAction = useAIStore((s) => s.approveAction);
   const rejectAction = useAIStore((s) => s.rejectAction);
   const undoTurn = useAIStore((s) => s.undoTurn);
+  const workspace = useWorkspaceStore((s) => s.currentWorkspace);
+
+  const handleVerifyInBrowser = async () => {
+    if (!workspace?.path || isVerifyingBrowser) return;
+    setIsVerifyingBrowser(true);
+    try {
+      await api.post("/api/ai/verify-browser", {
+        workspace: workspace.path,
+      });
+    } catch (err) {
+      console.error("Manual browser verification failed:", err);
+    } finally {
+      setIsVerifyingBrowser(false);
+    }
+  };
 
   const [undoingHash, setUndoingHash] = useState<string | null>(null);
   const [undoFeedback, setUndoFeedback] = useState<Record<string, string>>({});
@@ -295,8 +311,6 @@ export function AIChatPanel() {
   const providerHealth = useAIStore((s) => s.providerHealth);
   const fetchTokenUsage = useAIStore((s) => s.fetchTokenUsage);
   const fetchProviderHealth = useAIStore((s) => s.fetchProviderHealth);
-
-  const workspace = useWorkspaceStore((s) => s.currentWorkspace);
 
   const handleRecoverySwitch = async (prov: string, mod: string) => {
     clearRecovery();
@@ -1320,6 +1334,19 @@ export function AIChatPanel() {
                 title="Voice input"
               >
                 {isListening ? <MicOff size={15} /> : <Mic size={15} />}
+              </button>
+
+              {/* Verify in Browser (Manual Override) */}
+              <button
+                type="button"
+                onClick={handleVerifyInBrowser}
+                disabled={isVerifyingBrowser}
+                className={`p-1 rounded-lg transition-colors cursor-pointer interactive-scale ${
+                  isVerifyingBrowser ? "text-primary animate-spin" : "hover:text-primary hover:bg-primary/10"
+                }`}
+                title="Verify in Browser (Manual Override)"
+              >
+                <Globe size={15} />
               </button>
             </div>
 

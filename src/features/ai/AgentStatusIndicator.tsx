@@ -22,6 +22,8 @@ import {
   HelpCircle,
   Eye,
   AlertTriangle,
+  Globe,
+  Monitor,
 } from "lucide-react";
 import {
   useAIStore,
@@ -163,6 +165,24 @@ export function AgentStatusIndicator({
           text: status.message || "Re-attempting request...",
           colorClass: "border-amber-500/40 bg-amber-500/15 text-amber-300 font-semibold",
         };
+      case "browser_verify":
+        return {
+          icon: <Globe size={13} className="text-cyan-400 animate-pulse" />,
+          text: status.message || "Verifying in browser...",
+          colorClass: "border-cyan-500/30 bg-cyan-500/10 text-cyan-300",
+        };
+      case "browser_repair":
+        return {
+          icon: <RefreshCw size={13} className="text-amber-400 animate-spin" />,
+          text: status.message || "Repairing browser errors...",
+          colorClass: "border-amber-500/30 bg-amber-500/10 text-amber-300",
+        };
+      case "browser_open":
+        return {
+          icon: <Globe size={13} className="text-cyan-400" />,
+          text: status.message || "Opening browser...",
+          colorClass: "border-cyan-500/30 bg-cyan-500/10 text-cyan-300",
+        };
       case "thinking_progress":
       case "thinking": {
         const hbText = status.message || (status.tokens ? `Thinking… (${status.tokens} tokens)` : (streaming && streamStartTimestamp
@@ -195,6 +215,10 @@ export function AgentStatusIndicator({
           toolIcon = <HelpCircle size={13} className="text-primary" />;
         } else if (status.tool === "take_screenshot" || status.tool === "inspect_visuals" || status.tool === "vision") {
           toolIcon = <Eye size={13} className="text-primary" />;
+        } else if (status.tool?.startsWith("browser_")) {
+          toolIcon = <Globe size={13} className="text-cyan-400" />;
+        } else if (status.tool?.startsWith("screen_") || status.tool === "mouse_click" || status.tool === "keyboard_type" || status.tool === "hotkey" || status.tool === "open_app" || status.tool === "list_windows" || status.tool === "focus_window") {
+          toolIcon = <Monitor size={13} className="text-purple-400" />;
         }
         const toolElapsedText = streaming && streamStartTimestamp ? ` (${formatSeconds(totalElapsedSec)} elapsed)` : "";
         const resultSuffix = status.type === "tool_result"
@@ -414,29 +438,51 @@ export function AgentStatusIndicator({
                   return (
                     <div
                       key={idx}
-                      className="flex items-center justify-between gap-2 p-1.5 rounded bg-[#18191f] border border-white/5"
+                      className="flex flex-col gap-1 p-1.5 rounded bg-[#18191f] border border-white/5"
                     >
-                      <div className="flex items-center gap-1.5 truncate">
-                        {isVision ? (
-                          <span className="text-primary font-bold flex items-center gap-1">
-                            <Eye size={11} className="shrink-0" />
-                            [vision]
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 truncate">
+                          {isVision ? (
+                            <span className="text-primary font-bold flex items-center gap-1">
+                              <Eye size={11} className="shrink-0" />
+                              [vision]
+                            </span>
+                          ) : item.tool.startsWith("browser_") ? (
+                            <span className="text-cyan-400 font-bold flex items-center gap-1">
+                              <Globe size={11} className="shrink-0" />
+                              [{item.tool}]
+                            </span>
+                          ) : item.tool.startsWith("screen_") || item.tool === "mouse_click" || item.tool === "keyboard_type" ? (
+                            <span className="text-purple-400 font-bold flex items-center gap-1">
+                              <Monitor size={11} className="shrink-0" />
+                              [{item.tool}]
+                            </span>
+                          ) : (
+                            <span className="text-amber-400 font-bold">[{item.tool}]</span>
+                          )}
+                          <span className="truncate text-on-surface-variant">
+                            {item.detail || "Executed"}
+                            {item.state === "failed" ? ` — failed${item.reason ? ` (${item.reason})` : ""}` : item.state === "completed" ? " — completed" : item.state === "skipped" ? ` — skipped${item.reason ? ` (${item.reason})` : ""}` : " — running"}
                           </span>
-                        ) : (
-                          <span className="text-amber-400 font-bold">[{item.tool}]</span>
-                        )}
-                        <span className="truncate text-on-surface-variant">
-                          {item.detail || "Executed"}
-                          {item.state === "failed" ? ` — failed${item.reason ? ` (${item.reason})` : ""}` : item.state === "completed" ? " — completed" : item.state === "skipped" ? ` — skipped${item.reason ? ` (${item.reason})` : ""}` : " — running"}
+                        </div>
+                        <span className="shrink-0 text-[9px] text-outline-variant">
+                          {new Date(item.timestamp).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            second: "2-digit",
+                          })}
                         </span>
                       </div>
-                      <span className="shrink-0 text-[9px] text-outline-variant">
-                        {new Date(item.timestamp).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}
-                      </span>
+                      {item.screenshot_base64 && (
+                        <div className="mt-1 pl-4">
+                          <img
+                            src={`data:image/png;base64,${item.screenshot_base64}`}
+                            alt="Screenshot preview"
+                            className="max-h-20 rounded border border-white/10 shadow-xs cursor-pointer hover:opacity-90 transition-opacity"
+                            onClick={() => window.open(`data:image/png;base64,${item.screenshot_base64}`, "_blank")}
+                          />
+                        </div>
+                      )}
                     </div>
                   );
                 })}

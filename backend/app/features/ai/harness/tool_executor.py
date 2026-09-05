@@ -204,6 +204,99 @@ HARNESS_TOOLS = {
             "reason": "Reason for updating the architecture documentation.",
         },
     },
+    "browser_open": {
+        "description": "Open a URL in an isolated Playwright browser instance, returning page title and HTTP status code.",
+        "parameters": {
+            "url": "Target URL (e.g. 'http://localhost:3000' or 'http://localhost:8000').",
+        },
+    },
+    "browser_screenshot": {
+        "description": "Capture a visual screenshot of the current browser page, returning PNG filepath and base64 image encoding.",
+        "parameters": {
+            "filename": "Optional custom filename for the screenshot.",
+        },
+    },
+    "browser_console_logs": {
+        "description": "Retrieve JavaScript console messages, warnings, and errors from the current browser page.",
+        "parameters": {
+            "level": "Log level filter: 'error', 'warning', or 'all'. Default is 'error'.",
+        },
+    },
+    "browser_network_errors": {
+        "description": "Retrieve failed network requests (HTTP 4xx/5xx or dropped connections) from the current browser page.",
+        "parameters": {},
+    },
+    "browser_click": {
+        "description": "Click an element matching the specified CSS selector on the active browser page.",
+        "parameters": {
+            "selector": "CSS selector of the element to click.",
+        },
+    },
+    "browser_type": {
+        "description": "Type text into an input element matching the specified CSS selector on the active browser page.",
+        "parameters": {
+            "selector": "CSS selector of the target input.",
+            "text": "Text content to type into the element.",
+        },
+    },
+    "browser_wait_for": {
+        "description": "Wait for an element matching the CSS selector to be visible and ready in the DOM.",
+        "parameters": {
+            "selector": "CSS selector to wait for.",
+            "timeout": "Maximum seconds to wait (default 10.0).",
+        },
+    },
+    "browser_scroll": {
+        "description": "Scroll the active browser viewport up or down.",
+        "parameters": {
+            "direction": "Scroll direction: 'down' or 'up'. Default is 'down'.",
+        },
+    },
+    "browser_close": {
+        "description": "Close the active browser instance and release resources.",
+        "parameters": {},
+    },
+    "screen_screenshot": {
+        "description": "Capture a desktop screenshot of the primary display (opt-in, requires approval).",
+        "parameters": {},
+    },
+    "mouse_click": {
+        "description": "Move mouse and click desktop coordinates (opt-in, requires explicit approval).",
+        "parameters": {
+            "x": "X coordinate on the desktop screen.",
+            "y": "Y coordinate on the desktop screen.",
+            "button": "Mouse button: 'left', 'right', or 'middle'. Default is 'left'.",
+            "clicks": "Number of clicks (default 1).",
+        },
+    },
+    "keyboard_type": {
+        "description": "Type text directly to the active desktop window (opt-in, requires explicit approval).",
+        "parameters": {
+            "text": "The string text to type.",
+        },
+    },
+    "hotkey": {
+        "description": "Press a desktop keyboard shortcut combination (opt-in, requires explicit approval).",
+        "parameters": {
+            "keys": "List of key names to press together (e.g. ['ctrl', 's'] or ['alt', 'f4']).",
+        },
+    },
+    "open_app": {
+        "description": "Launch a desktop application by name or path (opt-in, requires explicit approval).",
+        "parameters": {
+            "name": "Application name or path (e.g. 'notepad', 'calc').",
+        },
+    },
+    "list_windows": {
+        "description": "List open application window titles on the desktop.",
+        "parameters": {},
+    },
+    "focus_window": {
+        "description": "Bring an open window to the foreground by its title.",
+        "parameters": {
+            "title": "Title or partial title of the target window.",
+        },
+    },
 }
 
 OPENAI_HARNESS_TOOLS = [
@@ -478,6 +571,253 @@ OPENAI_HARNESS_TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_open",
+            "description": "Open a URL in an isolated Playwright browser instance, returning page title and HTTP status code.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Target URL to navigate to (e.g. 'http://localhost:3000').",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Capture visual screenshot of current browser page, returning PNG filepath and base64.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "Optional custom filename for the screenshot.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_console_logs",
+            "description": "Retrieve JavaScript console messages, warnings, and errors from current browser page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "level": {
+                        "type": "string",
+                        "enum": ["error", "warning", "all"],
+                        "description": "Log level filter: 'error', 'warning', or 'all'. Default is 'error'.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_network_errors",
+            "description": "Retrieve failed network requests (HTTP 4xx/5xx or dropped connections) from browser.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "Click an element matching the specified CSS selector on active browser page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector of the element to click.",
+                    },
+                },
+                "required": ["selector"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": "Type text into an input element matching the specified CSS selector on active browser page.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector of target input element.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Text content to type.",
+                    },
+                },
+                "required": ["selector", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_wait_for",
+            "description": "Wait for an element matching CSS selector to be visible and ready in DOM.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector to wait for.",
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Maximum seconds to wait (default 10.0).",
+                    },
+                },
+                "required": ["selector"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_scroll",
+            "description": "Scroll active browser viewport up or down.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["down", "up"],
+                        "description": "Scroll direction: 'down' or 'up'. Default is 'down'.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_close",
+            "description": "Close active browser instance and release resources.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_screenshot",
+            "description": "Capture desktop screen of primary display (opt-in, requires approval).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mouse_click",
+            "description": "Move mouse and click desktop coordinates (opt-in, requires explicit approval).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X coordinate on screen."},
+                    "y": {"type": "integer", "description": "Y coordinate on screen."},
+                    "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "Mouse button."},
+                    "clicks": {"type": "integer", "description": "Number of clicks."},
+                },
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "keyboard_type",
+            "description": "Type text directly to active desktop window (opt-in, requires explicit approval).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "The string text to type."},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hotkey",
+            "description": "Press desktop keyboard shortcut combination (opt-in, requires explicit approval).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of key names to press together.",
+                    },
+                },
+                "required": ["keys"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_app",
+            "description": "Launch desktop application by name or path (opt-in, requires explicit approval).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Application name or path."},
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_windows",
+            "description": "List open application window titles on desktop.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "focus_window",
+            "description": "Bring an open window to foreground by its title.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Title of window to focus."},
+                },
+                "required": ["title"],
             },
         },
     },
