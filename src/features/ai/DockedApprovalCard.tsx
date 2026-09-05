@@ -116,6 +116,26 @@ export function DockedApprovalCard({
 
           {/* Badges */}
           <div className="flex items-center gap-1.5 shrink-0">
+            {(() => {
+              const role = (pendingApproval.agent_role || pendingApproval.metadata?.agent_role || "").toLowerCase();
+              const ROLE_BADGE_MAP: Record<string, { label: string; className: string }> = {
+                architect: { label: "Architect", className: "bg-blue-500/20 text-blue-300 border-blue-500/40" },
+                coder: { label: "Coder", className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" },
+                reviewer: { label: "Reviewer", className: "bg-orange-500/20 text-orange-300 border-orange-500/40" },
+                tester: { label: "Tester", className: "bg-purple-500/20 text-purple-300 border-purple-500/40" },
+                devops: { label: "DevOps", className: "bg-red-500/20 text-red-300 border-red-500/40" },
+              };
+              const roleBadge = ROLE_BADGE_MAP[role];
+              if (!roleBadge) return null;
+              return (
+                <span
+                  data-testid={`approval-role-badge-${role}`}
+                  className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${roleBadge.className}`}
+                >
+                  {roleBadge.label}
+                </span>
+              );
+            })()}
             {queueCount > 1 && (
               <span className="flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-surface-variant text-on-surface-variant border border-white/5">
                 <Layers size={11} /> +{queueCount - 1} more

@@ -26,6 +26,7 @@ import {
   Globe,
   Server,
   Cpu,
+  Users,
 } from "lucide-react";
 
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -35,6 +36,7 @@ import { useBackendStore } from "../../stores/backendStore";
 import { api } from "../../lib/api";
 import { PROVIDER_PRESETS } from "../../lib/providerPresets";
 import { CustomSelect, type CustomSelectOption } from "../../components/ui/CustomSelect";
+import { TeamConsole } from "./console/TeamConsole";
 
 const PROVIDER_OPTIONS: CustomSelectOption[] = [
   {
@@ -184,6 +186,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
   const [actionInProgress, setActionInProgress] = useState(false);
   const [recoveryProvider, setRecoveryProvider] = useState<string>("groq");
   const [recoveryModel, setRecoveryModel] = useState<string>("openai/gpt-oss-120b");
+  const [teamMode, setTeamMode] = useState(false);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -404,57 +407,96 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-y-auto bg-background text-on-surface p-6 font-ui-label-reg text-ui-label-reg select-none antialiased">
-      {/* ΓöÇΓöÇ Header ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */}
+      {/* ── Header ──────────────────────────────────────────────────────── */}
       <div className="flex justify-between items-center mb-6 shrink-0">
         <div className="flex items-center gap-3">
           <h1 className="font-headline-md text-headline-md text-on-surface font-bold tracking-tight">
             Agent Console
           </h1>
-          <span className={`px-3 py-1 rounded-full font-caption text-caption font-bold tracking-wider flex items-center gap-1.5 ${
-            isRunning
-              ? activeJob?.status === "paused"
-                ? "bg-amber-500/10 text-amber-300 border border-amber-500/30"
-                : "bg-primary-container/10 text-primary-container border border-primary-container/30"
-              : "bg-surface-variant text-on-surface-variant"
-          }`}>
-            <span className={`w-2 h-2 rounded-full ${
+
+          {/* Mode Toggle */}
+          <div
+            data-testid="mode-toggle"
+            className="flex items-center bg-surface-container-low p-1 rounded-xl border border-white/5 ml-2"
+          >
+            <button
+              data-testid="mode-toggle-standard"
+              onClick={() => setTeamMode(false)}
+              className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                !teamMode
+                  ? "bg-surface-container-high text-on-surface font-bold shadow"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              Standard Workflow
+            </button>
+            <button
+              data-testid="mode-toggle-team"
+              onClick={() => setTeamMode(true)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                teamMode
+                  ? "bg-primary-container text-on-primary-container font-bold shadow"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              <Users size={13} />
+              <span>Team Mode</span>
+            </button>
+          </div>
+
+          {!teamMode && (
+            <span className={`px-3 py-1 rounded-full font-caption text-caption font-bold tracking-wider flex items-center gap-1.5 ${
               isRunning
                 ? activeJob?.status === "paused"
-                  ? "bg-amber-400 animate-pulse"
-                  : "bg-primary-container animate-pulse"
-                : "bg-outline"
-            }`} />
-            {isRunning ? (activeJob?.status === "paused" ? "PAUSED / ATTENTION" : "RUNNING") : "READY"}
-          </span>
+                  ? "bg-amber-500/10 text-amber-300 border border-amber-500/30"
+                  : "bg-primary-container/10 text-primary-container border border-primary-container/30"
+                : "bg-surface-variant text-on-surface-variant"
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${
+                isRunning
+                  ? activeJob?.status === "paused"
+                    ? "bg-amber-400 animate-pulse"
+                    : "bg-primary-container animate-pulse"
+                  : "bg-outline"
+              }`} />
+              {isRunning ? (activeJob?.status === "paused" ? "PAUSED / ATTENTION" : "RUNNING") : "READY"}
+            </span>
+          )}
         </div>
 
         {/* Timer & Refresh */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => void fetchActiveJob()}
-            className="p-1.5 rounded-full bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer border border-white/5"
-            title="Refresh Status"
-          >
-            <RefreshCw size={13} />
-          </button>
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-low border border-white/5 text-on-surface-variant font-mono text-xs">
-            <Clock size={14} className="text-primary-container" />
-            <span>{formattedTimer}</span>
+        {!teamMode && (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void fetchActiveJob()}
+              className="p-1.5 rounded-full bg-surface-container-low hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-colors cursor-pointer border border-white/5"
+              title="Refresh Status"
+            >
+              <RefreshCw size={13} />
+            </button>
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-container-low border border-white/5 text-on-surface-variant font-mono text-xs">
+              <Clock size={14} className="text-primary-container" />
+              <span>{formattedTimer}</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      {error && (
-        <div className="mb-4 rounded-xl border border-error/40 bg-error/10 p-3 text-xs text-error flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <AlertCircle size={16} />
-            <span>{error}</span>
-          </div>
-          <button onClick={() => setError(null)} className="text-error hover:opacity-80">
-            <X size={14} />
-          </button>
-        </div>
-      )}
+      {teamMode ? (
+        <TeamConsole />
+      ) : (
+        <>
+          {error && (
+            <div className="mb-4 rounded-xl border border-error/40 bg-error/10 p-3 text-xs text-error flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertCircle size={16} />
+                <span>{error}</span>
+              </div>
+              <button onClick={() => setError(null)} className="text-error hover:opacity-80">
+                <X size={14} />
+              </button>
+            </div>
+          )}
 
       {/* ΓöÇΓöÇ Main Two-Column Layout ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */}
       <div className={`grid grid-cols-1 ${compact ? "gap-4" : "lg:grid-cols-2 gap-6"} flex-1 min-h-0`}>
@@ -1147,6 +1189,8 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }

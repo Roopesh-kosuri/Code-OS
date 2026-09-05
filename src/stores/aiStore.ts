@@ -98,6 +98,10 @@ export interface PendingApprovalState {
   path?: string;
   diff_summary?: string;
   is_native_fallback?: boolean;
+  agent_role?: string;
+  task_id?: string;
+  team_mode?: boolean;
+  metadata?: Record<string, any>;
 }
 
 export interface PendingUserResponseState {

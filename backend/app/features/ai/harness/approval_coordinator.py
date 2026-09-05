@@ -41,6 +41,9 @@ class PendingApproval:
     event: asyncio.Event = field(default_factory=asyncio.Event)
     approved: bool = False
     is_native_fallback: bool = False
+    task_id: str = ""
+    agent_role: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
 
 
@@ -144,6 +147,9 @@ async def register_pending_approval(
         "diff_summary": pending.diff_summary,
         "command": pending.command,
         "is_native_fallback": pending.is_native_fallback,
+        "agent_role": pending.agent_role,
+        "task_id": tid,
+        "metadata": pending.metadata,
     }
     now = time.time()
     expires_at = now + expires_in_seconds
@@ -194,8 +200,16 @@ async def request_approval(
     diff_summary: str = "",
     path: str = "",
     is_native_fallback: bool = False,
+    agent_role: str = "",
+    metadata: Optional[dict] = None,
 ) -> PendingApproval:
     """Create, register and persist a pending approval."""
+    meta = metadata.copy() if metadata else {}
+    if agent_role and "agent_role" not in meta:
+        meta["agent_role"] = agent_role
+    if task_id and "task_id" not in meta:
+        meta["task_id"] = task_id
+
     pending = PendingApproval(
         action_id=action_id,
         action_type=action_type,
@@ -207,6 +221,9 @@ async def request_approval(
         workspace=workspace,
         command=command,
         is_native_fallback=is_native_fallback,
+        task_id=task_id,
+        agent_role=agent_role,
+        metadata=meta,
         created_at=time.time(),
     )
     await register_pending_approval(pending, task_id=task_id, workspace=workspace, payload=payload)
@@ -255,6 +272,9 @@ async def load_pending_approvals_from_db() -> list[dict]:
                 workspace=workspace,
                 command=payload.get("command", ""),
                 is_native_fallback=payload.get("is_native_fallback", False),
+                task_id=task_id,
+                agent_role=payload.get("agent_role", ""),
+                metadata=payload.get("metadata", {}),
                 created_at=created_at,
             )
             _pending_approvals[action_id] = pending
@@ -337,3 +357,24 @@ def clear_all_pending() -> int:
         _pending_user_responses.pop(action_id, None)
         cleared += 1
     return cleared
+
+
+def get_pending_approvals(job_id: Optional[str] = None) -> list[PendingApproval]:
+    """Retrieve in-memory pending approvals, optionally filtered by job_id."""
+    if not job_id:
+        return list(_pending_approvals.values())
+    res = []
+    for p in _pending_approvals.values():
+        if p.metadata.get("job_id") == job_id or (p.task_id and job_id in p.task_id):
+            res.append(p)
+        elif not p.metadata.get("job_id"):
+            res.append(p)
+    return res
+
+
+async def clear_pending_approvals_for_job(job_id: str) -> None:
+    """Clear all pending approvals associated with a specific job."""
+    to_remove = [aid for aid, p in _pending_approvals.items() if p.metadata.get("job_id") == job_id or (p.task_id and job_id in p.task_id)]
+    for aid in to_remove:
+        await remove_pending_approval(aid)
+

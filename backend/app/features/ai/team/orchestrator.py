@@ -66,6 +66,7 @@ class TeamOrchestrator:
 
         # Custom task executor for testing / custom pipelines
         self._custom_task_executor = task_executor
+        self.task_executor = task_executor
 
         # Event stream subscribers
         self._event_subscribers: list[Callable[[TeamSSEEvent], Any]] = []
@@ -82,6 +83,58 @@ class TeamOrchestrator:
                 sub(event)
             except Exception as exc:
                 logger.debug("Event subscriber error: %s", exc)
+
+    async def request_task_approval(
+        self,
+        task_id: str,
+        role: TeamRole | str,
+        action_type: str,
+        detail: str,
+        reason: str,
+        command: str = "",
+        path: str = "",
+        diff_summary: str = "",
+    ) -> Any:
+        """Tag and dispatch an interactive approval request for edit_file or run_command."""
+        from ..harness.approval_coordinator import request_approval
+        role_str = role.value if isinstance(role, TeamRole) else str(role).lower()
+        action_id = f"appr_{task_id}_{int(time.time() * 1000)}"
+
+        metadata = {
+            "agent_role": role_str,
+            "task_id": task_id,
+            "team_mode": True,
+            "reason": reason,
+        }
+
+        pending = await request_approval(
+            action_id=action_id,
+            action_type=action_type,
+            detail=detail,
+            reason=reason,
+            task_id=task_id,
+            workspace=self.workspace,
+            command=command,
+            path=path,
+            diff_summary=diff_summary,
+            agent_role=role_str,
+            metadata=metadata,
+        )
+
+        self.emit_event("team_approval", {
+            "action_id": action_id,
+            "action_type": action_type,
+            "agent_role": role_str,
+            "task_id": task_id,
+            "detail": detail,
+            "reason": reason,
+            "team_mode": True,
+            "command": command,
+            "path": path,
+            "metadata": metadata,
+        })
+
+        return pending
 
     async def execute_dag(
         self,
@@ -184,14 +237,68 @@ class TeamOrchestrator:
 
         duration = time.time() - start_time
         final_status = "completed" if not self.failed_task_ids else "failed"
+        verif_res: Optional[dict[str, Any]] = None
 
-        self.emit_event("team_status", {
-            "job_id": effective_job_id,
-            "status": final_status,
-            "completed_tasks": list(self.completed_task_ids),
-            "failed_tasks": list(self.failed_task_ids),
-            "duration": duration,
-        })
+        # ── Verification Gate Execution ─────────────────────────────────────
+        if not self.failed_task_ids and self.team_config.auto_verify:
+            from .verifier import VerificationGate
+
+            # Collect modified files from diff handoffs
+            modified_files: set[str] = set()
+            for h in self.task_handoffs.values():
+                if h.type == HandoffType.DIFFS:
+                    modified_files.update(h.payload.get("modified_files", []))
+
+            verifier = VerificationGate(
+                event_emitter=self.emit_event,
+                task_executor=self.task_executor,
+                orchestrator=self,
+            )
+            verif_res = await verifier.verify_job(
+                job_id=effective_job_id,
+                workspace=self.workspace,
+                team_config=self.team_config,
+                modified_files=list(modified_files),
+            )
+
+            if verif_res.get("verified"):
+                final_status = "completed"
+                self.emit_event("team_status", {
+                    "job_id": effective_job_id,
+                    "status": "completed",
+                    "completed_tasks": list(self.completed_task_ids),
+                    "failed_tasks": list(self.failed_task_ids),
+                    "duration": duration,
+                    "final_report": verif_res.get("final_report"),
+                    "metrics": verif_res.get("metrics"),
+                })
+            else:
+                final_status = "paused_attention"
+                self.emit_event("team_status", {
+                    "job_id": effective_job_id,
+                    "status": "paused_attention",
+                    "reason": verif_res.get("reason"),
+                    "completed_tasks": list(self.completed_task_ids),
+                    "failed_tasks": list(self.failed_task_ids),
+                    "duration": duration,
+                    "final_report": verif_res.get("final_report"),
+                })
+                self.emit_event("team_message", {
+                    "job_id": effective_job_id,
+                    "sender_role": TeamRole.SYSTEM.value,
+                    "recipient_role": TeamRole.OPERATOR.value,
+                    "message_type": "injection",
+                    "content": f"⚠️ Verification failed after max repair rounds: {verif_res.get('reason')}. Operator intervention requested.",
+                    "details": verif_res,
+                })
+        else:
+            self.emit_event("team_status", {
+                "job_id": effective_job_id,
+                "status": final_status,
+                "completed_tasks": list(self.completed_task_ids),
+                "failed_tasks": list(self.failed_task_ids),
+                "duration": duration,
+            })
 
         return {
             "job_id": effective_job_id,
@@ -202,6 +309,8 @@ class TeamOrchestrator:
             "peak_concurrency": self.peak_concurrency,
             "execution_order": self.execution_order,
             "tasks": {t.task_id: t.model_dump() for t in tasks},
+            "final_report": verif_res.get("final_report") if verif_res else None,
+            "verified": verif_res.get("verified", False) if verif_res else False,
         }
 
     async def _run_task_with_semaphore(

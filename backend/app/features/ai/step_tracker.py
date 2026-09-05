@@ -180,3 +180,49 @@ async def get_interrupted_tasks() -> list[dict]:
             "progress": progress,
         })
     return results
+
+
+async def get_task_progress_by_role(job_id: str) -> dict[str, dict[str, int]]:
+    """Get the progress of task steps grouped by agent role for a given job."""
+    pool = await get_pool()
+    rows = await pool.read_query(
+        """
+        SELECT COALESCE(t.agent_role, ts.step_type) as role, ts.status, COUNT(*) as count
+        FROM task_steps ts
+        LEFT JOIN agent_tasks t ON ts.task_id = t.id
+        WHERE ts.job_id = ?
+        GROUP BY role, ts.status
+        """,
+        (job_id,)
+    )
+    progress_by_role: dict[str, dict[str, int]] = {}
+    for row in rows:
+        raw_role = row["role"] or "unknown"
+        role = raw_role[len("team_role_"):] if raw_role.startswith("team_role_") else raw_role
+        if role not in progress_by_role:
+            progress_by_role[role] = {"pending": 0, "running": 0, "completed": 0, "failed": 0}
+        st = row["status"]
+        if st in progress_by_role[role]:
+            progress_by_role[role][st] = int(row["count"])
+    return progress_by_role
+
+
+async def get_last_completed_step_by_role(job_id: str, agent_role: str) -> int:
+    """Get the last completed step number for a specific agent role within a job."""
+    pool = await get_pool()
+    clean_role = agent_role.lower().strip()
+    step_type_prefix = f"team_role_{clean_role}"
+    rows = await pool.read_query(
+        """
+        SELECT MAX(ts.step_num) as last_step
+        FROM task_steps ts
+        LEFT JOIN agent_tasks t ON ts.task_id = t.id
+        WHERE ts.job_id = ?
+          AND (LOWER(COALESCE(t.agent_role, '')) = ? OR ts.step_type = ? OR ts.step_type = ?)
+          AND ts.status = 'completed'
+        """,
+        (job_id, clean_role, clean_role, step_type_prefix)
+    )
+    if rows and rows[0]["last_step"] is not None:
+        return int(rows[0]["last_step"])
+    return 0

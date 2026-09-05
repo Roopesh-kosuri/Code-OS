@@ -23,6 +23,7 @@ from .roles import (
     DevOpsRole,
 )
 from .orchestrator import TeamOrchestrator
+from .verifier import VerificationGate, parse_test_output, audit_code_files
 
 __all__ = [
     "TeamRole",
@@ -43,4 +44,7 @@ __all__ = [
     "TesterRole",
     "DevOpsRole",
     "TeamOrchestrator",
+    "VerificationGate",
+    "parse_test_output",
+    "audit_code_files",
 ]

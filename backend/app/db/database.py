@@ -453,6 +453,68 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (6, 'task_steps_and_interrupted')")
         await db.commit()
 
+    # Migration 7: Multi-Agent Team Mode Console Tables
+    if 7 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS team_configs (
+                    id TEXT PRIMARY KEY,
+                    workspace TEXT NOT NULL,
+                    name TEXT NOT NULL DEFAULT 'Default Team',
+                    architect_model TEXT NOT NULL DEFAULT 'gpt-4o',
+                    architect_provider TEXT NOT NULL DEFAULT 'openai',
+                    coder_model TEXT NOT NULL DEFAULT 'claude-3-5-sonnet-latest',
+                    coder_provider TEXT NOT NULL DEFAULT 'anthropic',
+                    reviewer_model TEXT NOT NULL DEFAULT 'gpt-4o',
+                    reviewer_provider TEXT NOT NULL DEFAULT 'openai',
+                    tester_model TEXT NOT NULL DEFAULT 'llama-3.3-70b-versatile',
+                    tester_provider TEXT NOT NULL DEFAULT 'groq',
+                    devops_model TEXT NOT NULL DEFAULT 'llama-3.1-8b-instant',
+                    devops_provider TEXT NOT NULL DEFAULT 'groq',
+                    max_repair_rounds INTEGER NOT NULL DEFAULT 3,
+                    max_concurrency INTEGER NOT NULL DEFAULT 3,
+                    auto_verify INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_team_configs_workspace ON team_configs(workspace);")
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS team_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    task_id TEXT,
+                    sender_role TEXT NOT NULL,
+                    recipient_role TEXT NOT NULL DEFAULT 'all',
+                    message_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    artifact_json TEXT DEFAULT NULL,
+                    token_usage INTEGER DEFAULT 0,
+                    cost_usd REAL DEFAULT 0.0,
+                    timestamp REAL NOT NULL,
+                    FOREIGN KEY (job_id) REFERENCES agent_jobs(id) ON DELETE CASCADE
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_team_messages_job ON team_messages(job_id, timestamp);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_team_messages_sender ON team_messages(sender_role);")
+        except Exception as exc:
+            logger.debug("Migration 7 team_tables: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (7, 'team_configs_and_team_messages')")
+        await db.commit()
+
+    # Migration 8: Final report persistence on agent_jobs
+    if 8 not in applied:
+        try:
+            await db.execute("ALTER TABLE agent_jobs ADD COLUMN final_report TEXT DEFAULT NULL")
+        except Exception as exc:
+            logger.debug("Migration 8 final_report column: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (8, 'agent_jobs_final_report')")
+        await db.commit()
+
 
 async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
     """Initialize connection pool and tables if they do not exist."""
@@ -690,6 +752,7 @@ async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
             logs TEXT DEFAULT '[]',
             workspace_manifest TEXT DEFAULT '{}',
             user_request TEXT DEFAULT '',
+            final_report TEXT DEFAULT NULL,
             FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_agent_jobs_workspace ON agent_jobs(workspace);
@@ -794,6 +857,46 @@ async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS team_configs (
+            id TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT 'Default Team',
+            architect_model TEXT NOT NULL DEFAULT 'gpt-4o',
+            architect_provider TEXT NOT NULL DEFAULT 'openai',
+            coder_model TEXT NOT NULL DEFAULT 'claude-3-5-sonnet-latest',
+            coder_provider TEXT NOT NULL DEFAULT 'anthropic',
+            reviewer_model TEXT NOT NULL DEFAULT 'gpt-4o',
+            reviewer_provider TEXT NOT NULL DEFAULT 'openai',
+            tester_model TEXT NOT NULL DEFAULT 'llama-3.3-70b-versatile',
+            tester_provider TEXT NOT NULL DEFAULT 'groq',
+            devops_model TEXT NOT NULL DEFAULT 'llama-3.1-8b-instant',
+            devops_provider TEXT NOT NULL DEFAULT 'groq',
+            max_repair_rounds INTEGER NOT NULL DEFAULT 3,
+            max_concurrency INTEGER NOT NULL DEFAULT 3,
+            auto_verify INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (workspace) REFERENCES workspaces(path) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_team_configs_workspace ON team_configs(workspace);
+
+        CREATE TABLE IF NOT EXISTS team_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT NOT NULL,
+            task_id TEXT,
+            sender_role TEXT NOT NULL,
+            recipient_role TEXT NOT NULL DEFAULT 'all',
+            message_type TEXT NOT NULL,
+            content TEXT NOT NULL,
+            artifact_json TEXT DEFAULT NULL,
+            token_usage INTEGER DEFAULT 0,
+            cost_usd REAL DEFAULT 0.0,
+            timestamp REAL NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES agent_jobs(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_team_messages_job ON team_messages(job_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_team_messages_sender ON team_messages(sender_role);
         """
     )
 

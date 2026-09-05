@@ -8,10 +8,10 @@ import time
 from collections import deque
 import threading
 
+import secrets
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.logging import configure_logging, request_id_var
 
@@ -41,6 +41,7 @@ from app.features.diagnostics.routes import router as diagnostics_router
 from app.features.duo.routes import router as duo_router
 from app.features.ai.dual_coder_routes import router as dual_coder_router
 from app.features.ai.chat_harness_routes import router as chat_harness_router
+from app.features.ai.team.team_routes import router as team_router
 from app.core.monitoring import monitor
 from app.core.errors import AppError, app_error_handler
 _START_TIME = time.time()
@@ -175,20 +176,95 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CODE OS Backend", version="3.1.0", lifespan=lifespan)
 
 
-async def request_id_middleware(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    request.state.request_id = request_id
-    token = request_id_var.set(request_id)
-    try:
-        response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        return response
-    finally:
-        request_id_var.reset(token)
+class RequestIdMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        req_id = headers.get(b"x-request-id", b"").decode("latin1") or str(uuid.uuid4())
+        token = request_id_var.set(req_id)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                raw_headers = list(message.get("headers", []))
+                raw_headers.append((b"x-request-id", req_id.encode("latin1")))
+                message["headers"] = raw_headers
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            request_id_var.reset(token)
 
 
-app.add_middleware(BaseHTTPMiddleware, dispatch=require_token)
-app.add_middleware(BaseHTTPMiddleware, dispatch=request_id_middleware)
+class AuthMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        from app.core.auth import _is_exempt, get_token
+        req = Request(scope)
+        if _is_exempt(req):
+            await self.app(scope, receive, send)
+            return
+
+        req_id = request_id_var.get() or str(uuid.uuid4())
+        headers_dict = dict(scope.get("headers", []))
+        auth_header = headers_dict.get(b"authorization", b"").decode("latin1")
+
+        provided_token = ""
+        if auth_header.startswith("Bearer "):
+            provided_token = auth_header.removeprefix("Bearer ").strip()
+        else:
+            # Allow token via query string for EventSource / SSE connections
+            query_str = scope.get("query_string", b"").decode("latin1")
+            from urllib.parse import parse_qs
+            qs = parse_qs(query_str)
+            if "token" in qs and qs["token"]:
+                provided_token = qs["token"][0]
+
+        if not provided_token:
+            res = JSONResponse(
+                status_code=401,
+                content={"detail": "Missing or malformed Authorization header. Expected: Bearer <session-token> or ?token=<session-token>"},
+                headers={"WWW-Authenticate": "Bearer", "X-Request-ID": req_id},
+            )
+            await res(scope, receive, send)
+            return
+        try:
+            expected = get_token()
+        except RuntimeError:
+            res = JSONResponse(
+                status_code=503,
+                content={"detail": "Backend not fully initialised yet"},
+                headers={"WWW-Authenticate": "Bearer", "X-Request-ID": req_id},
+            )
+            await res(scope, receive, send)
+            return
+
+        if not secrets.compare_digest(provided_token, expected):
+            res = JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid session token"},
+                headers={"WWW-Authenticate": "Bearer", "X-Request-ID": req_id},
+            )
+            await res(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(AuthMiddleware)
+app.add_middleware(RequestIdMiddleware)
 app.add_exception_handler(AppError, app_error_handler)
 
 app.add_middleware(
@@ -382,3 +458,4 @@ app.include_router(diagnostics_router, prefix="/api/diagnostics", tags=["diagnos
 app.include_router(duo_router, prefix="/api/duo", tags=["duo"])
 app.include_router(dual_coder_router, prefix="/api/dual-coder", tags=["dual-coder"])
 app.include_router(chat_harness_router, prefix="/api/ai", tags=["chat-agent"])
+app.include_router(team_router, prefix="/api/team", tags=["team"])

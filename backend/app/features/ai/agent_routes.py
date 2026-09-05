@@ -8,8 +8,10 @@ from .agents.planner import PlannerAgent
 from .dag_engine import dag_engine
 from .job_service import create_job, create_task, get_job, list_jobs, update_job_status
 from .context_service import gather_context
+from .team.team_routes import router as team_router
 
 router = APIRouter()
+router.include_router(team_router, prefix="/team", tags=["team"])
 
 class PlanRequest(BaseModel):
     workspace: str

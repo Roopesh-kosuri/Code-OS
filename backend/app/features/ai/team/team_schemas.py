@@ -88,6 +88,8 @@ class TeamMessage(BaseModel):
     artifact_json: Optional[str] = None
     token_usage: int = 0
     cost_usd: float = 0.0
+    acknowledged: bool = False
+    details: Optional[dict[str, Any]] = None
     timestamp: float = Field(default_factory=time.time)
 
 
@@ -105,9 +107,37 @@ class TeamTask(BaseModel):
     role: TeamRole
     dependencies: list[str] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     status: str = "queued"  # "queued", "running", "completed", "failed", "skipped"
     result: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     handoff: Optional[HandoffArtifact] = None
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
+
+
+MODEL_PRICING: dict[str, dict[str, float]] = {
+    "gpt-4o": {"input_per_million": 2.50, "output_per_million": 10.00},
+    "gpt-4o-mini": {"input_per_million": 0.15, "output_per_million": 0.60},
+    "claude-3-5-sonnet-latest": {"input_per_million": 3.00, "output_per_million": 15.00},
+    "claude-3-5-sonnet": {"input_per_million": 3.00, "output_per_million": 15.00},
+    "llama-3.3-70b-versatile": {"input_per_million": 0.59, "output_per_million": 0.79},
+    "llama-3.1-8b-instant": {"input_per_million": 0.05, "output_per_million": 0.08},
+}
+
+
+def calculate_token_cost(model: str, input_tokens: int = 0, output_tokens: int = 0) -> float:
+    """Calculate USD cost for input/output tokens according to model pricing."""
+    m = model.lower()
+    pricing = None
+    for k, p in MODEL_PRICING.items():
+        if k in m or m in k:
+            pricing = p
+            break
+    if not pricing:
+        pricing = {"input_per_million": 2.50, "output_per_million": 10.00}
+
+    in_cost = (input_tokens / 1_000_000.0) * pricing["input_per_million"]
+    out_cost = (output_tokens / 1_000_000.0) * pricing["output_per_million"]
+    return round(in_cost + out_cost, 6)
+
