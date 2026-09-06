@@ -43,11 +43,15 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
+      - name: Install System Dependencies (macOS)
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg pkg-config || true
+
       - name: Install Python Backend Dependencies & PyInstaller
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
-          pip install -r backend/requirements.txt
+          pip install --prefer-binary pyinstaller
+          pip install --prefer-binary -r backend/requirements.txt
 
       - name: Install Frontend Node Dependencies
         run: npm install
