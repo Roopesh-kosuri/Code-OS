@@ -21,7 +21,7 @@ pyautogui==0.9.54
 mss==10.2.0
 chromadb==0.4.22
 sentence-transformers==2.2.2
-faster-whisper>=1.0.0
+faster-whisper==1.2.1
 pyttsx3==2.90
 sounddevice==0.4.6
 soundfile==0.12.1
@@ -36,4 +36,3 @@ selenium==4.15.2
 webdriver-manager==4.0.1
 pystray==0.19.5
 bandit==1.7.5
-safety==2.3.5
