@@ -33,7 +33,7 @@ jobs:
       - name: Install System Dependencies (Linux)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg pkg-config
+          sudo apt-get install -y ffmpeg pkg-config xvfb
 
       - name: Install Backend Dependencies & PyInstaller
         run: |
@@ -51,6 +51,6 @@ jobs:
         run: npm run build
 
       - name: Run Python Test Suite with Coverage
-        run: python -m pytest backend/tests --cov=app --cov-fail-under=50 -v
+        run: xvfb-run -a python -m pytest backend/tests --cov=app --cov-fail-under=50 -v
         env:
           PYTHONPATH: backend

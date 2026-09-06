@@ -22,16 +22,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import mss
-import pyautogui
+
+# Try importing pyautogui safely with headless/test fallback
+try:
+    import pyautogui
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0.2
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning("pyautogui not initialized in current environment: %s", e)
+    pyautogui = None  # type: ignore
 
 from app.core.paths import normalize_workspace
 from app.features.settings.service import get_setting
 
 logger = logging.getLogger(__name__)
-
-# Enforce pyautogui failsafe at import time (slamming mouse to any screen corner aborts)
-pyautogui.FAILSAFE = True
-pyautogui.PAUSE = 0.2
 
 # Forbidden patterns for typing/app execution to prevent catastrophic actions
 FORBIDDEN_APP_PATTERNS = [
@@ -118,29 +123,47 @@ class ComputerController:
                 if re.search(pattern, payload):
                     raise PermissionError("Typing blocked by safety policy: detected possible password/secret exposure.")
 
+        # 5. Graphical desktop check for GUI automation actions
+        if action_name in ("mouse_click", "keyboard_type", "hotkey") and pyautogui is None:
+            raise RuntimeError("Desktop automation action unavailable: no graphical display server detected.")
+
     def capture_screen(self, filename: str | None = None) -> dict[str, Any]:
         """Capture the primary desktop display using mss, returns file path and base64."""
         name = filename or f"screen_{int(time.time() * 1000)}.png"
         out_path = self.audit_dir / name
 
-        with mss.mss() as sct:
-            # Monitor 1 is primary display in mss (monitor 0 is all monitors combined)
-            mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-            shot = sct.grab(mon)
-            mss.tools.to_png(shot.rgb, shot.size, output=str(out_path))
+        try:
+            with mss.mss() as sct:
+                # Monitor 1 is primary display in mss (monitor 0 is all monitors combined)
+                mon = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                shot = sct.grab(mon)
+                mss.tools.to_png(shot.rgb, shot.size, output=str(out_path))
 
-        raw_bytes = out_path.read_bytes()
-        b64 = base64.b64encode(raw_bytes).decode("ascii")
-        return {
-            "success": True,
-            "path": str(out_path),
-            "filename": name,
-            "base64": b64,
-            "mime_type": "image/png",
-            "width": shot.width,
-            "height": shot.height,
-            "size_bytes": len(raw_bytes),
-        }
+            raw_bytes = out_path.read_bytes()
+            b64 = base64.b64encode(raw_bytes).decode("ascii")
+            return {
+                "success": True,
+                "path": str(out_path),
+                "filename": name,
+                "base64": b64,
+                "mime_type": "image/png",
+                "width": shot.width,
+                "height": shot.height,
+                "size_bytes": len(raw_bytes),
+            }
+        except Exception as e:
+            logger.warning("Screen capture failed (display unavailable): %s", e)
+            return {
+                "success": False,
+                "path": str(out_path),
+                "filename": name,
+                "base64": "",
+                "mime_type": "image/png",
+                "width": 0,
+                "height": 0,
+                "size_bytes": 0,
+                "error": str(e),
+            }
 
     async def screen_screenshot(self) -> dict[str, Any]:
         """Capture desktop screen with safety check."""
