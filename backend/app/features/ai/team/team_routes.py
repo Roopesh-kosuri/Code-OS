@@ -27,6 +27,11 @@ from ..job_service import (
     update_task_status,
     get_final_report,
     format_report_as_markdown,
+    get_custom_roles,
+    save_custom_role,
+    delete_custom_role,
+    save_job_custom_roles_snapshot,
+    get_job_custom_roles_snapshot,
 )
 from ...workspaces.trust_service import get_workspace_trust
 from .handoff import format_handoff_for_prompt
@@ -51,6 +56,7 @@ class SubmitTeamJobRequest(BaseModel):
     user_request: str
     team_config: Optional[TeamConfig] = None
     tasks: Optional[list[dict[str, Any]]] = None
+    file_ids: list[str] = Field(default_factory=list)
 
 
 class InjectPromptRequest(BaseModel):
@@ -143,9 +149,29 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
 
     job_id = f"team_{uuid.uuid4().hex[:12]}"
     config = payload.team_config or TeamConfig(workspace=payload.workspace)
+    config.workspace = payload.workspace
+
+    # Snapshot workspace custom roles into job configuration (Refinement R1)
+    custom_roles = await get_custom_roles(payload.workspace)
+    config.custom_roles = custom_roles
     await save_team_config(config.model_dump())
 
-    await create_job(job_id, payload.workspace, "team_mode", user_request=payload.user_request)
+    # Fetch attached files for Architect DAG planning
+    attached_context_str = ""
+    if payload.file_ids:
+        from ..file_ingestion.service import get_uploaded_file
+        file_blocks = []
+        for fid in payload.file_ids:
+            fdata = get_uploaded_file(fid, payload.workspace)
+            if fdata and fdata.get("content"):
+                file_blocks.append(f"[{fdata.get('filename', 'file')}]:\n{fdata.get('content', '')}")
+        if file_blocks:
+            attached_context_str = "Attached files:\n\n" + "\n\n".join(file_blocks)
+
+    effective_user_request = f"{attached_context_str}\n\n{payload.user_request}" if attached_context_str else payload.user_request
+
+    await create_job(job_id, payload.workspace, "team_mode", user_request=effective_user_request)
+    await save_job_custom_roles_snapshot(job_id, custom_roles)
 
     # Build TeamTask DAG
     tasks: list[TeamTask] = []
@@ -153,10 +179,16 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
         for idx, t in enumerate(payload.tasks):
             tid = t.get("id") or t.get("task_id") or f"{job_id}_t{idx+1}"
             role_str = t.get("role") or t.get("agent_role") or "coder"
+            clean_role = role_str.lstrip("@").lower()
             try:
-                role = TeamRole(role_str.lower())
+                role = TeamRole(clean_role)
             except ValueError:
-                role = TeamRole.CODER
+                role = clean_role
+
+            task_ctx = dict(t.get("context", {}))
+            if attached_context_str and idx == 0:
+                task_ctx["attached_files"] = attached_context_str
+                task_ctx["file_ids"] = payload.file_ids
 
             task = TeamTask(
                 task_id=tid,
@@ -164,13 +196,19 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
                 title=t.get("title", f"Task {idx+1}"),
                 role=role,
                 dependencies=t.get("dependencies", []),
-                context=t.get("context", {}),
+                context=task_ctx,
             )
             tasks.append(task)
-            await create_task(task.task_id, job_id, task.title, task.role.value, dependencies=task.dependencies)
+            role_val = task.role.value if isinstance(task.role, TeamRole) else str(task.role)
+            await create_task(task.task_id, job_id, task.title, role_val, dependencies=task.dependencies)
     else:
         # Default Team Pipeline: Architect -> Coder -> Tester -> Reviewer
-        t1 = TeamTask(task_id=f"{job_id}_arch", job_id=job_id, title="Decompose Specification", role=TeamRole.ARCHITECT, dependencies=[])
+        arch_ctx: dict[str, Any] = {}
+        if attached_context_str:
+            arch_ctx["attached_files"] = attached_context_str
+            arch_ctx["file_ids"] = payload.file_ids
+
+        t1 = TeamTask(task_id=f"{job_id}_arch", job_id=job_id, title="Decompose Specification", role=TeamRole.ARCHITECT, dependencies=[], context=arch_ctx)
         t2 = TeamTask(task_id=f"{job_id}_code", job_id=job_id, title="Implement Solution", role=TeamRole.CODER, dependencies=[t1.task_id])
         t3 = TeamTask(task_id=f"{job_id}_test", job_id=job_id, title="Run Test Suite & Verify", role=TeamRole.TESTER, dependencies=[t2.task_id])
         t4 = TeamTask(task_id=f"{job_id}_rev", job_id=job_id, title="Code Review Audit", role=TeamRole.REVIEWER, dependencies=[t3.task_id])
@@ -531,4 +569,60 @@ async def export_job_report_markdown(job_id: str) -> PlainTextResponse:
         raise HTTPException(status_code=404, detail="No final report found for this job")
     md_content = format_report_as_markdown(job_id, report)
     return PlainTextResponse(content=md_content, media_type="text/markdown")
+
+
+# ── Custom Roles Endpoints (Phase B7) ────────────────────────────────────────
+
+class CustomRoleRequest(BaseModel):
+    id: Optional[str] = None
+    workspace: str = "."
+    name: str
+    handle: str
+    description: str = ""
+    color: str = "#6366f1"
+    icon: str = "bot"
+    allowed_tools: list[str] = Field(default_factory=list)
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+@router.get("/roles")
+async def get_custom_roles_endpoint(workspace: Optional[str] = Query(None)) -> dict[str, Any]:
+    """Retrieve custom agent roles, optionally filtered by workspace."""
+    roles = await get_custom_roles(workspace)
+    return {"roles": roles, "count": len(roles)}
+
+
+@router.post("/roles")
+async def save_custom_role_endpoint(payload: CustomRoleRequest) -> dict[str, Any]:
+    """Create or update a custom agent role with safety tool sanitization."""
+    if not payload.name.strip() or not payload.handle.strip():
+        raise HTTPException(status_code=400, detail="Name and handle are required.")
+    clean_handle = payload.handle.strip().lstrip("@").lower()
+    builtin_values = {br.value for br in TeamRole}
+    if clean_handle in builtin_values:
+        raise HTTPException(status_code=400, detail=f"Handle '@{clean_handle}' conflicts with a built-in role.")
+    role_data = payload.model_dump()
+    role_data["handle"] = clean_handle
+    try:
+        saved = await save_custom_role(role_data)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"role": saved, "success": True}
+
+
+@router.delete("/roles/{role_id}")
+async def delete_custom_role_endpoint(role_id: str, workspace: Optional[str] = Query(None)) -> dict[str, Any]:
+    """Delete a custom agent role."""
+    deleted = await delete_custom_role(role_id, workspace=workspace)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Role not found or could not be deleted.")
+    return {"success": True, "role_id": role_id}
+
+
+@router.get("/jobs/{job_id}/roles/snapshot")
+async def get_job_custom_roles_snapshot_endpoint(job_id: str) -> dict[str, Any]:
+    """Get the custom roles snapshot frozen at job start."""
+    snapshot = await get_job_custom_roles_snapshot(job_id)
+    return {"job_id": job_id, "custom_roles": snapshot}
 

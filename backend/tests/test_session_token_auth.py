@@ -33,10 +33,14 @@ class TestGenerateAndStoreToken(unittest.TestCase):
     """Token generation, file storage, and stdout emission."""
 
     def setUp(self):
+        import app.core.auth as auth_mod
+        self._orig_token = auth_mod._SESSION_TOKEN
         self.tmp = tempfile.TemporaryDirectory()
         self.data_dir = Path(self.tmp.name)
 
     def tearDown(self):
+        import app.core.auth as auth_mod
+        auth_mod._SESSION_TOKEN = self._orig_token
         self.tmp.cleanup()
 
     def _settings(self):
@@ -105,9 +109,14 @@ class TestAuthMiddleware(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         import app.core.auth as auth_mod
+        self._orig_token = auth_mod._SESSION_TOKEN
         # Plant a known token
         self._known_token = "a" * 64
         auth_mod._SESSION_TOKEN = self._known_token
+
+    async def asyncTearDown(self):
+        import app.core.auth as auth_mod
+        auth_mod._SESSION_TOKEN = self._orig_token
 
     def _make_request(self, path="/api/files/read", method="GET", auth_header: str | None = None):
         from unittest.mock import MagicMock

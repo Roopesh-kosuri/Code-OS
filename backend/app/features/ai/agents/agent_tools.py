@@ -237,12 +237,73 @@ def _handle_edit_file(workspace: str, arguments: dict, staged_changes: list) -> 
     change = FileChange(path=rel_path, original=original, updated=updated)
     staged_changes.append(change)
 
+    # Emit diff chunks to open Monaco editor(s) if registered
+    try:
+        from ..ghost_text.ghost_text_service import emit_diff_chunks
+        emit_diff_chunks(workspace=workspace, file_path=rel_path, original=original, updated=updated)
+    except Exception as exc:
+        logger.debug("Ghost text emit_diff_chunks: %s", exc)
+
     action = "create new file" if not original else "edit"
     return ToolResult(
         tool_name="edit_file",
         success=True,
         output=f"✓ Staged {action}: {rel_path} ({len(updated)} chars)"
     )
+
+
+def _handle_run_command(workspace: str, arguments: dict[str, Any]) -> ToolResult:
+    """Execute a shell command, streaming to agentic terminal if active, or running silently."""
+    cmd = arguments.get("command") or arguments.get("cmd") or ""
+    if not cmd:
+        return ToolResult(tool_name="run_command", success=False, output="", error="Missing command parameter")
+
+    # Check if agentic terminal session exists for this workspace
+    try:
+        from ..terminal.agentic_terminal_service import (
+            get_active_session_for_workspace,
+            execute_command as exec_term_cmd,
+        )
+        active_term = get_active_session_for_workspace(workspace)
+        if active_term:
+            import asyncio
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                hist = executor.submit(
+                    asyncio.run,
+                    exec_term_cmd(active_term["terminal_id"], cmd)
+                ).result()
+
+            success = hist.get("exit_code") == 0
+            out = (hist.get("stdout") or "") + ("\n" + hist.get("stderr") if hist.get("stderr") else "")
+            return ToolResult(
+                tool_name="run_command",
+                success=success,
+                output=out.strip(),
+                error="" if success else f"Command exited with code {hist.get('exit_code')}",
+            )
+    except Exception as exc:
+        logger.warning("agentic terminal execution failed, falling back to silent: %s", exc)
+
+    # Fallback to silent execution
+    import subprocess
+    import os
+    try:
+        if os.name == "nt":
+            args = ["powershell", "-NoLogo", "-NoProfile", "-Command", cmd]
+        else:
+            args = ["bash", "-c", cmd]
+        proc = subprocess.run(args, cwd=workspace, capture_output=True, text=True, timeout=45.0)
+        raw = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+        return ToolResult(
+            tool_name="run_command",
+            success=proc.returncode == 0,
+            output=raw.strip(),
+            error="" if proc.returncode == 0 else f"Command exited with code {proc.returncode}",
+        )
+    except Exception as exc:
+        return ToolResult(tool_name="run_command", success=False, output="", error=str(exc))
+
 
 
 def summarize_test_output(raw_output: str, max_chars: int = 1000) -> str:
@@ -468,6 +529,8 @@ def execute_tool_calls(
             result = _handle_run_test(workspace, call.arguments)
         elif call.name == "edit_file":
             result = _handle_edit_file(workspace, call.arguments, staged_changes)
+        elif call.name == "run_command":
+            result = _handle_run_command(workspace, call.arguments)
         else:
             result = ToolResult(tool_name=call.name, success=False, output="", error=f"Unknown tool: {call.name}")
 

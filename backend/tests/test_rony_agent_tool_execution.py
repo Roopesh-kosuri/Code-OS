@@ -12,6 +12,7 @@ Validates:
 8. End-to-end single-file Java calculator creation in ONE turn with zero continue prompts
 9. End-to-end multi-step autonomous execution loop with zero continue prompts
 """
+import uuid
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -223,6 +224,25 @@ async def test_e2e_single_file_calculator_java_turn(tmp_path):
     mock_provider = MagicMock()
     mock_provider.stream_chat = MagicMock(side_effect=[mock_stream_turn1(), mock_stream_turn2()])
 
+    # Mock create_proposal to avoid real DB access in this unit/integration test.
+    # DB persistence of proposals is tested separately in test_coverage_routes_and_services.py.
+    from app.features.ai.schemas import FileChange as FC
+    fake_proposal_id = str(uuid.uuid4())
+
+    class _FakeProposal:
+        id = fake_proposal_id
+        workspace = ws
+        status = "pending"
+        summary = "Rony Agent: 1 file(s) created/modified"
+        changes = []
+        diff = ""
+        plan = []
+        self_review = ""
+        test_results = ""
+
+    async def mock_create_proposal(payload):
+        return _FakeProposal()
+
     async def auto_approver():
         for _ in range(100):
             await asyncio.sleep(0.05)
@@ -241,21 +261,22 @@ async def test_e2e_single_file_calculator_java_turn(tmp_path):
     with patch("app.features.ai.chat_harness.provider_for", AsyncMock(return_value=mock_provider)):
         with patch("app.features.settings.service.get_api_key", AsyncMock(return_value="mock_key")):
             with patch("app.features.settings.service.list_settings", AsyncMock(return_value={})):
-                approver_task = asyncio.create_task(auto_approver())
-                events = []
-                async for ev in run_chat_agent(req):
-                    events.append(ev)
-                await approver_task
+                with patch("app.features.ai.service.create_proposal", side_effect=mock_create_proposal):
+                    approver_task = asyncio.create_task(auto_approver())
+                    events = []
+                    async for ev in run_chat_agent(req):
+                        events.append(ev)
+                    await approver_task
 
-                # Check proposal was emitted
-                proposal_events = [e for e in events if "event: proposal" in e]
-                assert len(proposal_events) >= 1
-                assert any("Calculator.java" in pe for pe in proposal_events)
+                    # Check proposal was emitted
+                    proposal_events = [e for e in events if "event: proposal" in e]
+                    assert len(proposal_events) >= 1
+                    assert any("Calculator.java" in pe for pe in proposal_events)
 
-                # Check done event
-                done_events = [e for e in events if "event: done" in e]
-                assert len(done_events) >= 1
-                assert '"success": true' in done_events[-1] or '"success":true' in done_events[-1].replace(" ", "")
+                    # Check done event
+                    done_events = [e for e in events if "event: done" in e]
+                    assert len(done_events) >= 1
+                    assert '"success": true' in done_events[-1] or '"success":true' in done_events[-1].replace(" ", "")
 
 
 @pytest.mark.asyncio
@@ -293,6 +314,23 @@ async def test_e2e_multi_step_autonomous_loop(tmp_path):
     mock_provider = MagicMock()
     mock_provider.stream_chat = MagicMock(side_effect=[mock_stream_turn1(), mock_stream_turn2(), mock_stream_turn3()])
 
+    # Mock create_proposal to avoid real DB access in this unit/integration test.
+    fake_proposal_id = str(uuid.uuid4())
+
+    class _FakeProposalMulti:
+        id = fake_proposal_id
+        workspace = ws
+        status = "pending"
+        summary = "Rony Agent: 2 file(s) created/modified"
+        changes = []
+        diff = ""
+        plan = []
+        self_review = ""
+        test_results = ""
+
+    async def mock_create_proposal(payload):
+        return _FakeProposalMulti()
+
     async def auto_approver():
         for _ in range(100):
             await asyncio.sleep(0.05)
@@ -311,15 +349,16 @@ async def test_e2e_multi_step_autonomous_loop(tmp_path):
     with patch("app.features.ai.chat_harness.provider_for", AsyncMock(return_value=mock_provider)):
         with patch("app.features.settings.service.get_api_key", AsyncMock(return_value="mock_key")):
             with patch("app.features.settings.service.list_settings", AsyncMock(return_value={})):
-                approver_task = asyncio.create_task(auto_approver())
-                events = []
-                async for ev in run_chat_agent(req):
-                    events.append(ev)
-                await approver_task
+                with patch("app.features.ai.service.create_proposal", side_effect=mock_create_proposal):
+                    approver_task = asyncio.create_task(auto_approver())
+                    events = []
+                    async for ev in run_chat_agent(req):
+                        events.append(ev)
+                    await approver_task
 
-                proposal_events = [e for e in events if "event: proposal" in e]
-                assert len(proposal_events) >= 1
+                    proposal_events = [e for e in events if "event: proposal" in e]
+                    assert len(proposal_events) >= 1
 
-                done_events = [e for e in events if "event: done" in e]
-                assert len(done_events) >= 1
-                assert '"success": true' in done_events[-1] or '"success":true' in done_events[-1].replace(" ", "")
+                    done_events = [e for e in events if "event: done" in e]
+                    assert len(done_events) >= 1
+                    assert '"success": true' in done_events[-1] or '"success":true' in done_events[-1].replace(" ", "")

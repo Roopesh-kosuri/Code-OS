@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
-import { FolderOpen, RotateCw, Settings, ShieldCheck, ShieldAlert, RefreshCw, Minus, Square, X, Copy } from "lucide-react";
-import { useEditorStore } from "../../stores/editorStore";
-import { useIndexStore } from "../../stores/indexStore";
+import { FolderOpen, Settings, ShieldCheck, ShieldAlert, Minus, Square, X, Copy, DollarSign, Mic } from "lucide-react";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
+import { useIndexStore } from "../../stores/indexStore";
+import { useCostStore } from "../../stores/costStore";
+import { CostDashboardModal } from "../../features/ai/cost/CostDashboardModal";
+import { useVoiceStore } from "../../features/voice/voiceStore";
 
 type TopBarProps = {
   onOpenSettings: () => void;
@@ -14,11 +16,45 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
   const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
   const loading = useWorkspaceStore((state) => state.loading);
   const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
-  const indexStatus = useIndexStore((state) => state.status);
   const runIndex = useIndexStore((state) => state.run);
   const restrictedMode = useWorkspaceStore((state) => state.restrictedMode);
   const setWorkspaceTrust = useWorkspaceStore((state) => state.setWorkspaceTrust);
   const [isMaximized, setIsMaximized] = useState(false);
+
+  const budget = useCostStore((state) => state.budget);
+  const showTopBarPill = useCostStore((state) => state.showTopBarPill);
+  const openCostModal = useCostStore((state) => state.openModal);
+  const fetchBudget = useCostStore((state) => state.fetchBudget);
+  const voiceIsRecording = useVoiceStore((state) => state.isRecording);
+  const openVoiceModal = useVoiceStore((state) => state.openModal);
+  const voiceIsOpen = useVoiceStore((state) => state.isOpen);
+
+  useEffect(() => {
+    void fetchBudget(currentWorkspace?.path);
+    const interval = setInterval(() => {
+      void fetchBudget(currentWorkspace?.path);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [currentWorkspace?.path, fetchBudget]);
+
+  const usagePct = budget.usage_percent || 0;
+  const hasLimit = budget.daily_limit_usd !== null && budget.daily_limit_usd > 0;
+  const isOver = hasLimit && usagePct >= 100;
+  const isRed = hasLimit && usagePct >= 90;
+  const isAmber = hasLimit && usagePct >= 50 && usagePct < 90;
+
+  let pillColorClass = "bg-emerald-500/10 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/20";
+  if (isOver) {
+    pillColorClass = "animate-pulse bg-rose-500/25 text-rose-300 border-rose-500 font-bold hover:bg-rose-500/35 shadow-[0_0_12px_rgba(244,63,94,0.4)]";
+  } else if (isRed) {
+    pillColorClass = "bg-rose-500/15 text-rose-400 border-rose-500/40 hover:bg-rose-500/25";
+  } else if (isAmber) {
+    pillColorClass = "bg-amber-500/15 text-amber-400 border-amber-500/40 hover:bg-amber-500/25";
+  }
+
+  const pillText = `Today: $${(budget.today_spend_usd || 0).toFixed(2)}${
+    hasLimit ? ` / $${budget.daily_limit_usd!.toFixed(2)}` : ""
+  }`;
 
   useEffect(() => {
     if (window.codeOS?.windowControls) {
@@ -42,11 +78,6 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
     window.codeOS?.windowControls?.close();
   };
 
-  const indexLabel = indexStatus
-    ? indexStatus.status === "ready"
-      ? `Index: Ready`
-      : `Index: ${indexStatus.status}`
-    : "Index: Pending";
 
   const navItems = [
     { id: "main", label: "Main" },
@@ -59,6 +90,7 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
   ];
 
   return (
+    <>
     <header
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
       className="bg-background flex justify-between items-center w-full px-6 py-2.5 border-b border-surface-container-low flex-shrink-0 z-50 select-none text-on-surface"
@@ -111,9 +143,39 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
             )
           )}
 
-          <span className="bg-surface-variant text-on-surface-variant rounded-full px-3 py-1 font-caption text-caption">
-            {indexLabel}
-          </span>
+          {/* Global Cost Pill */}
+          {showTopBarPill && (
+            <button
+              id="global-cost-pill"
+              onClick={openCostModal}
+              className={`rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 transition-all shadow-xs cursor-pointer border ${pillColorClass}`}
+              title="Today's Spend & Budget (Click to open Cost Dashboard)"
+            >
+              <DollarSign size={12} className="shrink-0" />
+              <span className="font-semibold text-xs font-mono">{pillText}</span>
+            </button>
+          )}
+
+          {/* Voice Mode Button */}
+          <button
+            id="voice-mode-btn"
+            data-testid="voice-mode-btn"
+            onClick={openVoiceModal}
+            className={`relative rounded-full px-3 py-1 font-caption text-caption flex items-center gap-1.5 transition-all shadow-xs cursor-pointer border ${
+              voiceIsRecording
+                ? "bg-rose-500/20 text-rose-400 border-rose-500/40 animate-pulse"
+                : voiceIsOpen
+                ? "bg-primary/20 text-primary border-primary/40"
+                : "bg-primary/10 text-primary border-primary/20 hover:bg-primary/20 hover:border-primary/40"
+            }`}
+            title="JARVIS Voice Mode (Ctrl+Shift+Space)"
+          >
+            {voiceIsRecording && (
+              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-rose-500 rounded-full animate-ping" />
+            )}
+            <Mic size={12} className="shrink-0" />
+            <span className="font-semibold text-xs">Voice</span>
+          </button>
         </div>
       </div>
 
@@ -222,6 +284,8 @@ export function TopBar({ onOpenSettings, activeView, onViewChange }: TopBarProps
         )}
       </div>
     </header>
+    <CostDashboardModal />
+    </>
   );
 }
 

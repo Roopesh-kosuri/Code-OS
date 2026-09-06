@@ -16,6 +16,12 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5176,
     strictPort: false,
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+    },
     fs: {
       allow: ["..", path.resolve(__dirname, "node_modules/monaco-editor")],
     },

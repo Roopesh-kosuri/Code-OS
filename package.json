@@ -1,7 +1,7 @@
 {
   "name": "code-os",
-  "version": "3.0.0",
-  "description": "CODE OS v3.0.0 - Next-generation agentic AI operating system for developers",
+  "version": "4.0.0",
+  "description": "CODE OS v4.0.0 - Next-generation agentic AI operating system for developers",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.js",
@@ -49,10 +49,12 @@
     "@xterm/xterm": "^5.5.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.468.0",
+    "mermaid": "^11.17.2",
     "node-pty": "^1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
+    "recharts": "^3.10.1",
     "remark-gfm": "^4.0.0",
     "tailwind-merge": "^2.5.5",
     "zustand": "^5.0.2"
@@ -92,15 +94,8 @@
     ],
     "extraResources": [
       {
-        "from": "build/python-runtime",
-        "to": "python-runtime",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "build/node-runtime",
-        "to": "node-runtime",
+        "from": "backend/dist/backend",
+        "to": "backend",
         "filter": [
           "**/*"
         ]
@@ -110,14 +105,7 @@
       "icon": "build/icon.ico",
       "target": [
         "nsis",
-        "portable",
-        "dir"
-      ],
-      "extraResources": [
-        {
-          "from": "backend-dist/backend-server.exe",
-          "to": "backend-server.exe"
-        }
+        "portable"
       ]
     },
     "nsis": {
@@ -141,13 +129,7 @@
       ],
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "extraResources": [
-        {
-          "from": "backend-dist/backend-server",
-          "to": "backend-server"
-        }
-      ]
+      "gatekeeperAssess": false
     },
     "linux": {
       "icon": "build/icon.png",
@@ -157,13 +139,7 @@
         "dir"
       ],
       "category": "Development",
-      "maintainer": "Roopesh Kosuri <roopesh@codeos.ai>",
-      "extraResources": [
-        {
-          "from": "backend-dist/backend-server",
-          "to": "backend-server"
-        }
-      ]
+      "maintainer": "Roopesh Kosuri <roopesh@codeos.ai>"
     }
   }
 }

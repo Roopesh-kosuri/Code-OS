@@ -80,7 +80,7 @@ export const HandoffInspector: React.FC<HandoffInspectorProps> = ({
       data-testid="handoff-inspector-modal"
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-in fade-in duration-150"
     >
-      <div className="relative w-full max-w-2xl max-h-[85vh] bg-[#121216] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden text-on-surface">
+      <div className="relative w-full max-w-2xl max-h-[85vh] bg-surface-container-low border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden text-on-surface">
         {/* Header */}
         <div className="p-4 border-b border-white/10 flex items-center justify-between bg-surface-container-low">
           <div className="flex items-center gap-3">
@@ -130,7 +130,7 @@ export const HandoffInspector: React.FC<HandoffInspectorProps> = ({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex items-center border-b border-white/5 px-4 bg-[#0d0d10]">
+        <div className="flex items-center border-b border-white/5 px-4 bg-surface-container-lowest">
           <button
             onClick={() => setActiveTab("preview")}
             data-testid="tab-preview"

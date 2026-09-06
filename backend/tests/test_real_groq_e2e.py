@@ -31,6 +31,8 @@ def get_real_groq_key() -> str | None:
 @pytest.mark.asyncio
 async def test_real_groq_e2e_calculator_4_languages():
     """Live integration test against REAL Groq gpt-oss-120b for 4-language calculator creation."""
+    if not os.environ.get("RUN_REAL_GROQ"):
+        pytest.skip("Skipping live Groq network test (enable with RUN_REAL_GROQ=1)")
     groq_key = get_real_groq_key()
     if not groq_key:
         pytest.skip("No real Groq API key configured in ~/.code-os/code-os.sqlite3 or GROQ_API_KEY")

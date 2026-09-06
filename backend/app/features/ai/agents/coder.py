@@ -920,6 +920,48 @@ class CoderAgent(BaseAgent):
               from ..service import extract_proposals_robust
               parsed = extract_proposals_robust(final_response, [file_to_touch])
 
+              final_text = (final_response or "").strip()
+
+              # If parser returned 0 proposals and response has content, re-prompt up to 2 times
+              if not parsed and not tool_staged_changes and final_text:
+                for retry_idx in range(1, 3):
+                  logs.append(f"⚡ [PARSE_RETRY] Parsing yielded 0 proposals for {file_to_touch}. Re-prompting LLM for strict proposal format (attempt {retry_idx}/2)...")
+                  await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
+                  retry_prompt = (
+                    f"CRITICAL: Your previous response for '{file_to_touch}' did not contain any valid [PROPOSAL: {file_to_touch}] block or recognizable code proposal. "
+                    f"Please output the complete file change strictly using the required format below with NO conversational filler:\n\n"
+                    f"[PROPOSAL: {file_to_touch}]\n<<<< ORIGINAL\n====\n<complete updated code here>\n>>>>"
+                  )
+                  retry_messages = list(messages)
+                  retry_messages.append(ChatMessage(role="assistant", content=final_response))
+                  retry_messages.append(ChatMessage(role="user", content=retry_prompt))
+                  retry_req = self.create_chat_request(messages=retry_messages)
+                  try:
+                    retry_res = await instrumented_chat(retry_req, f"Phase 2: Parse Retry ({file_to_touch}, #{retry_idx})", temp=0.1)
+                    retry_res = (retry_res or "").strip()
+                    retry_parsed = extract_proposals_robust(retry_res, [file_to_touch])
+                    if retry_parsed:
+                      logs.append(f"✓ [PARSE_RECOVERED] Successfully extracted {len(retry_parsed)} proposal(s) on retry {retry_idx} for {file_to_touch}")
+                      await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+                      parsed = retry_parsed
+                      final_response = retry_res
+                      final_text = retry_res
+                      break
+                  except Exception as retry_exc:
+                    logs.append(f"⚠ [PARSE_RETRY_ERROR] Retry {retry_idx} failed: {retry_exc}")
+                    await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
+                # If still unparsed, perform final aggressive salvage of code block or text
+                if not parsed and final_text:
+                  from ..service import _strip_outer_fences
+                  cleaned_salvage = _strip_outer_fences(final_text)
+                  if len(cleaned_salvage) > 20:
+                    from ..schemas import FileChange
+                    parsed = [FileChange(path=file_to_touch, original="", updated=cleaned_salvage)]
+                    logs.append(f"🩹 [SALVAGED] Salvaged {len(cleaned_salvage)} chars of code for {file_to_touch} after parser retries")
+                    await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
               # Merge tool-staged changes (edit_file calls)
               if tool_staged_changes:
                 staged_paths = {c.path for c in tool_staged_changes}
@@ -932,7 +974,6 @@ class CoderAgent(BaseAgent):
 
               proposals.extend(parsed)
 
-              final_text = (final_response or "").strip()
               if parsed:
                 generation_outcomes[file_to_touch] = f"success:{len(parsed)}"
                 logs.append(f"✓ [EDITED] {file_to_touch} ({len(parsed)} changes)")
@@ -1041,6 +1082,47 @@ class CoderAgent(BaseAgent):
             from ..service import extract_proposals_robust
             parsed = extract_proposals_robust(final_response, plan.files_to_touch)
 
+            final_std_text = (final_response or "").strip()
+
+            if not parsed and not tool_staged_changes and final_std_text:
+              target_files_str = ", ".join(plan.files_to_touch) if plan.files_to_touch else "planned files"
+              for retry_idx in range(1, 3):
+                logs.append(f"⚡ [PARSE_RETRY] Parsing yielded 0 proposals for {target_files_str}. Re-prompting LLM for strict proposal format (attempt {retry_idx}/2)...")
+                await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
+                retry_prompt = (
+                  f"CRITICAL: Your previous response did not contain any valid [PROPOSAL: <path>] blocks. "
+                  f"Please output your code changes strictly using the required format below for each file:\n\n"
+                  f"[PROPOSAL: <filepath>]\n<<<< ORIGINAL\n====\n<complete updated code here>\n>>>>"
+                )
+                retry_messages = list(messages)
+                retry_messages.append(ChatMessage(role="assistant", content=final_response))
+                retry_messages.append(ChatMessage(role="user", content=retry_prompt))
+                retry_req = self.create_chat_request(messages=retry_messages)
+                try:
+                  retry_res = await instrumented_chat(retry_req, f"Phase 2: Parse Retry (std, #{retry_idx})", temp=0.1)
+                  retry_res = (retry_res or "").strip()
+                  retry_parsed = extract_proposals_robust(retry_res, plan.files_to_touch)
+                  if retry_parsed:
+                    logs.append(f"✓ [PARSE_RECOVERED] Successfully extracted {len(retry_parsed)} proposal(s) on retry {retry_idx}")
+                    await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+                    parsed = retry_parsed
+                    final_response = retry_res
+                    final_std_text = retry_res
+                    break
+                except Exception as retry_exc:
+                  logs.append(f"⚠ [PARSE_RETRY_ERROR] Retry {retry_idx} failed: {retry_exc}")
+                  await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
+              if not parsed and final_std_text and plan.files_to_touch and len(plan.files_to_touch) == 1:
+                from ..service import _strip_outer_fences
+                cleaned_salvage = _strip_outer_fences(final_std_text)
+                if len(cleaned_salvage) > 20:
+                  from ..schemas import FileChange
+                  parsed = [FileChange(path=plan.files_to_touch[0], original="", updated=cleaned_salvage)]
+                  logs.append(f"🩹 [SALVAGED] Salvaged {len(cleaned_salvage)} chars of code for {plan.files_to_touch[0]} after parser retries")
+                  await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
+
             if tool_staged_changes:
               for staged in tool_staged_changes:
                 if staged.path not in {p.path for p in parsed}:
@@ -1049,7 +1131,6 @@ class CoderAgent(BaseAgent):
               await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
             proposals.extend(parsed)
-            final_std_text = (final_response or "").strip()
             if parsed:
               generation_outcomes["_standard"] = f"success:{len(parsed)}"
             elif not final_std_text:

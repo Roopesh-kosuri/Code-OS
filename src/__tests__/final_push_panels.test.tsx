@@ -135,7 +135,7 @@ describe("Final Bounded Push: Panels Coverage Suite", () => {
       );
 
       expect(screen.getByText("test-workspace")).toBeTruthy();
-      expect(screen.getByText(/Index: Ready/i)).toBeTruthy();
+      expect(screen.getByText("Voice")).toBeTruthy();
 
       const settingsBtn = screen.getByTitle("Settings");
       fireEvent.click(settingsBtn);

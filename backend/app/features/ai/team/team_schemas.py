@@ -30,8 +30,8 @@ class HandoffType(str, Enum):
 class HandoffArtifact(BaseModel):
     """Structured artifact passed between agents in the team workflow."""
     type: HandoffType
-    from_role: TeamRole
-    to_role: TeamRole
+    from_role: TeamRole | str
+    to_role: TeamRole | str
     task_id: Optional[str] = None
     payload: dict[str, Any] = Field(default_factory=dict)
     summary: str = ""
@@ -56,23 +56,102 @@ class TeamConfig(BaseModel):
     max_repair_rounds: int = 3
     max_concurrency: int = 3
     auto_verify: bool = True
+    auto_model_selection: bool = False
+    smart_router_enabled: bool = False
+    custom_roles: list[dict[str, Any]] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
-    def get_role_provider_config(self, role: TeamRole | str) -> dict[str, str]:
-        """Get the model and provider configured for a given role."""
-        r = role.value if isinstance(role, TeamRole) else str(role).lower()
+    def get_role_provider_config(
+        self,
+        role: TeamRole | str,
+        task_title: str = "",
+        task_context: Optional[dict[str, Any]] = None,
+    ) -> dict[str, str]:
+        """Get the model and provider configured for a given role, with difficulty-based auto routing."""
+        if getattr(self, "smart_router_enabled", False):
+            try:
+                from app.features.ai.smart_router.difficulty_classifier import classify_task_difficulty
+                from app.features.ai.smart_router.model_router import route_model
+
+                files = (task_context or {}).get("files") if isinstance(task_context, dict) else None
+                cls_result = classify_task_difficulty(task_title, file_list=files)
+                routed = route_model(cls_result["difficulty"])
+                return {"provider": routed["provider"], "model": routed["model"]}
+            except Exception:
+                pass
+
+        r = role.value if isinstance(role, TeamRole) else str(role).lstrip("@").lower()
+        cfg = {"provider": "openai", "model": "gpt-4o"}
         if r == "architect":
-            return {"provider": self.architect_provider, "model": self.architect_model}
+            cfg = {"provider": self.architect_provider, "model": self.architect_model}
         elif r == "coder":
-            return {"provider": self.coder_provider, "model": self.coder_model}
+            cfg = {"provider": self.coder_provider, "model": self.coder_model}
         elif r == "reviewer":
-            return {"provider": self.reviewer_provider, "model": self.reviewer_model}
+            cfg = {"provider": self.reviewer_provider, "model": self.reviewer_model}
         elif r == "tester":
-            return {"provider": self.tester_provider, "model": self.tester_model}
+            cfg = {"provider": self.tester_provider, "model": self.tester_model}
         elif r == "devops":
-            return {"provider": self.devops_provider, "model": self.devops_model}
+            cfg = {"provider": self.devops_provider, "model": self.devops_model}
+        else:
+            # Check custom_roles snapshot in team_config
+            for cr in getattr(self, "custom_roles", []):
+                cr_handle = str(cr.get("handle", "")).lstrip("@").lower()
+                if cr_handle == r:
+                    cfg = {
+                        "provider": cr.get("provider", "openai"),
+                        "model": cr.get("model", "gpt-4o"),
+                    }
+                    break
+
+        if cfg["model"] == "auto" or cfg["provider"] == "auto" or self.auto_model_selection:
+            return resolve_auto_model(r, task_title=task_title, task_context=task_context)
+
+        return cfg
+
+
+def resolve_auto_model(
+    role: str,
+    task_title: str = "",
+    task_context: Optional[dict[str, Any]] = None,
+) -> dict[str, str]:
+    """Dynamically route a task to the optimal model based on role and task difficulty."""
+    role_lower = role.lower()
+    text_corpus = f"{task_title} {str(task_context or '')}".lower()
+
+    # Keywords indicating high complexity / architectural difficulty
+    high_difficulty = (
+        "architect", "architecture", "security", "invariant", "refactor",
+        "redesign", "algorithm", "concurrency", "distributed", "auth",
+        "crypto", "parser", "ast", "compiler", "deadlock", "schema"
+    )
+
+    # Keywords indicating low complexity / fast execution
+    low_difficulty = (
+        "lint", "format", "typo", "deps", "dependency", "clean",
+        "rename", "docs", "comment", "readme", "config", "bump"
+    )
+
+    is_high = any(k in text_corpus for k in high_difficulty)
+    is_low = any(k in text_corpus for k in low_difficulty) and not is_high
+
+    if role_lower in ("architect",):
         return {"provider": "openai", "model": "gpt-4o"}
+    elif role_lower in ("reviewer",):
+        return {"provider": "openai", "model": "gpt-4o"}
+    elif role_lower in ("coder",):
+        if is_low:
+            return {"provider": "openai", "model": "gpt-4o-mini"}
+        return {"provider": "anthropic", "model": "claude-3-5-sonnet-latest"}
+    elif role_lower in ("tester",):
+        if is_high:
+            return {"provider": "openai", "model": "gpt-4o"}
+        return {"provider": "groq", "model": "llama-3.3-70b-versatile"}
+    elif role_lower in ("devops",):
+        return {"provider": "groq", "model": "llama-3.1-8b-instant"}
+
+    return {"provider": "openai", "model": "gpt-4o"}
+
 
 
 class TeamMessage(BaseModel):
@@ -104,7 +183,7 @@ class TeamTask(BaseModel):
     task_id: str
     job_id: str
     title: str
-    role: TeamRole
+    role: TeamRole | str
     dependencies: list[str] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)

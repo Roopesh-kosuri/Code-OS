@@ -17,12 +17,14 @@ class PlanRequest(BaseModel):
     workspace: str
     user_request: str
     provider_config: dict | None = None
+    file_ids: list[str] = []
 
 class StartJobRequest(BaseModel):
     workspace: str
     workflow: str
     tasks: list[dict] # The checklist approved by the user
     provider_config: dict | None = None
+    file_ids: list[str] = []
 
 @router.post("/plan")
 async def generate_plan(payload: PlanRequest) -> dict:
@@ -37,6 +39,16 @@ async def generate_plan(payload: PlanRequest) -> dict:
     if context.get("readme"):
         context_str += f"README Summary:\n{context['readme']}\n"
     
+    if payload.file_ids:
+        from .file_ingestion.service import get_uploaded_file
+        file_blocks = []
+        for fid in payload.file_ids:
+            fdata = get_uploaded_file(fid, payload.workspace)
+            if fdata and fdata.get("content"):
+                file_blocks.append(f"[{fdata.get('filename', 'file')}]:\n{fdata.get('content', '')}")
+        if file_blocks:
+            context_str += "\nAttached files:\n\n" + "\n\n".join(file_blocks) + "\n"
+
     # 2. Run PlannerAgent
     planner = PlannerAgent(provider_config=payload.provider_config)
     tasks = await planner.plan_task(payload.user_request, context_str)
@@ -304,6 +316,38 @@ async def resume_agent_job(job_id: str) -> dict:
     if not ok:
         raise HTTPException(status_code=400, detail="Job is not in paused status or not found")
     return {"status": "resumed", "job_id": job_id}
+
+
+class SteerJobRequest(BaseModel):
+    action: str = "continue"  # "continue", "retry", "steer", "skip_tests"
+    directive: str | None = None
+
+
+@router.post("/jobs/{job_id}/steer")
+async def steer_agent_job(job_id: str, payload: SteerJobRequest) -> dict:
+    """Interactively steer an ongoing, paused, or failed agent job."""
+    from .job_service import get_job, resume_job
+    from .event_bus import event_bus
+
+    job = await get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    action = payload.action.lower()
+    directive = (payload.directive or "").strip()
+
+    log_msg = f"🕹 [OPERATOR STEER] Action: {action.upper()}"
+    if directive:
+        log_msg += f" — Directive: '{directive}'"
+    await event_bus.publish("agent_log", {"job_id": job_id, "message": log_msg})
+    await event_bus.publish("operator_steer", {"job_id": job_id, "action": action, "directive": directive})
+
+    if action in ("continue", "retry"):
+        if job.get("status") in ("paused", "failed"):
+            await resume_job(job_id)
+            return {"status": "steered_and_resumed", "job_id": job_id, "action": action, "directive": directive}
+
+    return {"status": "steered", "job_id": job_id, "action": action, "directive": directive}
 
 
 @router.get("/interrupted", response_model=list[InterruptedTask])

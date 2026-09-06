@@ -6,9 +6,12 @@ dist-release/
 release/
 backend-build/
 backend-dist/
+backend/build/
+backend/dist/
 build/*
 !build/icon.png
 !build/icon.ico
+.next/
 scratch/
 
 
@@ -25,6 +28,7 @@ __pycache__/
 .coverage
 htmlcov/
 *.egg-info/
+.hypothesis/
 
 # System & IDE Configs
 .DS_Store
@@ -52,8 +56,11 @@ secret.key
 *.sqlite3-shm
 .code-os/
 .code_os/
+vector_index/
+uploads/
+browser-profile/
 
-# Test Artifacts & Logs
+# Test Artifacts, AI Logs & Scripts
 /project-workspace/
 scratch_test_workspace/
 test_simulation_ws/
@@ -61,6 +68,19 @@ stresstest_ws/
 scratch_test_preview.html
 scratch_preview_captured.jpg
 *.log
+verify_*.py
+walkthrough.md
+*walkthrough*.md
+
+# Audio & Media Test Outputs (Preserve core UI assets)
+*.wav
+*.mp3
+*.m4a
+*.ogg
+!public/**
+!src/assets/**
+!build/icon.png
+!build/icon.ico
 
 coverage/
 backend/.coverage

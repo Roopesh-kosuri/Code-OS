@@ -1,5 +1,5 @@
 export function isReasoningModel(model: string): boolean {
-  return /(^|[-_/:])(r1|o1|o3|o4|reasoner|reasoning|thinking|qwq|kimi)([-_/:]|$)/i.test(model);
+  return /(^|[-_/:])(r1|o1|o3|o4|reasoner|reasoning|thinking|qwq|kimi|sol)([-_/:]|$)/i.test(model);
 }
 
 export interface CuratedModel {
@@ -68,6 +68,14 @@ glm: [
     { id: "deepseek-v3", name: "DeepSeek V3 (Direct)", tag: "Flagship", description: "64K direct V3 endpoint" },
   ],
   openai: [
+    { id: "gpt-5.5", name: "GPT-5.5", tag: "Flagship", description: "200K+ frontier multimodal model" },
+    { id: "gpt-5.6", name: "GPT-5.6", tag: "Flagship", description: "200K+ frontier flagship model" },
+    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", tag: "Reasoning", description: "Specialized Sol reasoning variant" },
+    { id: "sol", name: "Sol", tag: "Reasoning", description: "Sol frontier reasoning variant" },
+    { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", tag: "Flagship", description: "Enterprise Terra variant" },
+    { id: "terra", name: "Terra", tag: "Flagship", description: "Enterprise high-throughput Terra variant" },
+    { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", tag: "Coding", description: "Creative & coding Luna variant" },
+    { id: "luna", name: "Luna", tag: "Coding", description: "Creative & code generation Luna variant" },
     { id: "gpt-4o", name: "GPT-4o", tag: "Flagship", description: "128K flagship multimodal model" },
     { id: "gpt-4o-mini", name: "GPT-4o Mini", tag: "Fast", description: "128K lightweight multimodal model" },
     { id: "o3", name: "o3", tag: "Reasoning", description: "200K frontier reasoning model" },
@@ -75,16 +83,21 @@ glm: [
     { id: "o4-mini", name: "o4-mini", tag: "Reasoning", description: "200K next-gen reasoning model", available: false },
     { id: "gpt-5", name: "GPT-5", tag: "Flagship", description: "200K+ next-gen base model", available: false },
     { id: "gpt-5-turbo", name: "GPT-5 Turbo", tag: "Recommended", description: "200K+ fast next-gen model", available: false },
-    { id: "gpt-5.5", name: "GPT-5.5", tag: "Flagship", description: "200K+ unreleased model", available: false },
-    { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", tag: "Flagship", description: "Specialized reasoning variant", available: false },
-    { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", tag: "Flagship", description: "Enterprise variant", available: false },
-    { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", tag: "Flagship", description: "Creative & coding variant", available: false },
     { id: "gpt-4.1", name: "GPT-4.1", tag: "Flagship", description: "1M context upgrade", available: false },
     { id: "gpt-4.1-mini", name: "GPT-4.1 Mini", tag: "Recommended", description: "1M context compact model", available: false },
     { id: "gpt-4.1-nano", name: "GPT-4.1 Nano", tag: "Fast", description: "1M context ultra-efficient model", available: false },
     { id: "gpt-4.5-preview", name: "GPT-4.5 Preview", tag: "Flagship", description: "128K high-capacity model" },
   ],
   anthropic: [
+    { id: "claude-opus-4-6", name: "Claude Opus 4.6", tag: "Flagship", description: "Opus 4.6 complex analysis & reasoning" },
+    { id: "claude-opus-4-7", name: "Claude Opus 4.7", tag: "Flagship", description: "Opus 4.7 frontier reasoning model" },
+    { id: "claude-opus-4-8", name: "Claude Opus 4.8", tag: "Flagship", description: "Opus 4.8 frontier intelligence" },
+    { id: "claude-opus-5", name: "Claude Opus 5", tag: "Flagship", description: "Next-gen Claude Opus 5" },
+    { id: "claude-sonnet-4-7", name: "Claude Sonnet 4.7", tag: "Recommended", description: "Sonnet 4.7 benchmark coding assistant" },
+    { id: "claude-sonnet-4-8", name: "Claude Sonnet 4.8", tag: "Recommended", description: "Sonnet 4.8 frontier coding specialist" },
+    { id: "claude-sonnet-5", name: "Claude Sonnet 5", tag: "Recommended", description: "Claude Sonnet 5 next-gen coding model" },
+    { id: "claude-fable-5", name: "Claude Fable 5", tag: "Recommended", description: "Claude Fable 5 creative agent model" },
+    { id: "fable-5", name: "Fable 5", tag: "Recommended", description: "Fable 5 autonomous agent model" },
     { id: "claude-3-7-sonnet", name: "Claude 3.7 Sonnet", tag: "Flagship", description: "200K hybrid reasoning & coding model" },
     { id: "claude-3-7-sonnet-latest", name: "Claude 3.7 Sonnet Latest", tag: "Flagship", description: "Latest Claude 3.7 build" },
     { id: "claude-3-5-sonnet-latest", name: "Claude 3.5 Sonnet", tag: "Recommended", description: "200K benchmark coding assistant" },
@@ -92,13 +105,6 @@ glm: [
     { id: "claude-3-5-haiku-latest", name: "Claude 3.5 Haiku Latest", tag: "Fast", description: "Latest Claude 3.5 Haiku" },
     { id: "claude-3-opus-latest", name: "Claude 3 Opus", tag: "Flagship", description: "200K complex analysis model" },
     { id: "claude-opus-4-20250101", name: "Claude Opus 4 (2025)", tag: "Flagship", description: "Next-gen Opus preview", available: false },
-    { id: "claude-opus-4-6", name: "Claude Opus 4.6", tag: "Flagship", description: "Unreleased Opus version", available: false },
-    { id: "claude-opus-4-7", name: "Claude Opus 4.7", tag: "Flagship", description: "Unreleased Opus premium", available: false },
-    { id: "claude-opus-4-8", name: "Claude Opus 4.8", tag: "Flagship", description: "Unreleased Opus premium", available: false },
-    { id: "claude-opus-5", name: "Claude Opus 5", tag: "Flagship", description: "Next-gen flagship", available: false },
-    { id: "claude-sonnet-4-7", name: "Claude Sonnet 4.7", tag: "Recommended", description: "Unreleased Sonnet", available: false },
-    { id: "claude-sonnet-5", name: "Claude Sonnet 5", tag: "Recommended", description: "Next-gen Sonnet", available: false },
-    { id: "claude-fable-5", name: "Claude Fable 5", tag: "Recommended", description: "Creative agent model", available: false },
   ],
   gemini: [
     { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", tag: "Fast", description: "1M token context, high-speed multimodal" },
@@ -184,6 +190,14 @@ glm: [
     { id: "c4ai-aya-expanse-8b", name: "Aya Expanse 8B", tag: "Fast", description: "8K multilingual compact model" },
   ],
   openrouter: [
+    { id: "openai/gpt-5.5", name: "GPT-5.5", tag: "Flagship" },
+    { id: "openai/gpt-5.6-sol", name: "GPT-5.6 Sol", tag: "Reasoning" },
+    { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6", tag: "Flagship" },
+    { id: "anthropic/claude-opus-5", name: "Claude Opus 5", tag: "Flagship" },
+    { id: "anthropic/claude-sonnet-4-7", name: "Claude Sonnet 4.7", tag: "Recommended" },
+    { id: "anthropic/claude-sonnet-4-8", name: "Claude Sonnet 4.8", tag: "Recommended" },
+    { id: "anthropic/claude-sonnet-5", name: "Claude Sonnet 5", tag: "Recommended" },
+    { id: "anthropic/claude-fable-5", name: "Claude Fable 5", tag: "Recommended" },
     { id: "anthropic/claude-opus-4-5", name: "Claude Opus 4.5", tag: "Flagship", available: false },
     { id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", tag: "Recommended", available: false },
     { id: "openai/gpt-5", name: "GPT-5", tag: "Flagship", available: false },

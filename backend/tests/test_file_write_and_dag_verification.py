@@ -51,6 +51,30 @@ def test_extract_proposals_robust_formats():
     assert len(p6) == 1
     assert p6[0].path == "single_script.py"
 
+    # 7. Tilde fences and 4-backtick fences
+    text7 = "~~~python\n# File: app/main.py\ndef app_main():\n    return 42\n~~~"
+    p7 = extract_proposals_robust(text7, planned_files=["app/main.py"])
+    assert len(p7) == 1
+    assert p7[0].path == "app/main.py"
+    assert "def app_main" in p7[0].updated
+
+    # 8. Header with colon, bullet, and backticks
+    text8 = "### File: `src/index.ts`:\n```typescript\nexport const ready = true;\n```"
+    p8 = extract_proposals_robust(text8)
+    assert len(p8) == 1
+    assert p8[0].path == "src/index.ts"
+    assert "export const ready" in p8[0].updated
+
+    # 9. Leading prose with no fences, planned single file
+    text9 = (
+        "Here is the code you asked for. It sets up the main entry point:\n\n"
+        "import sys\nimport os\n\ndef main():\n    print('started')\n\nif __name__ == '__main__':\n    main()\n"
+    )
+    p9 = extract_proposals_robust(text9, planned_files=["app/main.py"])
+    assert len(p9) == 1
+    assert p9[0].path == "app/main.py"
+    assert "def main" in p9[0].updated
+
 
 @pytest.mark.asyncio
 async def test_dag_writes_and_verifies_files_on_disk(tmp_path, monkeypatch, temp_db):

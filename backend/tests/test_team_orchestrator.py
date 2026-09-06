@@ -296,3 +296,35 @@ async def test_concurrency_bounded(tmp_path: Path):
     assert max_seen_active <= max_concurrency_limit
     assert max_seen_active == max_concurrency_limit
     assert orchestrator.peak_concurrency <= max_concurrency_limit
+
+
+# ── Test 7: Auto Model Selection by Task Difficulty ──────────────────────────
+
+def test_auto_model_selection_difficulty_routing():
+    """Verify auto model selection routes complex tasks to powerful models and simple tasks to fast models."""
+    config_auto = TeamConfig(auto_model_selection=True)
+    config_manual = TeamConfig(auto_model_selection=False, coder_model="deepseek-coder", coder_provider="deepseek")
+
+    # Manual mode should honor configured role models
+    manual_cfg = config_manual.get_role_provider_config(TeamRole.CODER, task_title="Any task")
+    assert manual_cfg["model"] == "deepseek-coder"
+    assert manual_cfg["provider"] == "deepseek"
+
+    # Auto mode: High complexity / architecture / security task
+    complex_cfg = config_auto.get_role_provider_config(
+        TeamRole.CODER,
+        task_title="Refactor distributed concurrency locking and crypto auth",
+        task_context={"detail": "security architecture invariant verification"},
+    )
+    assert complex_cfg["provider"] in ("anthropic", "openai")
+    assert any(m in complex_cfg["model"] for m in ("sonnet", "o3", "gpt-4o"))
+
+    # Auto mode: Low complexity / typo / documentation task
+    simple_cfg = config_auto.get_role_provider_config(
+        TeamRole.CODER,
+        task_title="Fix typo in README docs and format comments",
+        task_context={"action": "clean bump"},
+    )
+    assert simple_cfg["provider"] in ("groq", "openai")
+    assert any(m in simple_cfg["model"] for m in ("8b", "mini", "flash"))
+

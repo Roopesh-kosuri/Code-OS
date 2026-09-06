@@ -72,7 +72,7 @@ _DEFAULT_SYSTEM_PROMPT = """You are CODE OS, a powerful agentic AI coding assist
 """
 
 PROPOSAL_RE = re.compile(
-    r"\[PROPOSAL:\s*(?P<path>[^\]]+)\]\s*<<<<(?: ORIGINAL)?\r?\n?(?P<original>.*?)====\r?\n?(?P<updated>.*?)\r?\n?>{3,}",
+    r"\[PROPOSAL:\s*(?P<path>[^\]]+)\]\s*<<<<(?: ORIGINAL)?\r?\n?(?P<original>.*?)====\r?\n?(?P<updated>.*?)\r?\n?>{2,}",
     re.DOTALL
 )
 
@@ -84,15 +84,9 @@ def _strip_outer_fences(text: str | None) -> str:
     # Strip any leading delimiter artifacts: '=', '==', '===', '<<<< ORIGINAL', '<<<<', '<< ORIGINAL'
     s = re.sub(r"^(?:[=<>]{1,}\s*(?:ORIGINAL)?\r?\n?)+", "", s).strip()
 
-    # Strip markdown code fences (```python ... ``` or ``` ... ```)
-    if s.startswith("```"):
-        first_nl = s.find("\n")
-        if first_nl != -1:
-            s = s[first_nl + 1:].strip()
-        else:
-            s = s[3:].strip()
-    if s.endswith("```"):
-        s = s[:-3].strip()
+    # Strip markdown code fences (```python ... ``` or ~~~python ... ~~~ or ```` ... ````)
+    s = re.sub(r"^(?:`{3,}|~{3,})[a-zA-Z0-9_.\-:/]*\s*\r?\n?", "", s)
+    s = re.sub(r"\r?\n?(?:`{3,}|~{3,})\s*$", "", s).strip()
 
     # Strip trailing delimiter artifacts: '>>>>', '>>>', '>>'
     s = re.sub(r"\r?\n?>{2,}\s*$", "", s).strip()
@@ -111,7 +105,11 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
     2. Relaxed [PROPOSAL path] / [FILE path]
     3. Markdown header (### notewatch.py) followed by code block
     4. Code block with filename comment or tag (```python:notewatch.py)
-    5. Single code block mapped to single planned file
+    5. Prose-preceding-block: filename in text followed by code block
+    6. Code blocks mapped to planned files or mentioned paths
+    7. Unclosed code blocks (truncated responses)
+    8. Search/Replace block format
+    9. Aggressive raw code salvage for single planned file
     """
     if not raw_text or not isinstance(raw_text, str):
         return []
@@ -121,7 +119,7 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
 
     # 1. Primary: Strict [PROPOSAL: path] format
     for match in PROPOSAL_RE.finditer(raw_text):
-        path = match.group("path").strip().strip("\"'")
+        path = match.group("path").strip().strip("\"'`:")
         if path and path not in seen_paths:
             orig = match.group("original") or ""
             updated = _strip_outer_fences(match.group("updated"))
@@ -134,11 +132,11 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
 
     # 2. Secondary: Relaxed [PROPOSAL: path] or [FILE: path] format
     relaxed_re = re.compile(
-        r"\[(?:PROPOSAL|FILE|CREATE|UPDATE)(?::\s*|\s+)(?P<path>[^\]\n]+)\]\s*(?:<<<<(?: ORIGINAL)?\r?\n?(?P<original>.*?)====\r?\n?)?(?P<updated>.*?)(?:>{3,}|(?=\[(?:PROPOSAL|FILE|CREATE|UPDATE)|\Z))",
+        r"\[(?:PROPOSAL|FILE|CREATE|UPDATE)(?::\s*|\s+)(?P<path>[^\]\n]+)\]\s*(?:<<<<(?: ORIGINAL)?\r?\n?(?P<original>.*?)====\r?\n?)?(?P<updated>.*?)(?:>{2,}|(?=\[(?:PROPOSAL|FILE|CREATE|UPDATE)|\Z))",
         re.DOTALL | re.IGNORECASE
     )
     for match in relaxed_re.finditer(raw_text):
-        path = match.group("path").strip().strip("\"'")
+        path = match.group("path").strip().strip("\"'`:")
         if any(path.endswith(ext) for ext in _CODE_EXTENSIONS) or "." in path:
             if path not in seen_paths:
                 orig = match.group("original") or ""
@@ -151,13 +149,13 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
     if proposals:
         return proposals
 
-    # 3. Tertiary: Header + Code Block (e.g. `### notewatch.py\n```python...`)
+    # 3. Tertiary: Header + Code Block (e.g. `### notewatch.py\n```python...` or `- File: app/main.py\n```...`)
     header_block_re = re.compile(
-        r"(?:^|\n)(?:#{1,4}\s+|\*\*)(?:File:\s*)?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)\*?\*?\s*\n+```[a-zA-Z0-9_-]*\r?\n(.*?)\r?\n```",
+        r"(?:^|\n)(?:#{1,6}\s+|\*\*(?:File:\s*)?|[-*]\s+(?:File:\s*)?|\d+\.\s+(?:File:\s*)?)(?:File:\s*)?`?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)`?\*?\*?:?\s*\n+(?:`{3,}|~{3,})[a-zA-Z0-9_.\-:/]*\r?\n([\s\S]*?)\r?\n(?:`{3,}|~{3,})",
         re.DOTALL
     )
     for match in header_block_re.finditer(raw_text):
-        path = match.group(1).strip().strip("\"'")
+        path = match.group(1).strip().strip("\"'`:")
         content = _strip_outer_fences(match.group(2))
         if path not in seen_paths and any(path.endswith(ext) for ext in _CODE_EXTENSIONS):
             proposals.append(FileChange(path=path, original="", updated=content))
@@ -166,8 +164,8 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
     if proposals:
         return proposals
 
-    # 4. Quaternary: Code block with filename comment on first 3 lines
-    code_block_re = re.compile(r"```([a-zA-Z0-9_.\-:/]*)\r?\n(.*?)\r?\n```", re.DOTALL)
+    # 4. Quaternary: Code block with filename comment or tag (```python:notewatch.py)
+    code_block_re = re.compile(r"(?:`{3,}|~{3,})([a-zA-Z0-9_.\-:/]*)\s*\r?\n([\s\S]*?)\r?\n(?:`{3,}|~{3,})", re.DOTALL)
     for match in code_block_re.finditer(raw_text):
         tag = match.group(1).strip()
         body = match.group(2)
@@ -188,7 +186,7 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
                         cleaned = cleaned[len(prefix):].strip()
                 words = cleaned.split()
                 if words:
-                    candidate = words[0].strip("\"',`")
+                    candidate = words[0].strip("\"',`:")
                     if any(candidate.endswith(ext) for ext in _CODE_EXTENSIONS) and ("/" in candidate or "\\" in candidate or candidate.count(".") == 1):
                         found_path = candidate
                         break
@@ -202,11 +200,11 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
 
     # 5. Prose-preceding-block: filename in bold, backticks, or inline text before a code block
     prose_block_re = re.compile(
-        r"(?:^|\n)(?:.*?)(?:\*\*|`|['\"])([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(?:\*\*|`|['\"]|:)\s*(?:\n|.){0,80}?```[a-zA-Z0-9_-]*\r?\n(.*?)\r?\n```",
+        r"(?:^|\n)(?:.*?)(?:\*\*|`|['\"])([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(?:\*\*|`|['\"]|:)\s*(?:\n|.){0,120}?(?:`{3,}|~{3,})[a-zA-Z0-9_.\-:/]*\r?\n([\s\S]*?)\r?\n(?:`{3,}|~{3,})",
         re.DOTALL
     )
     for match in prose_block_re.finditer(raw_text):
-        path = match.group(1).strip().strip("\"'")
+        path = match.group(1).strip().strip("\"'`:")
         content = _strip_outer_fences(match.group(2))
         if path not in seen_paths and any(path.endswith(ext) for ext in _CODE_EXTENSIONS):
             proposals.append(FileChange(path=path, original="", updated=content))
@@ -231,12 +229,73 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
             for idx, block in enumerate(blocks):
                 target_p = valid_paths[idx] if idx < len(valid_paths) else valid_paths[0]
                 if target_p not in seen_paths:
-                    proposals.append(FileChange(path=target_p, original="", updated=block.group(2)))
+                    proposals.append(FileChange(path=target_p, original="", updated=_strip_outer_fences(block.group(2))))
                     seen_paths.add(target_p)
         elif len(blocks) == 1:
-            code_content = blocks[0].group(2)
+            code_content = _strip_outer_fences(blocks[0].group(2))
             default_p = "main.py" if "def " in code_content or "import " in code_content else "index.js"
             proposals.append(FileChange(path=default_p, original="", updated=code_content))
+
+    if proposals:
+        return proposals
+
+    # 7. Unclosed code block fallback (e.g. LLM response truncated at end or omit closing backticks)
+    unclosed_re = re.compile(r"(?:`{3,}|~{3,})([a-zA-Z0-9_.\-:/]*)\s*\r?\n([\s\S]+?)\Z")
+    m_unclosed = unclosed_re.search(raw_text)
+    if m_unclosed:
+        tag = m_unclosed.group(1).strip()
+        body = m_unclosed.group(2).strip()
+        target_p = None
+        if ":" in tag:
+            target_p = tag.split(":", 1)[1].strip()
+        elif any(tag.endswith(ext) for ext in _CODE_EXTENSIONS):
+            target_p = tag
+        elif planned_files and len(planned_files) > 0:
+            target_p = planned_files[0]
+        if target_p and body:
+            proposals.append(FileChange(path=target_p, original="", updated=_strip_outer_fences(body)))
+            seen_paths.add(target_p)
+            return proposals
+
+    # 8. Search/Replace block fallback (<<<< SEARCH ... ==== ... >>>> REPLACE)
+    if planned_files and len(planned_files) == 1:
+        sr_re = re.compile(r"<<<{3,}\s*SEARCH\r?\n([\s\S]*?)\r?\n={3,}\r?\n([\s\S]*?)\r?\n>>>{3,}\s*REPLACE", re.IGNORECASE)
+        sr_matches = list(sr_re.finditer(raw_text))
+        if sr_matches:
+            for srm in sr_matches:
+                proposals.append(FileChange(path=planned_files[0], original=srm.group(1), updated=srm.group(2)))
+            return proposals
+
+    # 9. Direct raw code fallback: If 1 file was targeted and LLM returned code with leading prose
+    if not proposals and planned_files and len(planned_files) == 1:
+        target_file = planned_files[0]
+        stripped = raw_text.strip()
+        code_markers = (
+            "import ", "from ", "def ", "class ", "export ", "const ", "let ", "var ",
+            "function ", "interface ", "type ", "#!/", "<!DOCTYPE", "<?php", "@click",
+            "async def ", "public ", "private ", "package ", "use ", "include "
+        )
+        lines = stripped.splitlines()
+        first_code_idx = -1
+        for idx, line in enumerate(lines):
+            trimmed_line = line.strip()
+            if any(trimmed_line.startswith(m) for m in code_markers):
+                first_code_idx = idx
+                break
+        
+        if first_code_idx != -1:
+            code_lines = lines[first_code_idx:]
+            salvaged_code = "\n".join(code_lines).strip()
+            if len(salvaged_code) > 20:
+                proposals.append(FileChange(path=target_file, original="", updated=_strip_outer_fences(salvaged_code)))
+                seen_paths.add(target_file)
+                return proposals
+        elif len(lines) >= 3:
+            first_few = " ".join(lines[:8])
+            if any(marker in first_few for marker in code_markers) or "return " in stripped or "print(" in stripped:
+                proposals.append(FileChange(path=target_file, original="", updated=_strip_outer_fences(stripped)))
+                seen_paths.add(target_file)
+                return proposals
 
     return proposals
 
@@ -401,10 +460,43 @@ async def stream_chat(request: ChatRequest) -> AsyncIterator[str]:
             except Exception:
                 pass
 
+    # Semantic RAG context injection
+    rag_context = ""
+    if request.workspace and last_msg and not last_msg.startswith("/"):
+        try:
+            from .rag.vector_index_service import semantic_search
+            rag_results = await semantic_search(request.workspace, last_msg, top_k=5)
+            if rag_results:
+                rag_snippets = []
+                for r in rag_results:
+                    rag_snippets.append(
+                        f"File: {r['file_path']} ({r.get('line_range', '')}):\n```\n{r['chunk_text']}\n```"
+                    )
+                rag_context = "\n\nRelevant files from codebase:\n" + "\n\n".join(rag_snippets)
+        except Exception as exc:
+            logger.debug("RAG search error in stream_chat: %s", exc)
+
+    # Agent Memory: inject relevant lessons learned from past mistakes
+    memory_context = ""
+    if request.workspace and last_msg:
+        try:
+            from .memory.memory_service import get_relevant_memories, increment_applied
+            lessons = await get_relevant_memories(request.workspace, last_msg, top_k=5)
+            if lessons:
+                lesson_lines = [f"- {m['lesson']}" for m in lessons]
+                memory_context = "\n\n## LESSONS LEARNED (from past mistakes):\n" + "\n".join(lesson_lines)
+                for m in lessons:
+                    try:
+                        await increment_applied(m["id"])
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.debug("Memory retrieval error in stream_chat: %s", exc)
+
     # Build single system prompt at index 0 containing context and instructions
     sys_instruction = SLASH_COMMAND_PROMPTS.get(cmd, _DEFAULT_SYSTEM_PROMPT)
     context_text = _get_attachment_context_text(request)
-    combined_sys_prompt = f"{sys_instruction}\n{context_text}"
+    combined_sys_prompt = f"{sys_instruction}\n{context_text}{rag_context}{memory_context}"
     
     messages = [ChatMessage(role="system", content=combined_sys_prompt)] + request.messages
 
@@ -584,6 +676,21 @@ async def create_proposal(payload: EditProposalRequest) -> EditProposalDto:
         (proposal_id, normalized_workspace, "pending", json.dumps(body)),
     )
     await db.commit()
+
+    # Emit diff chunks to any open Monaco editors registered for these files
+    for change in payload.changes:
+        try:
+            from .ghost_text.ghost_text_service import emit_diff_chunks
+            emit_diff_chunks(
+                workspace=normalized_workspace,
+                file_path=str(change.path),
+                original=change.original or "",
+                updated=change.updated or "",
+                job_id=proposal_id,
+            )
+        except Exception as exc:
+            logger.debug("Ghost text emit_diff_chunks from create_proposal: %s", exc)
+
     return EditProposalDto(
         id=proposal_id,
         workspace=normalized_workspace,
@@ -764,19 +871,41 @@ async def reject_proposal(proposal_id: str, feedback: str | None = None) -> Edit
     await db.commit()
         
     # Check if this proposal belongs to a pending task permission event and resume it
-    cursor = await db.execute("SELECT payload FROM edit_proposals WHERE id = ?", (proposal_id,))
+    cursor = await db.execute("SELECT workspace, payload FROM edit_proposals WHERE id = ?", (proposal_id,))
     row = await cursor.fetchone()
     await cursor.close()
-    if row and row["payload"]:
-        payload = json.loads(row["payload"])
-        task_id = payload.get("task_id")
-        if task_id:
-            from .agents import permission_state as perm_state
-            if task_id in perm_state.pending_permission_events:
-                perm_state.pending_permission_decisions[task_id] = "reject"
-                if feedback:
-                    perm_state.pending_permission_feedback[task_id] = feedback
-                perm_state.pending_permission_events[task_id].set()
+    ws = ""
+    reason = feedback or ""
+    if row:
+        if "workspace" in row.keys() and row["workspace"]:
+            ws = row["workspace"]
+        if row["payload"]:
+            payload = json.loads(row["payload"])
+            if not ws:
+                ws = payload.get("workspace", "")
+            if not reason:
+                reason = payload.get("summary", "")
+            task_id = payload.get("task_id")
+            if task_id:
+                from .agents import permission_state as perm_state
+                if task_id in perm_state.pending_permission_events:
+                    perm_state.pending_permission_decisions[task_id] = "reject"
+                    if feedback:
+                        perm_state.pending_permission_feedback[task_id] = feedback
+                    perm_state.pending_permission_events[task_id].set()
+
+    if ws:
+        try:
+            import asyncio
+            from .memory.memory_service import log_mistake
+            asyncio.create_task(log_mistake(
+                workspace=ws,
+                category="rejected_edit",
+                raw_event_or_lesson=f"Rejected edit proposal: {reason or proposal_id}",
+                source_event_id=proposal_id,
+            ))
+        except Exception as exc:
+            logger.debug("Failed to log mistake for rejected proposal: %s", exc)
         
     return await get_proposal(proposal_id)
 

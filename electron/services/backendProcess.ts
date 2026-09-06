@@ -1,4 +1,4 @@
-﻿import { ChildProcessWithoutNullStreams, spawn, execSync } from "node:child_process";
+import { ChildProcessWithoutNullStreams, spawn, execSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
@@ -46,10 +46,20 @@ function findPythonCommand(): string | null {
 
 function getBundledBinaryPath(): string | null {
   if (isDev) return null;
-  const exe = process.platform === "win32" ? "backend-server.exe" : "backend-server";
-  const p = path.join(process.resourcesPath, exe);
-  if (fs.existsSync(p)) { console.log(`[backend] Bundled binary: ${p}`); return p; }
-  console.warn(`[backend] Bundled binary NOT found at: ${p}. Incomplete package — run npm run build:backend-exe before packaging.`);
+  const isWin = process.platform === "win32";
+  const candidates = [
+    path.join(process.resourcesPath, "backend", isWin ? "watchdog_launcher.exe" : "watchdog_launcher"),
+    path.join(process.resourcesPath, "backend", isWin ? "backend-server.exe" : "backend-server"),
+    path.join(process.resourcesPath, isWin ? "watchdog_launcher.exe" : "watchdog_launcher"),
+    path.join(process.resourcesPath, isWin ? "backend-server.exe" : "backend-server"),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      console.log(`[backend] Bundled binary found: ${p}`);
+      return p;
+    }
+  }
+  console.warn(`[backend] Bundled binary NOT found. Checked:\n  ${candidates.join("\n  ")}\nRun 'node scripts/build-backend.js' before packaging.`);
   return null;
 }
 
@@ -152,12 +162,24 @@ export class BackendProcess {
   async start(): Promise<void> {
     if (this.process) return;
     this.lastError = null;
-    const tokenPath = path.join(os.homedir(), ".code-os", "session_token");
+    const findToken = (): string | null => {
+      const candidates = [
+        path.join(app.getPath("userData"), "session_token"),
+        path.join(process.env.APPDATA || "", "code_os", "session_token"),
+        path.join(os.homedir(), ".code-os", "session_token"),
+        path.join(os.homedir(), ".code_os", "session_token"),
+      ];
+      for (const p of candidates) {
+        const t = this._readSessionTokenFromFile(p);
+        if (t) return t;
+      }
+      return null;
+    };
 
     if (isDev) {
       console.log("[backend] Dev mode: attaching to dev backend on 127.0.0.1:8000");
       for (let i = 0; i < 30; i++) {
-        const token = this._readSessionTokenFromFile(tokenPath);
+        const token = findToken();
         if (token) {
           this._tokenResolve(token);
           return;
@@ -169,7 +191,7 @@ export class BackendProcess {
 
     if (await this.isBackendHealthy()) {
       console.log("[backend] Reusing existing backend on 127.0.0.1:8000");
-      const token = this._readSessionTokenFromFile(tokenPath);
+      const token = findToken();
       if (token) {
         this._tokenResolve(token);
         return;
@@ -180,7 +202,13 @@ export class BackendProcess {
     const bin = getBundledBinaryPath();
     if (bin) {
       console.log("[backend] Starting bundled binary (first launch may take 15-20 s)...");
-      await this._spawnProcess(bin, [], { cwd: path.dirname(bin), env: buildBackendEnv({ CODE_OS_HOME: app.getPath("userData") }) });
+      await this._spawnProcess(bin, [], {
+        cwd: path.dirname(bin),
+        env: buildBackendEnv({
+          CODE_OS_DATA_DIR: app.getPath("userData"),
+          CODE_OS_HOME: app.getPath("userData"),
+        }),
+      });
       return;
     }
 

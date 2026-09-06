@@ -1,14 +1,21 @@
 import json
 import time
-from typing import Any
+import uuid
+from typing import Any, Optional
 from datetime import datetime, timezone
+from pathlib import Path
 from ...db.database import get_db
 from ...core.paths import normalize_path
 
 async def create_job(job_id: str, workspace: str, workflow: str, user_request: str = "") -> None:
     workspace_path = str(normalize_path(workspace))
+    name = Path(workspace_path).name or "Workspace"
     now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
+    await db.execute(
+        "INSERT OR IGNORE INTO workspaces (path, name) VALUES (?, ?)",
+        (workspace_path, name),
+    )
     await db.execute(
         """
         INSERT INTO agent_jobs (id, workspace, workflow, status, started_at, completed_at, token_usage, duration, files_modified, errors, logs, workspace_manifest, user_request)
@@ -83,14 +90,16 @@ async def create_task(task_id: str, job_id: str, title: str, agent_role: str, de
     db = await get_db()
     await db.execute(
         """
-        INSERT INTO agent_tasks (id, job_id, title, agent_role, status, dependencies, assigned_agent, reasoning_summary, estimated_effort, started_at, completed_at)
+        INSERT OR REPLACE INTO agent_tasks (id, job_id, title, agent_role, status, dependencies, assigned_agent, reasoning_summary, estimated_effort, started_at, completed_at)
         VALUES (?, ?, ?, ?, ?, ?, NULL, '', ?, NULL, NULL)
         """,
         (task_id, job_id, title, agent_role, "queued", json.dumps(dependencies), estimated_effort)
     )
     await db.commit()
 
-async def update_task_status(task_id: str, status: str, reasoning_summary: str = "", estimated_effort: str = "", assigned_agent: str = "", structured_data: dict = None) -> None:
+async def update_task_status(task_id: str, status: str, reasoning_summary: str = "", estimated_effort: str = "", assigned_agent: str = "", structured_data: dict = None, errors: str = "", **kwargs) -> None:
+    if not reasoning_summary and errors:
+        reasoning_summary = errors
     now = datetime.now(timezone.utc).isoformat()
     db = await get_db()
     started_at = now if status == "running" else None
@@ -315,7 +324,7 @@ async def record_agent_token_usage(
         "total_tokens": total_tokens,
         "cost_usd": cost_usd,
     }
-    return await add_team_message(
+    msg_id = await add_team_message(
         job_id=job_id,
         sender_role=agent_role,
         message_type="metrics",
@@ -325,6 +334,19 @@ async def record_agent_token_usage(
         cost_usd=cost_usd,
         task_id=task_id,
     )
+    try:
+        from .cost.cost_aggregator import record_cost_event
+        await record_cost_event(
+            job_id=job_id,
+            provider="team-agent",
+            model=agent_role,
+            in_tok=input_tokens,
+            out_tok=output_tokens,
+            usd=cost_usd,
+        )
+    except Exception:
+        pass
+    return msg_id
 
 
 async def get_agent_metrics(job_id: str) -> dict[str, dict[str, Any]]:
@@ -392,6 +414,12 @@ async def save_team_config(config_data: dict) -> None:
     """Save or update a team configuration in the team_configs table."""
     db = await get_db()
     workspace_path = str(normalize_path(config_data.get("workspace", ".")))
+    config_id = config_data.get("id") or f"tc_{uuid.uuid4().hex[:8]}"
+    name = config_data.get("name") or Path(workspace_path).name or "Default Team"
+    await db.execute(
+        "INSERT OR IGNORE INTO workspaces (path, name) VALUES (?, ?)",
+        (workspace_path, name),
+    )
     now = datetime.now(timezone.utc).isoformat()
     await db.execute(
         """
@@ -402,9 +430,9 @@ async def save_team_config(config_data: dict) -> None:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            config_data.get("id"),
+            config_id,
             workspace_path,
-            config_data.get("name", "Default Team"),
+            name,
             config_data.get("architect_model", "gpt-4o"),
             config_data.get("architect_provider", "openai"),
             config_data.get("coder_model", "claude-3-5-sonnet-latest"),
@@ -497,3 +525,142 @@ def format_report_as_markdown(job_id: str, report: dict) -> str:
 ## Verification Sign-Off
 All automated tests and reviewer quality checks have completed successfully.
 """
+
+
+async def save_custom_role(role_data: dict) -> dict:
+    """Save or update a custom agent role in the custom_roles table."""
+    db = await get_db()
+    role_id = role_data.get("id") or f"crole_{uuid.uuid4().hex[:8]}"
+    raw_ws = role_data.get("workspace", ".")
+    workspace = str(normalize_path(raw_ws))
+    name = (role_data.get("name") or "Custom Agent").strip()
+    raw_handle = (role_data.get("handle") or "custom").strip()
+    handle = raw_handle.lstrip("@").lower()
+    description = (role_data.get("description") or "").strip()
+    color = (role_data.get("color") or "#38bdf8").strip()
+    icon = (role_data.get("icon") or "bot").strip().lower()
+
+    # Allowed tools parsing & sanitization against SAFE_CUSTOM_TOOLS
+    raw_tools = role_data.get("allowed_tools", [])
+    if isinstance(raw_tools, str):
+        try:
+            tools_list = json.loads(raw_tools)
+        except Exception:
+            tools_list = [t.strip() for t in raw_tools.split(",") if t.strip()]
+    else:
+        tools_list = list(raw_tools)
+
+    from .team.roles import SAFE_CUSTOM_TOOLS, FORBIDDEN_CUSTOM_TOOLS
+    sanitized_tools = [
+        str(t).lower().strip()
+        for t in tools_list
+        if str(t).lower().strip() in SAFE_CUSTOM_TOOLS and str(t).lower().strip() not in FORBIDDEN_CUSTOM_TOOLS
+    ]
+    tools_json = json.dumps(sanitized_tools)
+
+    provider = (role_data.get("provider") or "openai").strip()
+    model = (role_data.get("model") or "gpt-4o").strip()
+
+    await db.execute(
+        """
+        INSERT OR REPLACE INTO custom_roles
+        (id, workspace, name, handle, description, color, icon, allowed_tools, provider, model, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """,
+        (role_id, workspace, name, handle, description, color, icon, tools_json, provider, model),
+    )
+    await db.commit()
+
+    return {
+        "id": role_id,
+        "workspace": workspace,
+        "name": name,
+        "handle": handle,
+        "description": description,
+        "color": color,
+        "icon": icon,
+        "allowed_tools": sanitized_tools,
+        "provider": provider,
+        "model": model,
+    }
+
+
+async def get_custom_roles(workspace: Optional[str] = None) -> list[dict]:
+    """Retrieve custom agent roles, optionally filtered by workspace."""
+    db = await get_db()
+    if workspace:
+        norm_ws = str(normalize_path(workspace))
+        cursor = await db.execute(
+            "SELECT * FROM custom_roles WHERE workspace = ? ORDER BY created_at ASC",
+            (norm_ws,),
+        )
+    else:
+        cursor = await db.execute("SELECT * FROM custom_roles ORDER BY created_at ASC")
+
+    rows = await cursor.fetchall()
+    await cursor.close()
+
+    result = []
+    for r in rows:
+        row_dict = dict(r)
+        try:
+            row_dict["allowed_tools"] = json.loads(row_dict.get("allowed_tools") or "[]")
+        except Exception:
+            row_dict["allowed_tools"] = []
+        result.append(row_dict)
+    return result
+
+
+async def delete_custom_role(role_id: str, workspace: Optional[str] = None) -> bool:
+    """Delete a custom agent role by id and optional workspace."""
+    db = await get_db()
+    if workspace:
+        norm_ws = str(normalize_path(workspace))
+        cur = await db.execute(
+            "DELETE FROM custom_roles WHERE id = ? AND workspace = ?",
+            (role_id, norm_ws),
+        )
+    else:
+        cur = await db.execute("DELETE FROM custom_roles WHERE id = ?", (role_id,))
+    await db.commit()
+    return cur.rowcount > 0
+
+
+async def save_job_custom_roles_snapshot(job_id: str, roles: list[dict]) -> None:
+    """Snapshot the custom role definitions at job start (Refinement R1)."""
+    db = await get_db()
+    snapshot_json = json.dumps(roles)
+    try:
+        await db.execute(
+            "UPDATE agent_jobs SET custom_roles_snapshot = ? WHERE id = ?",
+            (snapshot_json, job_id),
+        )
+        await db.commit()
+    except Exception:
+        try:
+            await db.execute("ALTER TABLE agent_jobs ADD COLUMN custom_roles_snapshot TEXT DEFAULT NULL")
+            await db.execute(
+                "UPDATE agent_jobs SET custom_roles_snapshot = ? WHERE id = ?",
+                (snapshot_json, job_id),
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+
+async def get_job_custom_roles_snapshot(job_id: str) -> list[dict]:
+    """Retrieve the custom role snapshot for a job (Refinement R1)."""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT custom_roles_snapshot FROM agent_jobs WHERE id = ?",
+            (job_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row and row["custom_roles_snapshot"]:
+            return json.loads(row["custom_roles_snapshot"])
+    except Exception:
+        pass
+    return []
+

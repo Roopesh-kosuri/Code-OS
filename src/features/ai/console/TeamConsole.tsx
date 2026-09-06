@@ -11,6 +11,7 @@ import {
   Clock,
   Radio,
   Folder,
+  FolderOpen,
   Plus,
   CheckCircle2,
   Download,
@@ -20,9 +21,12 @@ import { AgentRoster } from "./AgentRoster";
 import { DAGBoard } from "./DAGBoard";
 import { TeamChatPanel } from "./TeamChatPanel";
 import { useWorkspaceStore } from "../../../stores/workspaceStore";
+import { FileUploadZone } from "../../files/FileUploadZone";
+import { FilePreviewModal } from "../../files/FilePreviewModal";
 
 export const TeamConsole: React.FC = () => {
   const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
+  const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
   const {
     activeJobId,
     jobStatus,
@@ -47,6 +51,9 @@ export const TeamConsole: React.FC = () => {
   const [localError, setLocalError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      (window as any).__useTeamStore = useTeamStore;
+    }
     if (jobStatus === "completed" && finalReport && activeJobId) {
       saveFinalReport(finalReport);
     }
@@ -112,6 +119,22 @@ export const TeamConsole: React.FC = () => {
             <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary-container/10 text-primary-container border border-primary-container/30">
               v4.0 DAG Mode
             </span>
+          </div>
+
+          {/* Active Workspace Indicator + Switcher */}
+          <div className="flex items-center gap-1.5 pl-3 border-l border-white/10 text-[11px] font-mono text-on-surface-variant">
+            <FolderOpen size={12} className="text-primary-container shrink-0" />
+            <span className="truncate max-w-[140px] text-on-surface font-medium" title={currentWorkspace?.path || "No workspace opened"}>
+              {currentWorkspace?.name || "No Workspace"}
+            </span>
+            <button
+              onClick={() => void openWorkspace()}
+              data-testid="header-change-workspace-btn"
+              className="text-[10px] text-primary-container hover:underline cursor-pointer ml-1 font-mono"
+              title="Change active workspace"
+            >
+              Change
+            </button>
           </div>
 
           {activeJobId && (
@@ -232,11 +255,11 @@ export const TeamConsole: React.FC = () => {
       {jobStatus === "completed" && finalReport && (
         <div
           data-testid="final-report-card"
-          className="mx-6 mt-4 p-4 rounded-xl bg-gradient-to-r from-emerald-500/10 via-surface-container to-purple-500/10 border border-emerald-500/30 shadow-lg shrink-0 flex flex-col gap-3"
+          className="mx-6 mt-3 p-3.5 rounded-xl bg-surface-container-low border border-emerald-500/30 shadow-lg shrink-0 flex flex-col gap-3"
         >
           <div className="flex items-center justify-between border-b border-white/5 pb-2">
             <div className="flex items-center gap-2">
-              <span className="p-1 rounded bg-emerald-500/20 text-emerald-400">
+              <span className="p-1 rounded-md bg-emerald-500/20 text-emerald-400">
                 <CheckCircle2 size={16} />
               </span>
               <span className="font-bold text-xs uppercase tracking-wider text-emerald-300">
@@ -247,27 +270,27 @@ export const TeamConsole: React.FC = () => {
               <button
                 data-testid="export-report-btn"
                 onClick={handleExportReport}
-                className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-semibold bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 cursor-pointer transition-colors shadow-sm"
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-semibold bg-surface-container hover:bg-surface-container-high text-on-surface border border-white/10 cursor-pointer transition-colors shadow-sm"
                 title="Export Report as Markdown"
               >
                 <Download size={13} />
                 <span>Export Report</span>
               </button>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-bold">
                 VERIFIED
               </span>
             </div>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-            <div className="flex flex-col gap-0.5 bg-surface-container-low/60 p-2.5 rounded-lg border border-white/5">
+            <div className="flex flex-col gap-0.5 bg-surface-container p-2.5 rounded-lg border border-white/5">
               <span className="text-[10px] text-on-surface-variant font-medium">Files Changed</span>
               <span className="text-sm font-bold font-mono text-on-surface">
                 {finalReport.files_changed}
               </span>
             </div>
 
-            <div className="flex flex-col gap-0.5 bg-surface-container-low/60 p-2.5 rounded-lg border border-white/5">
+            <div className="flex flex-col gap-0.5 bg-surface-container p-2.5 rounded-lg border border-white/5">
               <span className="text-[10px] text-on-surface-variant font-medium">Tests Run</span>
               <div className="flex items-baseline gap-1 text-sm font-bold font-mono text-on-surface">
                 <span>{finalReport.tests_run}</span>
@@ -277,21 +300,21 @@ export const TeamConsole: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex flex-col gap-0.5 bg-surface-container-low/60 p-2.5 rounded-lg border border-white/5">
+            <div className="flex flex-col gap-0.5 bg-surface-container p-2.5 rounded-lg border border-white/5">
               <span className="text-[10px] text-on-surface-variant font-medium">Review Notes</span>
               <span className="text-sm font-bold font-mono text-on-surface">
                 {finalReport.review_notes} blockers found
               </span>
             </div>
 
-            <div className="flex flex-col gap-0.5 bg-surface-container-low/60 p-2.5 rounded-lg border border-white/5">
+            <div className="flex flex-col gap-0.5 bg-surface-container p-2.5 rounded-lg border border-white/5">
               <span className="text-[10px] text-on-surface-variant font-medium">Repair Rounds</span>
               <span className="text-sm font-bold font-mono text-on-surface">
                 {finalReport.repair_rounds}
               </span>
             </div>
 
-            <div className="flex flex-col gap-0.5 bg-surface-container-low/60 p-2.5 rounded-lg border border-white/5">
+            <div className="flex flex-col gap-0.5 bg-surface-container p-2.5 rounded-lg border border-white/5">
               <span className="text-[10px] text-on-surface-variant font-medium">Total Cost</span>
               <span className="text-sm font-bold font-mono text-emerald-400">
                 ${Number(finalReport.total_cost || 0).toFixed(2)}
@@ -311,7 +334,7 @@ export const TeamConsole: React.FC = () => {
                   <div
                     key={role}
                     data-testid={`final-cost-${role}`}
-                    className="bg-surface-container-low/70 p-2 rounded-lg border border-white/5 flex flex-col gap-0.5"
+                    className="bg-surface-container p-2 rounded-lg border border-white/5 flex flex-col gap-0.5"
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] font-bold capitalize text-on-surface">{role}</span>
@@ -338,51 +361,74 @@ export const TeamConsole: React.FC = () => {
       <div className="flex-1 flex flex-col p-6 min-h-0 overflow-hidden gap-4">
         {/* Task Intake Form (collapsed when job active, or visible for new job) */}
         {!activeJobId && (
-          <div className="bg-surface-container-low rounded-xl border border-white/10 p-5 flex flex-col gap-4 shadow-xl shrink-0">
+          <div className="bg-surface-container-low rounded-xl border border-white/10 p-3.5 flex flex-col gap-2.5 shadow-lg shrink-0">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-on-surface font-bold text-sm">
-                <Sparkles size={16} className="text-primary-container" />
+              <div className="flex items-center gap-2 text-on-surface font-bold text-xs uppercase tracking-wider">
+                <Sparkles size={14} className="text-primary-container" />
                 <span>Multi-Agent Task Intake</span>
               </div>
-              <button
-                onClick={() => setShowConfig(!showConfig)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border transition-colors cursor-pointer ${
-                  showConfig
-                    ? "bg-primary-container/20 border-primary-container/40 text-primary-container"
-                    : "bg-surface-container border-white/10 text-on-surface-variant hover:text-on-surface"
-                }`}
-              >
-                <Sliders size={13} />
-                <span>Team Roster Config</span>
-              </button>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 text-[11px] text-on-surface-variant font-mono">
+                    <Folder size={12} className="text-primary-container shrink-0" />
+                    <span className="text-on-surface-variant/70">Workspace:</span>
+                    <span className="text-on-surface font-semibold truncate max-w-xs" title={currentWorkspace?.path}>
+                      {currentWorkspace?.name || currentWorkspace?.path || "No workspace opened"}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => void openWorkspace()}
+                    data-testid="intake-change-workspace-btn"
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-mono bg-surface-container hover:bg-surface-container-high text-primary-container hover:text-white border border-primary-container/30 transition-all cursor-pointer shadow-sm"
+                    title="Open native dialog to change workspace"
+                  >
+                    <FolderOpen size={11} />
+                    <span>Change Workspace</span>
+                  </button>
+                </div>
+                <button
+                  onClick={() => setShowConfig(!showConfig)}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border transition-colors cursor-pointer ${
+                    showConfig
+                      ? "bg-primary-container/20 border-primary-container/40 text-primary-container"
+                      : "bg-surface-container border-white/10 text-on-surface-variant hover:text-on-surface"
+                  }`}
+                >
+                  <Sliders size={12} />
+                  <span>Team Config</span>
+                </button>
+              </div>
             </div>
 
-            {/* Workspace & Prompt */}
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 text-xs text-on-surface-variant shrink-0">
-                  <Folder size={14} />
-                  <span>Workspace:</span>
-                </div>
-                <div className="flex-1 font-mono text-xs text-on-surface bg-surface-container border border-white/10 rounded-lg px-3 py-1.5">
-                  {currentWorkspace?.path || "No workspace opened"}
-                </div>
-              </div>
+            {/* File Upload Zone */}
+            <FileUploadZone compact workspace={currentWorkspace?.path} />
 
-              <textarea
-                value={instruction}
-                onChange={(e) => setInstruction(e.target.value)}
-                placeholder="Describe your large project or high-stakes feature (e.g. Build an authentication service with JWT and SQLite, write unit tests, verify build)..."
-                rows={3}
-                disabled={submitting}
-                className="w-full bg-[#131315] border border-white/10 rounded-xl p-3 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary-container focus:outline-none font-mono resize-none"
-              />
+            {/* Prompt Textarea + Action Row */}
+            <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-end">
+              <div className="flex-1 flex flex-col min-w-0">
+                <textarea
+                  value={instruction}
+                  onChange={(e) => setInstruction(e.target.value)}
+                  placeholder="Describe your large project or high-stakes feature (e.g. Build an authentication service with JWT and SQLite, write unit tests, verify build)..."
+                  rows={2}
+                  disabled={submitting}
+                  className="w-full bg-surface-container-lowest border border-white/10 rounded-lg p-2.5 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary-container focus:outline-none font-mono resize-none"
+                />
+              </div>
+              <button
+                onClick={handleLaunch}
+                disabled={submitting || !instruction.trim()}
+                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-full text-xs font-ui-label-bold bg-primary-container hover:bg-primary-fixed text-on-primary disabled:opacity-50 transition-all cursor-pointer shadow-lg shadow-primary-container/20 hover:shadow-primary-container/30 shrink-0 h-fit"
+              >
+                <Play size={13} fill="currentColor" />
+                <span>{submitting ? "Orchestrating..." : "Plan & Execute Team Job"}</span>
+              </button>
             </div>
 
             {/* Team Config Panel Accordion */}
             {showConfig && (
-              <div className="bg-[#101013] border border-white/5 rounded-xl p-4 flex flex-col gap-3">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div className="bg-surface-container-lowest border border-white/5 rounded-lg p-3 flex flex-col gap-2.5">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                   <div>
                     <label className="text-on-surface-variant text-[11px] block mb-1">
                       Max Parallel Agents: {teamConfig.max_concurrency}
@@ -395,7 +441,7 @@ export const TeamConsole: React.FC = () => {
                       onChange={(e) =>
                         updateTeamConfig({ max_concurrency: parseInt(e.target.value, 10) })
                       }
-                      className="w-full cursor-pointer"
+                      className="w-full cursor-pointer accent-primary-container"
                     />
                   </div>
                   <div>
@@ -410,16 +456,16 @@ export const TeamConsole: React.FC = () => {
                       onChange={(e) =>
                         updateTeamConfig({ max_repair_rounds: parseInt(e.target.value, 10) })
                       }
-                      className="w-full cursor-pointer"
+                      className="w-full cursor-pointer accent-primary-container"
                     />
                   </div>
-                  <div className="flex items-center gap-2 pt-4">
+                  <div className="flex items-center gap-2 pt-3">
                     <input
                       type="checkbox"
                       id="auto-verify-toggle"
                       checked={teamConfig.auto_verify}
                       onChange={(e) => updateTeamConfig({ auto_verify: e.target.checked })}
-                      className="rounded border-white/20 text-primary-container cursor-pointer"
+                      className="rounded border-white/20 text-primary-container cursor-pointer accent-primary-container"
                     />
                     <label htmlFor="auto-verify-toggle" className="text-xs text-on-surface cursor-pointer">
                       Auto-Verify Web Scaffolding
@@ -428,39 +474,28 @@ export const TeamConsole: React.FC = () => {
                 </div>
               </div>
             )}
-
-            {/* Submit Action */}
-            <div className="flex justify-end">
-              <button
-                onClick={handleLaunch}
-                disabled={submitting || !instruction.trim()}
-                className="flex items-center gap-2 px-5 py-2 rounded-xl text-xs font-bold bg-primary-container text-on-primary-container hover:opacity-90 disabled:opacity-50 transition-all cursor-pointer shadow-lg shadow-primary-container/20"
-              >
-                <Play size={14} fill="currentColor" />
-                <span>{submitting ? "Orchestrating..." : "Plan & Execute Team Job"}</span>
-              </button>
-            </div>
           </div>
         )}
 
         {/* 3-Column Core Layout: Roster | DAGBoard | Comms Feed */}
         <div className="flex-1 grid grid-cols-12 gap-4 min-h-0 overflow-hidden">
           {/* Left Column: Agent Roster */}
-          <div className="col-span-3 h-full overflow-hidden">
+          <div className="col-span-3 min-w-0 h-full overflow-hidden">
             <AgentRoster />
           </div>
 
           {/* Center Column: Visual 2D DAG Graph */}
-          <div className="col-span-6 h-full overflow-hidden">
+          <div className="col-span-6 min-w-0 h-full overflow-hidden">
             <DAGBoard />
           </div>
 
           {/* Right Column: Team Comms Feed */}
-          <div className="col-span-3 h-full overflow-hidden">
+          <div className="col-span-3 min-w-0 h-full overflow-hidden">
             <TeamChatPanel />
           </div>
         </div>
       </div>
+      <FilePreviewModal />
     </div>
   );
 };

@@ -1,0 +1,78 @@
+name: macOS Production Release Build (macOS ONLY)
+
+# NOTE: This workflow builds and publishes installers for macOS ONLY.
+# Windows (.exe) and Linux (.AppImage) installers are strictly built locally
+# on developer machines to bundle platform-specific hardware acceleration
+# and prevent runner timeout or CI matrix conflicts.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v4.0.0)'
+        required: false
+        default: 'v4.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS Installer (dmg) - macOS ONLY
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python Backend Dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r backend/requirements.txt
+
+      - name: Install Frontend Node Dependencies
+        run: npm install
+
+      - name: Compile Backend PyInstaller Package (--onedir mode)
+        run: node scripts/build-backend.js
+
+      - name: Compile Frontend Assets & Electron Main
+        run: |
+          npm run build:vite
+          npm run build:electron
+
+      - name: Package macOS DMG Installer
+        run: npx electron-builder --mac dmg --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload macOS DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag_name || 'v4.0.0' }}
+          files: |
+            release/*.dmg
+            release/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

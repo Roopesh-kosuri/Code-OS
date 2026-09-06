@@ -23,6 +23,11 @@ class LoggingEventHandler(FileSystemEventHandler):
         logger.info("workspace file event: %s %s", event.event_type, event.src_path)
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(index_manager.schedule_file_change(self.workspace, event.src_path), self.loop)
+            try:
+                from ..ai.rag import schedule_rag_reindex
+                schedule_rag_reindex(self.workspace, event.src_path, event.event_type)
+            except Exception:
+                pass
 
 
 class WorkspaceWatcher:

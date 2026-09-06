@@ -30,8 +30,7 @@ from app.db.database import get_db, init_db
 
 
 @pytest.fixture(autouse=True)
-async def setup_test_database():
-    await init_db()
+async def setup_test_database(temp_db):
     yield
 
 
@@ -42,11 +41,9 @@ def auth_headers():
 
 @pytest.fixture
 def test_client(auth_headers):
-    with patch("app.main.mcp_manager.initialize_servers", new_callable=AsyncMock), \
-         patch("app.main.mcp_manager.shutdown", new_callable=AsyncMock):
-        with TestClient(app) as client:
-            client.headers.update(auth_headers)
-            yield client
+    client = TestClient(app)
+    client.headers.update(auth_headers)
+    yield client
 
 
 # ===================================================================

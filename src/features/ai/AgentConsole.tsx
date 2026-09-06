@@ -27,6 +27,10 @@ import {
   Server,
   Cpu,
   Users,
+  FolderOpen,
+  MessageSquare,
+  Send,
+  CornerDownLeft,
 } from "lucide-react";
 
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -36,7 +40,11 @@ import { useBackendStore } from "../../stores/backendStore";
 import { api } from "../../lib/api";
 import { PROVIDER_PRESETS } from "../../lib/providerPresets";
 import { CustomSelect, type CustomSelectOption } from "../../components/ui/CustomSelect";
+import { LiquidGlassModelSelector } from "../../components/ui/LiquidGlassModelSelector";
 import { TeamConsole } from "./console/TeamConsole";
+import { FileUploadZone } from "../files/FileUploadZone";
+import { FilePreviewModal } from "../files/FilePreviewModal";
+import { useFileUploadStore } from "../files/fileUploadStore";
 
 const PROVIDER_OPTIONS: CustomSelectOption[] = [
   {
@@ -133,6 +141,89 @@ const PROVIDER_OPTIONS: CustomSelectOption[] = [
   },
 ];
 
+const AGENT_CONSOLE_MODEL_SUGGESTIONS: Record<string, { id: string; label: string; tag?: string }[]> = {
+  groq: [
+    { id: "openai/gpt-oss-120b", label: "gpt-oss-120b", tag: "Recommended" },
+    { id: "openai/gpt-oss-20b", label: "gpt-oss-20b", tag: "Fast" },
+    { id: "qwen/qwen3.6-27b", label: "qwen-3.6-27b", tag: "Reasoning" },
+    { id: "groq/compound-mini", label: "compound-mini", tag: "Fast Agent" },
+    { id: "groq/compound", label: "compound" },
+  ],
+  "nvidia-nim": [
+    { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Recommended" },
+    { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
+    { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b" },
+    { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
+    { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
+    { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
+    { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
+  ],
+  openrouter: [
+    { id: "openai/gpt-5.5", label: "gpt-5.5", tag: "Flagship" },
+    { id: "openai/gpt-5.6-sol", label: "sol", tag: "Reasoning" },
+    { id: "anthropic/claude-opus-4-6", label: "opus-4.6" },
+    { id: "anthropic/claude-opus-5", label: "opus-5", tag: "Flagship" },
+    { id: "anthropic/claude-sonnet-4-7", label: "sonnet-4.7" },
+    { id: "anthropic/claude-sonnet-4-8", label: "sonnet-4.8", tag: "Recommended" },
+    { id: "anthropic/claude-sonnet-5", label: "sonnet-5" },
+    { id: "anthropic/claude-fable-5", label: "fable-5", tag: "Agent" },
+    { id: "google/gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },
+    { id: "openai/gpt-4o", label: "gpt-4o" },
+    { id: "meta-llama/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
+    { id: "deepseek/deepseek-chat-v3-0324", label: "deepseek-v3" },
+  ],
+  openai: [
+    { id: "gpt-5.5", label: "gpt-5.5", tag: "Flagship" },
+    { id: "gpt-5.6", label: "gpt-5.6", tag: "Flagship" },
+    { id: "gpt-5.6-sol", label: "sol", tag: "Reasoning" },
+    { id: "gpt-5.6-terra", label: "terra", tag: "Flagship" },
+    { id: "gpt-5.6-luna", label: "luna", tag: "Coding" },
+    { id: "gpt-4o", label: "gpt-4o", tag: "Recommended" },
+    { id: "gpt-4o-mini", label: "gpt-4o-mini", tag: "Fast" },
+    { id: "o3-mini", label: "o3-mini", tag: "Reasoning" },
+  ],
+  anthropic: [
+    { id: "claude-sonnet-4-8", label: "sonnet-4.8", tag: "Recommended" },
+    { id: "claude-sonnet-4-7", label: "sonnet-4.7" },
+    { id: "claude-sonnet-5", label: "sonnet-5", tag: "Flagship" },
+    { id: "claude-opus-4-6", label: "opus-4.6" },
+    { id: "claude-opus-4-7", label: "opus-4.7" },
+    { id: "claude-opus-4-8", label: "opus-4.8" },
+    { id: "claude-opus-5", label: "opus-5", tag: "Flagship" },
+    { id: "claude-fable-5", label: "fable-5", tag: "Agent" },
+    { id: "claude-sonnet-4-5", label: "claude-sonnet-4-5" },
+    { id: "claude-3-5-sonnet-latest", label: "claude-3.5-sonnet" },
+    { id: "claude-3-5-haiku-latest", label: "claude-3.5-haiku", tag: "Fast" },
+  ],
+  auto: [
+    { id: "claude-sonnet-4-8", label: "sonnet-4.8 (Recommended)", tag: "Recommended" },
+    { id: "gpt-5.6-sol", label: "sol (Reasoning)", tag: "Reasoning" },
+    { id: "claude-opus-5", label: "opus-5 (Flagship)", tag: "Flagship" },
+    { id: "gpt-5.5", label: "gpt-5.5" },
+    { id: "claude-fable-5", label: "fable-5", tag: "Agent" },
+    { id: "claude-sonnet-4-7", label: "sonnet-4.7" },
+  ],
+  gemini: [
+    { id: "gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },
+    { id: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+    { id: "gemini-2.0-flash", label: "gemini-2.0-flash" },
+  ],
+  deepseek: [
+    { id: "deepseek-chat", label: "deepseek-chat", tag: "Recommended" },
+    { id: "deepseek-reasoner", label: "deepseek-reasoner", tag: "Reasoning" },
+  ],
+  mistral: [
+    { id: "mistral-large-latest", label: "mistral-large", tag: "Recommended" },
+    { id: "codestral-latest", label: "codestral" },
+    { id: "mistral-small-latest", label: "mistral-small", tag: "Fast" },
+  ],
+  ollama: [
+    { id: "llama3", label: "llama3" },
+    { id: "codellama", label: "codellama" },
+    { id: "mistral", label: "mistral" },
+  ],
+};
+
 interface AgentTask {
   id: string;
   job_id?: string;
@@ -171,6 +262,7 @@ interface AgentJob {
 
 export function AgentConsole({ compact = false }: { compact?: boolean }) {
   const workspace = useWorkspaceStore((state) => state.currentWorkspace);
+  const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
   const globalModel = useAIStore((state) => state.model);
   const globalPreset = useAIStore((state) => state.preset);
 
@@ -187,6 +279,44 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
   const [recoveryProvider, setRecoveryProvider] = useState<string>("groq");
   const [recoveryModel, setRecoveryModel] = useState<string>("openai/gpt-oss-120b");
   const [teamMode, setTeamMode] = useState(false);
+  const [rightPanelTab, setRightPanelTab] = useState<"logs" | "steering">("logs");
+  const [steeringInput, setSteeringInput] = useState("");
+  const [isSteeringSubmitting, setIsSteeringSubmitting] = useState(false);
+  const [steeringHistory, setSteeringHistory] = useState<
+    Array<{ id: string; action: string; directive?: string; timestamp: number }>
+  >([]);
+
+  const handleSendSteering = async (action: string, directive?: string) => {
+    if (!activeJob?.id) return;
+    setIsSteeringSubmitting(true);
+    const effectiveDirective = directive || (action === "steer" ? steeringInput.trim() : undefined);
+    try {
+      await api.post(`/api/agents/jobs/${activeJob.id}/steer`, {
+        action,
+        directive: effectiveDirective,
+      });
+      setSteeringHistory((prev) => [
+        ...prev,
+        {
+          id: Math.random().toString(36).substring(2, 9),
+          action,
+          directive: effectiveDirective,
+          timestamp: Date.now(),
+        },
+      ]);
+      if (action === "steer") {
+        setSteeringInput("");
+      }
+      if (action === "continue" || action === "retry") {
+        const updated = await api.get<AgentJob>(`/api/agents/jobs/${activeJob.id}`);
+        if (updated) setActiveJob(updated);
+      }
+    } catch (err: any) {
+      console.error("Failed to steer job:", err);
+    } finally {
+      setIsSteeringSubmitting(false);
+    }
+  };
 
   const logsEndRef = useRef<HTMLDivElement>(null);
 
@@ -279,11 +409,14 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
     };
 
     try {
+      const fileIds = useFileUploadStore.getState().uploadedFiles.map((f) => f.file_id);
+
       // 1. Generate plan tasks from PlannerAgent
       const planRes = await api.post<{ tasks: any[] }>("/api/agents/plan", {
         workspace: workspace.path,
         user_request: userReq,
         provider_config: providerConfig,
+        file_ids: fileIds,
       });
 
       const tasks = planRes.tasks || [];
@@ -299,6 +432,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
         workflow: instruction.trim(),
         tasks: tasks,
         provider_config: providerConfig,
+        file_ids: fileIds,
       });
 
       if (startRes.job_id) {
@@ -444,6 +578,22 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
             </button>
           </div>
 
+          {/* Workspace Switcher in Agent Mode */}
+          <div className="flex items-center gap-1.5 ml-2 pl-3 border-l border-white/10 text-xs font-mono text-on-surface-variant">
+            <FolderOpen size={13} className="text-primary-container shrink-0" />
+            <span className="truncate max-w-[140px] text-on-surface font-medium" title={workspace?.path || "No workspace opened"}>
+              {workspace?.name || "No Workspace"}
+            </span>
+            <button
+              onClick={() => void openWorkspace()}
+              data-testid="agent-mode-change-workspace-btn"
+              className="text-[11px] text-primary-container hover:underline cursor-pointer ml-1 font-mono"
+              title="Open folder picker to change workspace"
+            >
+              Change Workspace
+            </button>
+          </div>
+
           {!teamMode && (
             <span className={`px-3 py-1 rounded-full font-caption text-caption font-bold tracking-wider flex items-center gap-1.5 ${
               isRunning
@@ -523,6 +673,9 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
               </div>
             </div>
 
+            {/* File Upload Zone */}
+            <FileUploadZone compact workspace={workspace?.path} />
+
             {/* Instruction Textarea */}
             <textarea
               value={instruction}
@@ -541,6 +694,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                   value={selectedProvider}
                   options={PROVIDER_OPTIONS}
                   disabled={isRunning}
+                  variant="liquid-glass"
                   onChange={(nextProvider) => {
                     setSelectedProvider(nextProvider);
                     const preset = PROVIDER_PRESETS.find((p) => p.id === nextProvider);
@@ -555,82 +709,24 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
               </div>
               <div>
                 <label className="font-caption text-caption text-on-surface-variant mb-1.5 block">Model</label>
-                <input
-                  type="text"
+                <LiquidGlassModelSelector
                   value={selectedModel}
-                  onChange={(e) => {
-                    const val = e.target.value;
+                  provider={selectedProvider}
+                  disabled={isRunning}
+                  onChange={(val) => {
                     setSelectedModel(val);
                     useAIStore.getState().setModel(val);
                   }}
-                  disabled={isRunning}
-                  placeholder="e.g. minimaxai/minimax-m3, meta/llama-3.1-70b-instruct"
-                  className="w-full bg-[#131315] border border-surface-variant rounded-lg px-3 py-2 text-xs text-on-surface focus:border-primary-container focus:outline-none font-mono disabled:opacity-50"
+                  testId="model-selector-trigger"
+                  inputTestId="model-selector-input"
+                  placeholder="Select model..."
                 />
               </div>
             </div>
 
             {/* Quick Model Suggestions for initial setup */}
             {(() => {
-              const MODEL_SUGGESTIONS: Record<string, { id: string; label: string; tag?: string }[]> = {
-                groq: [
-                  { id: "openai/gpt-oss-120b", label: "gpt-oss-120b", tag: "Recommended" },
-                  { id: "openai/gpt-oss-20b", label: "gpt-oss-20b", tag: "Fast" },
-                  { id: "qwen/qwen3.6-27b", label: "qwen-3.6-27b", tag: "Reasoning" },
-                  { id: "groq/compound-mini", label: "compound-mini", tag: "Fast Agent" },
-                  { id: "groq/compound", label: "compound" },
-                ],
-                "nvidia-nim": [
-                  { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Recommended" },
-                  { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
-                  { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b" },
-                  { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
-                  { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
-                  { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
-                  { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
-                ],
-                openrouter: [
-                  { id: "google/gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },
-                  { id: "anthropic/claude-sonnet-4", label: "claude-sonnet-4" },
-                  { id: "openai/gpt-4o", label: "gpt-4o" },
-                  { id: "openai/gpt-4o-mini", label: "gpt-4o-mini", tag: "Cheap" },
-                  { id: "meta-llama/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
-                  { id: "deepseek/deepseek-chat-v3-0324", label: "deepseek-v3" },
-                  { id: "mistralai/mistral-large-2411", label: "mistral-large" },
-                  { id: "google/gemini-2.5-pro", label: "gemini-2.5-pro" },
-                ],
-                openai: [
-                  { id: "gpt-4o", label: "gpt-4o", tag: "Recommended" },
-                  { id: "gpt-4o-mini", label: "gpt-4o-mini", tag: "Fast" },
-                  { id: "o3-mini", label: "o3-mini" },
-                  { id: "gpt-4-turbo", label: "gpt-4-turbo" },
-                ],
-                gemini: [
-                  { id: "gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },
-                  { id: "gemini-2.5-pro", label: "gemini-2.5-pro" },
-                  { id: "gemini-2.0-flash", label: "gemini-2.0-flash" },
-                ],
-                anthropic: [
-                  { id: "claude-sonnet-4-5", label: "claude-sonnet-4-5", tag: "Recommended" },
-                  { id: "claude-3-5-sonnet-latest", label: "claude-3.5-sonnet" },
-                  { id: "claude-3-5-haiku-latest", label: "claude-3.5-haiku", tag: "Fast" },
-                ],
-                deepseek: [
-                  { id: "deepseek-chat", label: "deepseek-chat", tag: "Recommended" },
-                  { id: "deepseek-reasoner", label: "deepseek-reasoner" },
-                ],
-                mistral: [
-                  { id: "mistral-large-latest", label: "mistral-large", tag: "Recommended" },
-                  { id: "codestral-latest", label: "codestral" },
-                  { id: "mistral-small-latest", label: "mistral-small", tag: "Fast" },
-                ],
-                ollama: [
-                  { id: "llama3", label: "llama3" },
-                  { id: "codellama", label: "codellama" },
-                  { id: "mistral", label: "mistral" },
-                ],
-              };
-              const suggestions = MODEL_SUGGESTIONS[selectedProvider] || [];
+              const suggestions = AGENT_CONSOLE_MODEL_SUGGESTIONS[selectedProvider] || [];
               if (!suggestions.length) return null;
               return (
                 <div className="flex flex-wrap items-center gap-1.5 pt-1">
@@ -817,6 +913,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                         <CustomSelect
                           value={recoveryProvider}
                           options={PROVIDER_OPTIONS}
+                          variant="liquid-glass"
                           onChange={(nextP) => {
                             setRecoveryProvider(nextP);
                             const preset = PROVIDER_PRESETS.find((p) => p.id === nextP);
@@ -829,79 +926,18 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
 
                       <div>
                         <label className="text-[11px] text-on-surface-variant font-medium block mb-1">Model Name / ID</label>
-                        <input
-                          type="text"
+                        <LiquidGlassModelSelector
                           value={recoveryModel}
-                          onChange={(e) => setRecoveryModel(e.target.value)}
-                          placeholder="e.g. minimaxai/minimax-m3, meta/llama-3.1-70b-instruct"
-                          className="w-full bg-[#131315] border border-surface-variant rounded-lg px-2.5 py-2 text-xs text-on-surface focus:outline-none focus:border-primary font-mono"
+                          provider={recoveryProvider}
+                          onChange={(m) => setRecoveryModel(m)}
+                          placeholder="Select recovery model..."
                         />
                       </div>
                     </div>
 
                     {/* Quick Model Suggestions */}
                     {(() => {
-                      const MODEL_SUGGESTIONS: Record<string, { id: string; label: string; tag?: string }[]> = {
-                        groq: [
-                          { id: "openai/gpt-oss-120b", label: "gpt-oss-120b", tag: "Recommended" },
-                          { id: "openai/gpt-oss-20b", label: "gpt-oss-20b", tag: "Fast" },
-                          { id: "llama-3.3-70b-versatile", label: "llama-3.3-70b" },
-                          { id: "llama-3.1-8b-instant", label: "llama-3.1-8b" },
-                          { id: "deepseek-r1-distill-llama-70b", label: "deepseek-r1-70b", tag: "Reasoning" },
-                          { id: "mixtral-8x7b-32768", label: "mixtral-8x7b" },
-                          { id: "gemma2-9b-it", label: "gemma2-9b" },
-                        ],
-                        "nvidia-nim": [
-                          { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Recommended" },
-                          { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
-                          { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b" },
-                          { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
-                          { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
-                          { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
-                          { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
-                        ],
-                        openrouter: [
-                          { id: "google/gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },
-                          { id: "anthropic/claude-sonnet-4", label: "claude-sonnet-4" },
-                          { id: "openai/gpt-4o", label: "gpt-4o" },
-                          { id: "openai/gpt-4o-mini", label: "gpt-4o-mini", tag: "Cheap" },
-                          { id: "meta-llama/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
-                          { id: "deepseek/deepseek-chat-v3-0324", label: "deepseek-v3" },
-                          { id: "mistralai/mistral-large-2411", label: "mistral-large" },
-                          { id: "google/gemini-2.5-pro", label: "gemini-2.5-pro" },
-                        ],
-                        openai: [
-                          { id: "gpt-4o", label: "gpt-4o", tag: "Recommended" },
-                          { id: "gpt-4o-mini", label: "gpt-4o-mini", tag: "Fast" },
-                          { id: "o3-mini", label: "o3-mini" },
-                          { id: "gpt-4-turbo", label: "gpt-4-turbo" },
-                        ],
-                        gemini: [
-                          { id: "gemini-2.5-flash", label: "gemini-2.5-flash", tag: "Recommended" },
-                          { id: "gemini-2.5-pro", label: "gemini-2.5-pro" },
-                          { id: "gemini-2.0-flash", label: "gemini-2.0-flash" },
-                        ],
-                        anthropic: [
-                          { id: "claude-sonnet-4-5", label: "claude-sonnet-4-5", tag: "Recommended" },
-                          { id: "claude-3-5-sonnet-latest", label: "claude-3.5-sonnet" },
-                          { id: "claude-3-5-haiku-latest", label: "claude-3.5-haiku", tag: "Fast" },
-                        ],
-                        deepseek: [
-                          { id: "deepseek-chat", label: "deepseek-chat", tag: "Recommended" },
-                          { id: "deepseek-reasoner", label: "deepseek-reasoner" },
-                        ],
-                        mistral: [
-                          { id: "mistral-large-latest", label: "mistral-large", tag: "Recommended" },
-                          { id: "codestral-latest", label: "codestral" },
-                          { id: "mistral-small-latest", label: "mistral-small", tag: "Fast" },
-                        ],
-                        ollama: [
-                          { id: "llama3", label: "llama3" },
-                          { id: "codellama", label: "codellama" },
-                          { id: "mistral", label: "mistral" },
-                        ],
-                      };
-                      const suggestions = MODEL_SUGGESTIONS[recoveryProvider] || [];
+                      const suggestions = AGENT_CONSOLE_MODEL_SUGGESTIONS[recoveryProvider] || [];
                       if (!suggestions.length) return null;
                       return (
                         <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
@@ -1109,13 +1145,42 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
             </div>
           </div>
 
-          {/* Card 2: Live Terminal Logs (Real Logs Stream) */}
-          <div className="bg-[#131315] rounded-xl border border-surface-container-high p-4 flex flex-col h-[280px] shadow-lg">
+          {/* Card 2: Live Terminal Logs & Task Steering Chat */}
+          <div className="bg-[#131315] rounded-xl border border-surface-container-high p-4 flex flex-col h-[320px] shadow-lg">
             <div className="flex justify-between items-center border-b border-surface-variant pb-2.5 mb-2.5">
-              <div className="flex items-center gap-2 font-code-sm text-code-sm text-on-surface font-semibold">
-                <Terminal size={14} className="text-primary-container" />
-                <span>Live Terminal Logs</span>
+              {/* Tab Selector */}
+              <div className="flex items-center gap-1 bg-[#0d0f18] p-0.5 rounded-lg border border-white/5">
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab("logs")}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                    rightPanelTab === "logs"
+                      ? "bg-primary/20 text-primary border border-primary/30 shadow-[0_0_10px_rgba(0,218,243,0.15)]"
+                      : "text-on-surface-variant hover:text-white"
+                  }`}
+                >
+                  <Terminal size={12} className={rightPanelTab === "logs" ? "text-primary" : "text-on-surface-variant"} />
+                  <span>Live Logs</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRightPanelTab("steering")}
+                  data-testid="tab-task-steering"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer relative ${
+                    rightPanelTab === "steering"
+                      ? "bg-primary/20 text-primary border border-primary/30 shadow-[0_0_10px_rgba(0,218,243,0.15)]"
+                      : "text-on-surface-variant hover:text-white"
+                  }`}
+                >
+                  <MessageSquare size={12} className={rightPanelTab === "steering" ? "text-primary" : "text-on-surface-variant"} />
+                  <span>Steering Chat</span>
+                  {activeJob?.status === "paused" && (
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  )}
+                </button>
               </div>
+
+              {/* Right status & metrics */}
               <div className="flex items-center gap-2.5">
                 {(() => {
                   let tokenCount = 0;
@@ -1146,51 +1211,181 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
               </div>
             </div>
 
-            {/* Log Stream */}
-            <div className="flex-1 overflow-y-auto font-mono text-[11px] space-y-1.5 pr-2 leading-relaxed">
-              {activeJob?.logs && activeJob.logs.length > 0 ? (
-                activeJob.logs.map((log, i) => {
-                  const isInfo = log.includes("INFO:") || log.includes("[INFO]");
-                  const isSuccess = log.includes("SUCCESS:") || log.includes("completed");
-                  const isWarn = log.includes("WARN:") || log.includes("[WARNING]");
-                  const isHalt = log.includes("HALT:") || log.includes("ERROR:") || log.includes("[ERROR]");
+            {/* Content: Logs View */}
+            {rightPanelTab === "logs" ? (
+              <div className="flex-1 overflow-y-auto font-mono text-[11px] space-y-1.5 pr-2 leading-relaxed">
+                {activeJob?.logs && activeJob.logs.length > 0 ? (
+                  activeJob.logs.map((log, i) => {
+                    const isInfo = log.includes("INFO:") || log.includes("[INFO]");
+                    const isSuccess = log.includes("SUCCESS:") || log.includes("completed");
+                    const isWarn = log.includes("WARN:") || log.includes("[WARNING]");
+                    const isHalt = log.includes("HALT:") || log.includes("ERROR:") || log.includes("[ERROR]");
 
-                  return (
-                    <div key={i} className="flex gap-2">
-                      <span className={`${
-                        isSuccess
-                          ? "text-primary-container font-semibold"
-                          : isInfo
-                            ? "text-emerald-400"
-                            : isWarn
-                              ? "text-tertiary-container"
-                              : isHalt
-                                ? "text-error font-semibold"
-                                : "text-on-surface-variant"
-                      }`}>
-                        {log}
-                      </span>
+                    return (
+                      <div key={i} className="flex gap-2">
+                        <span className={`${
+                          isSuccess
+                            ? "text-primary-container font-semibold"
+                            : isInfo
+                              ? "text-emerald-400"
+                              : isWarn
+                                ? "text-tertiary-container"
+                                : isHalt
+                                  ? "text-error font-semibold"
+                                  : "text-on-surface-variant"
+                        }`}>
+                          {log}
+                        </span>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="text-outline-variant italic py-8 text-center text-xs">
+                    {isRunning ? "Waiting for initial agent log output..." : "Agent logs will stream here during task execution."}
+                  </div>
+                )}
+                {isRunning && activeJob?.status === "paused" && (
+                  <div className="text-amber-400 font-bold flex items-center gap-2 pt-1 animate-pulse">
+                    <span>●</span>
+                    <span>PAUSED: AWAITING OPERATOR INPUT...</span>
+                  </div>
+                )}
+                <div ref={logsEndRef} />
+              </div>
+            ) : (
+              /* Content: Task Steering Chat View */
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Steering History & Suggestions */}
+                <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 text-xs mb-2">
+                  {/* Paused/Interrupted Alert Banner */}
+                  {activeJob?.status === "paused" && (
+                    <div className="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-amber-300 text-xs font-semibold">
+                        <AlertCircle size={14} className="shrink-0 text-amber-400 animate-pulse" />
+                        <span>Workflow paused. Ready for operator steering.</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleSendSteering("continue")}
+                        disabled={isSteeringSubmitting}
+                        className="px-2.5 py-1 rounded bg-amber-400 text-black font-bold text-[11px] hover:bg-amber-300 transition-colors cursor-pointer shrink-0"
+                      >
+                        Resume
+                      </button>
                     </div>
-                  );
-                })
-              ) : (
-                <div className="text-outline-variant italic py-8 text-center text-xs">
-                  {isRunning ? "Waiting for initial agent log output..." : "Agent logs will stream here during task execution."}
+                  )}
+
+                  {/* Steering Quick Action Chips */}
+                  <div className="space-y-1">
+                    <span className="text-[10px] uppercase font-bold text-on-surface-variant/70 tracking-wider">
+                      Quick Steering Actions
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleSendSteering("continue")}
+                        disabled={!activeJob || isSteeringSubmitting}
+                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                      >
+                        ⚡ Continue what you stopped
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSendSteering("retry")}
+                        disabled={!activeJob || isSteeringSubmitting}
+                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                      >
+                        ↺ Retry current step
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSendSteering("skip_tests", "Skip unit test phase and proceed to finalization")}
+                        disabled={!activeJob || isSteeringSubmitting}
+                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                      >
+                        ⏩ Skip tests & finalize
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Recorded Steering Directives */}
+                  <div className="space-y-1.5 pt-1">
+                    <span className="text-[10px] uppercase font-bold text-on-surface-variant/70 tracking-wider">
+                      Steering Directive History
+                    </span>
+                    {steeringHistory.length > 0 ? (
+                      steeringHistory.map((item) => (
+                        <div
+                          key={item.id}
+                          className="p-2 rounded-lg bg-surface-container-low border border-surface-container-high/60 flex items-start gap-2"
+                        >
+                          <div className="p-1 rounded bg-primary/10 text-primary mt-0.5 shrink-0">
+                            <CornerDownLeft size={11} />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between text-[10px] text-on-surface-variant">
+                              <span className="font-mono font-bold text-primary">{item.action.toUpperCase()}</span>
+                              <span>{new Date(item.timestamp).toLocaleTimeString()}</span>
+                            </div>
+                            {item.directive && (
+                              <p className="text-xs text-on-surface mt-0.5 leading-tight font-sans">
+                                {item.directive}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-3 text-center text-xs text-on-surface-variant/60 italic bg-surface-container-lowest/50 rounded-lg border border-white/5">
+                        No steering directives sent yet. Send instructions above or below to steer the active agents.
+                      </div>
+                    )}
+                  </div>
                 </div>
-              )}
-              {isRunning && activeJob?.status === "paused" && (
-                <div className="text-amber-400 font-bold flex items-center gap-2 pt-1 animate-pulse">
-                  <span>ΓùÅ</span>
-                  <span>PAUSED: AWAITING OPERATOR INPUT...</span>
-                </div>
-              )}
-              <div ref={logsEndRef} />
-            </div>
+
+                {/* Operator Prompt Input */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (steeringInput.trim()) {
+                      handleSendSteering("steer");
+                    }
+                  }}
+                  className="flex items-center gap-1.5 pt-2 border-t border-surface-variant shrink-0"
+                >
+                  <input
+                    type="text"
+                    value={steeringInput}
+                    onChange={(e) => setSteeringInput(e.target.value)}
+                    disabled={!activeJob || isSteeringSubmitting}
+                    placeholder={
+                      activeJob
+                        ? "Type steering instruction for agent..."
+                        : "Start a workflow to steer tasks..."
+                    }
+                    className="flex-1 bg-[#0d0f18] border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/60 font-sans disabled:opacity-40"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!activeJob || !steeringInput.trim() || isSteeringSubmitting}
+                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-primary text-black hover:bg-primary/90 transition-all cursor-pointer disabled:opacity-40 shadow-sm shrink-0"
+                  >
+                    {isSteeringSubmitting ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <Send size={12} />
+                    )}
+                    <span>Steer</span>
+                  </button>
+                </form>
+              </div>
+            )}
           </div>
         </div>
       </div>
         </>
       )}
+      <FilePreviewModal />
     </div>
   );
 }

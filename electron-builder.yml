@@ -1,0 +1,61 @@
+appId: com.codeos.app
+productName: CODE OS
+directories:
+  output: release
+
+asarUnpack:
+  - "**/node_modules/node-pty/**"
+
+files:
+  - "dist/**/*"
+  - "dist-electron/**/*"
+  - "package.json"
+
+extraResources:
+  - from: "backend/dist/backend"
+    to: "backend"
+    filter:
+      - "**/*"
+
+win:
+  icon: "build/icon.ico"
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "CODE OS"
+  runAfterFinish: true
+  differentialPackage: false
+
+portable:
+  artifactName: "${productName}-${version}-portable.${ext}"
+
+linux:
+  icon: "build/icon.png"
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Development
+  maintainer: "Roopesh Kosuri <roopesh@codeos.ai>"
+
+mac:
+  icon: "build/icon.png"
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  category: public.app-category.developer-tools
+  hardenedRuntime: true
+  gatekeeperAssess: false

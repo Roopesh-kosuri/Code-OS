@@ -60,7 +60,11 @@ def configure_logging(log_level: int = logging.INFO) -> None:
     root_logger.addHandler(console_handler)
 
     # 2. File Handler (JSON-structured rotating file log for production debugging)
-    log_dir = Path.home() / ".code-os" / "logs"
+    try:
+        from app.core.config import get_settings
+        log_dir = get_settings().data_dir / "logs"
+    except Exception:
+        log_dir = Path.home() / ".code-os" / "logs"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "code-os.log"

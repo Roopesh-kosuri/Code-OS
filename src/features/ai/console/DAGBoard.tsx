@@ -44,15 +44,15 @@ interface NodePosition {
 }
 
 export const DAGBoard: React.FC = () => {
-  const { tasks, selectedTaskId, selectTask, teamMessages, handoffs } = useTeamStore();
+  const { tasks, selectedTaskId, selectTask, teamMessages, handoffs, taskDifficultyMap } = useTeamStore();
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 40, y: 40 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
 
-  const NODE_WIDTH = 220;
-  const NODE_HEIGHT = 80;
+  const NODE_WIDTH = 230;
+  const NODE_HEIGHT = 90;
   const LAYER_GAP_X = 140;
   const NODE_GAP_Y = 30;
 
@@ -182,7 +182,13 @@ export const DAGBoard: React.FC = () => {
   );
 
   return (
-    <div className="relative w-full h-full flex overflow-hidden bg-[#0c0c0e] rounded-xl border border-white/5 select-none">
+    <div
+      className="relative w-full h-full flex overflow-hidden bg-surface-container-lowest rounded-xl border border-white/5 select-none"
+      style={{
+        backgroundImage: "radial-gradient(circle, rgba(255, 255, 255, 0.07) 1px, transparent 1px)",
+        backgroundSize: "24px 24px",
+      }}
+    >
       {/* Canvas Controls Toolbar */}
       <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 bg-surface-container/90 backdrop-blur-md border border-white/10 rounded-lg p-1.5 shadow-lg">
         <button
@@ -221,9 +227,16 @@ export const DAGBoard: React.FC = () => {
         onMouseLeave={handleMouseUp}
       >
         {tasks.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-on-surface-variant/60 gap-3">
-            <Layers size={32} className="opacity-40 animate-pulse" />
-            <p className="text-xs">No active DAG workflow. Submit a task to launch the team.</p>
+          <div className="h-full flex flex-col items-center justify-center text-on-surface-variant/60 gap-3 p-6 text-center">
+            <div className="p-3.5 rounded-2xl bg-surface-container border border-white/5">
+              <Layers size={28} className="text-primary-container opacity-80" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-on-surface">No active DAG workflow</p>
+              <p className="text-[11px] text-on-surface-variant/60 max-w-xs mt-1 leading-relaxed">
+                Submit a task instruction above to plan and execute tasks across the autonomous agent roster.
+              </p>
+            </div>
           </div>
         ) : (
           <div
@@ -249,7 +262,7 @@ export const DAGBoard: React.FC = () => {
                   markerHeight="6"
                   orient="auto-start-reverse"
                 >
-                  <path d="M 0 1 L 9 5 L 0 9 z" fill="#4B5563" />
+                  <path d="M 0 1 L 9 5 L 0 9 z" className="fill-white/30" />
                 </marker>
                 <marker
                   id="arrow-active"
@@ -260,28 +273,27 @@ export const DAGBoard: React.FC = () => {
                   markerHeight="6"
                   orient="auto-start-reverse"
                 >
-                  <path d="M 0 1 L 9 5 L 0 9 z" fill="#3B82F6" />
+                  <path d="M 0 1 L 9 5 L 0 9 z" className="fill-primary-container" />
                 </marker>
               </defs>
 
               {edges.map((edge, idx) => {
                 const isFromDone = edge.from.task.status === "completed";
                 const isToRunning = edge.to.task.status === "running";
-                const strokeColor = isToRunning
-                  ? "#3B82F6"
+                const strokeClass = isToRunning
+                  ? "stroke-primary-container"
                   : isFromDone
-                  ? "#10B981"
-                  : "#374151";
+                  ? "stroke-emerald-400"
+                  : "stroke-white/20";
 
                 return (
                   <path
                     key={`edge-${idx}`}
                     d={edge.path}
                     fill="none"
-                    stroke={strokeColor}
+                    className={`${strokeClass} ${isToRunning ? "animate-pulse" : ""}`}
                     strokeWidth={isToRunning ? "2.5" : "1.8"}
                     strokeDasharray={isToRunning ? "4 2" : "none"}
-                    className={isToRunning ? "animate-pulse" : ""}
                     markerEnd={isToRunning ? "url(#arrow-active)" : "url(#arrow-default)"}
                   />
                 );
@@ -301,18 +313,50 @@ export const DAGBoard: React.FC = () => {
                 : (ROLE_COLORS[task.assigned_agent] || ROLE_COLORS.coder);
               const isSelected = selectedTaskId === task.id;
 
-              // Node status appearance
+              // Difficulty coloring (Smart Model Router)
+              const diffInfo = (taskDifficultyMap && taskDifficultyMap[task.id]) ||
+                ((task as any).context?.difficulty ? {
+                  difficulty: (task as any).context.difficulty,
+                  assigned_model: (task as any).context.assigned_model || "",
+                  tier: (task as any).context.tier || (task as any).context.difficulty,
+                } : null) ||
+                ((task as any).payload?.difficulty ? {
+                  difficulty: (task as any).payload.difficulty,
+                  assigned_model: (task as any).payload.assigned_model || "",
+                  tier: (task as any).payload.tier || (task as any).payload.difficulty,
+                } : null);
+
+              const difficulty = diffInfo?.difficulty?.toUpperCase();
+              const assignedModel = diffInfo?.assigned_model;
+
+              // Node status appearance & difficulty border
               let statusBorder = isVerification ? "border-purple-500/40" : "border-white/10";
               let statusGlow = isVerification ? "shadow-purple-500/10" : "";
+
+              if (difficulty === "HARD") {
+                statusBorder = "border-rose-500/80 ring-1 ring-rose-500/30";
+                statusGlow = "shadow-md shadow-rose-950/20";
+              } else if (difficulty === "MEDIUM") {
+                statusBorder = "border-amber-500/80 ring-1 ring-amber-500/30";
+                statusGlow = "shadow-md shadow-amber-950/20";
+              } else if (difficulty === "EASY") {
+                statusBorder = "border-emerald-500/80 ring-1 ring-emerald-500/30";
+                statusGlow = "shadow-md shadow-emerald-950/20";
+              }
+
               if (task.status === "running") {
                 statusBorder = isVerification
                   ? "border-purple-400 ring-2 ring-purple-500/40"
+                  : difficulty === "HARD"
+                  ? "border-rose-400 ring-2 ring-rose-500/40"
                   : "border-primary-container ring-2 ring-primary-container/20";
                 statusGlow = isVerification
                   ? "shadow-lg shadow-purple-500/20"
                   : "shadow-lg shadow-primary-container/10";
               } else if (task.status === "completed") {
-                statusBorder = isVerification ? "border-purple-400/60" : "border-emerald-500/40";
+                if (!difficulty) {
+                  statusBorder = isVerification ? "border-purple-400/60" : "border-emerald-500/40";
+                }
               } else if (task.status === "failed") {
                 statusBorder = "border-error ring-1 ring-error/30";
               }
@@ -345,6 +389,21 @@ export const DAGBoard: React.FC = () => {
                       <span className="text-[10px] font-mono text-on-surface-variant lowercase">
                         @{task.assigned_agent}
                       </span>
+                      {diffInfo && (
+                        <span
+                          data-testid={`task-difficulty-badge-${task.id}`}
+                          data-difficulty={difficulty}
+                          className={`px-1.5 py-0.2 rounded text-[8.5px] font-mono font-bold uppercase tracking-wider border ${
+                            difficulty === "HARD"
+                              ? "bg-rose-500/20 text-rose-300 border-rose-500/40"
+                              : difficulty === "MEDIUM"
+                              ? "bg-amber-500/20 text-amber-300 border-amber-500/40"
+                              : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                          }`}
+                        >
+                          {difficulty}
+                        </span>
+                      )}
                     </div>
 
                     {/* Status Indicator */}
@@ -383,10 +442,18 @@ export const DAGBoard: React.FC = () => {
                     {task.title}
                   </div>
 
-                  {/* Footer: Duration / Dependencies */}
-                  <div className="flex items-center justify-between text-[10px] font-mono text-on-surface-variant/80 border-t border-white/5 pt-1">
-                    <div className="flex items-center gap-1">
-                      {task.duration_seconds !== undefined && task.duration_seconds !== null ? (
+                  {/* Footer: Duration / Dependencies / Assigned Model */}
+                  <div className="flex items-center justify-between text-[10px] font-mono text-on-surface-variant/80 border-t border-white/5 pt-1 gap-1">
+                    <div className="flex items-center gap-1 truncate">
+                      {assignedModel ? (
+                        <span
+                          data-testid={`task-assigned-model-${task.id}`}
+                          className="text-[9px] text-primary font-mono truncate max-w-[130px]"
+                          title={assignedModel}
+                        >
+                          {assignedModel}
+                        </span>
+                      ) : task.duration_seconds !== undefined && task.duration_seconds !== null ? (
                         <>
                           <Clock size={10} />
                           <span>{task.duration_seconds.toFixed(1)}s</span>
@@ -396,7 +463,7 @@ export const DAGBoard: React.FC = () => {
                       )}
                     </div>
                     {task.dependencies.length > 0 && (
-                      <span className="text-[9px] text-on-surface-variant/60">
+                      <span className="text-[9px] text-on-surface-variant/60 shrink-0">
                         deps: {task.dependencies.length}
                       </span>
                     )}

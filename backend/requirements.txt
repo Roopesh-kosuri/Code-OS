@@ -19,3 +19,21 @@ aiohttp==3.14.3
 playwright==1.60.0
 pyautogui==0.9.54
 mss==10.2.0
+chromadb==0.4.22
+sentence-transformers==2.2.2
+faster-whisper==0.10.0
+pyttsx3==2.90
+sounddevice==0.4.6
+soundfile==0.12.1
+numpy==1.24.3
+PyMuPDF==1.23.8
+Pillow==10.2.0
+pytesseract==0.3.10
+python-magic==0.4.27; sys_platform != 'win32'
+python-magic-bin==0.4.14; sys_platform == 'win32'
+pynput==1.7.6
+selenium==4.15.2
+webdriver-manager==4.0.1
+pystray==0.19.5
+bandit==1.7.5
+safety==2.3.5

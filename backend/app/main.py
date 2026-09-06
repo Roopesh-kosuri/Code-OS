@@ -42,6 +42,24 @@ from app.features.duo.routes import router as duo_router
 from app.features.ai.dual_coder_routes import router as dual_coder_router
 from app.features.ai.chat_harness_routes import router as chat_harness_router
 from app.features.ai.team.team_routes import router as team_router
+from app.features.ai.cost.cost_routes import router as cost_router
+from app.features.ai.session.replay_routes import router as replay_router
+from app.features.ai.ghost_text import ghost_text_router
+from app.features.ai.staging import staging_router
+from app.features.ai.terminal import agentic_terminal_router
+from app.features.ai.git_autopilot import git_autopilot_router
+from app.features.ai.rag import rag_router
+from app.features.ai.voice.voice_routes import voice_router
+from app.features.ai.smart_router import smart_router_router
+from app.features.ai.file_ingestion.routes import router as file_ingestion_router
+from app.features.ai.rony_voice.rony_voice_routes import router as rony_voice_router
+from app.features.ai.diagrams.diagram_routes import router as diagram_router
+from app.features.ai.refactoring.refactor_routes import router as refactor_router
+from app.features.ai.security.security_routes import router as security_router
+from app.features.ai.standup.standup_routes import router as standup_router
+from app.features.ai.cicd.cicd_routes import router as cicd_router
+from app.features.ai.memory.memory_routes import router as memory_router
+from app.features.ai.cost.budget_guard import install_budget_guard_hook
 from app.core.monitoring import monitor
 from app.core.errors import AppError, app_error_handler
 _START_TIME = time.time()
@@ -459,3 +477,22 @@ app.include_router(duo_router, prefix="/api/duo", tags=["duo"])
 app.include_router(dual_coder_router, prefix="/api/dual-coder", tags=["dual-coder"])
 app.include_router(chat_harness_router, prefix="/api/ai", tags=["chat-agent"])
 app.include_router(team_router, prefix="/api/team", tags=["team"])
+app.include_router(cost_router, prefix="/api/cost", tags=["cost"])
+app.include_router(replay_router, prefix="/api/sessions", tags=["sessions"])
+app.include_router(ghost_text_router, prefix="/api/ghost-text", tags=["ghost-text"])
+app.include_router(staging_router, prefix="/api/staging", tags=["staging"])
+app.include_router(agentic_terminal_router, prefix="/api/terminal", tags=["agentic-terminal"])
+app.include_router(git_autopilot_router, prefix="/api/git-autopilot", tags=["git-autopilot"])
+app.include_router(rag_router, prefix="/api/rag", tags=["rag"])
+app.include_router(voice_router, tags=["voice"])
+app.include_router(smart_router_router, prefix="/api/smart-router", tags=["smart-router"])
+app.include_router(file_ingestion_router, prefix="/api/files", tags=["file-ingestion"])
+app.include_router(rony_voice_router)
+app.include_router(diagram_router)
+app.include_router(refactor_router)
+app.include_router(security_router, prefix="/api/security", tags=["security"])
+app.include_router(standup_router, prefix="/api/standup", tags=["standup"])
+app.include_router(cicd_router, prefix="/api/cicd", tags=["cicd"])
+app.include_router(memory_router, prefix="/api/memories", tags=["memories"])
+
+install_budget_guard_hook()

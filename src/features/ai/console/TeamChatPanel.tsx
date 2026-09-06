@@ -22,10 +22,17 @@ import {
   Zap,
   Check,
   X,
+  Database,
+  Paperclip,
+  Brain,
   type LucideIcon,
 } from "lucide-react";
 import { useTeamStore, type TeamMessage, type HandoffArtifact } from "./teamStore";
 import { HandoffInspector } from "./HandoffInspector";
+import { useRAGStore } from "../../rag/ragStore";
+import { useWorkspaceStore } from "../../../stores/workspaceStore";
+import { useFileUploadStore } from "../../files/fileUploadStore";
+import { useMemoryStore } from "../../memory/memoryStore";
 
 const ROLE_ICONS: Record<string, LucideIcon> = {
   architect: Layers,
@@ -47,8 +54,221 @@ const ROLE_BADGE_CLASSES: Record<string, string> = {
   system: "bg-zinc-500/20 text-zinc-400 border-zinc-500/30",
 };
 
+interface RoleFilterDropdownProps {
+  value: string;
+  onChange: (val: string) => void;
+}
+
+const ROLE_FILTER_OPTIONS = [
+  { value: "all", label: "All Roles", dot: "bg-zinc-400" },
+  { value: "architect", label: "Architect", dot: "bg-blue-400" },
+  { value: "coder", label: "Coder", dot: "bg-emerald-400" },
+  { value: "reviewer", label: "Reviewer", dot: "bg-amber-400" },
+  { value: "tester", label: "Tester", dot: "bg-purple-400" },
+  { value: "devops", label: "DevOps", dot: "bg-rose-400" },
+  { value: "operator", label: "Operator", dot: "bg-yellow-300" },
+];
+
+const RoleFilterDropdown: React.FC<RoleFilterDropdownProps> = ({ value, onChange }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isOpen]);
+
+  const currentOption =
+    ROLE_FILTER_OPTIONS.find((opt) => opt.value.toLowerCase() === value.toLowerCase()) ||
+    ROLE_FILTER_OPTIONS[0];
+
+  return (
+    <div ref={containerRef} className="relative shrink-0">
+      {/* Hidden native select for test automation & accessibility */}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        data-testid="role-filter"
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+      >
+        {ROLE_FILTER_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+
+      <button
+        type="button"
+        data-testid="role-filter-button"
+        onClick={() => setIsOpen(!isOpen)}
+        className="flex items-center gap-1.5 bg-surface-container hover:bg-surface-container-high border border-white/10 hover:border-white/20 rounded-lg px-2.5 py-1 text-[10px] font-mono text-on-surface transition-all cursor-pointer shadow-xs"
+      >
+        <Filter size={10} className="text-on-surface-variant shrink-0" />
+        <span className="flex items-center gap-1">
+          <span className={`w-1.5 h-1.5 rounded-full ${currentOption.dot} shrink-0`} />
+          <span className="whitespace-nowrap">{currentOption.label}</span>
+        </span>
+        <ChevronDown
+          size={10}
+          className={`text-on-surface-variant shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {isOpen && (
+        <div className="absolute right-0 top-full mt-1 w-36 bg-[#16171b] border border-white/15 rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100">
+          {ROLE_FILTER_OPTIONS.map((opt) => {
+            const isSelected = opt.value.toLowerCase() === value.toLowerCase();
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  onChange(opt.value);
+                  setIsOpen(false);
+                }}
+                className={`flex items-center justify-between px-2 py-1.5 rounded-lg text-[11px] font-mono transition-colors text-left cursor-pointer ${
+                  isSelected
+                    ? "bg-primary-container/20 text-primary-container font-semibold"
+                    : "text-on-surface-variant hover:text-on-surface hover:bg-white/5"
+                }`}
+              >
+                <div className="flex items-center gap-1.5 truncate">
+                  <span className={`w-1.5 h-1.5 rounded-full ${opt.dot} shrink-0`} />
+                  <span className="truncate">{opt.label}</span>
+                </div>
+                {isSelected && <Check size={11} className="text-primary-container shrink-0 ml-1" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+interface TargetRoleDropdownProps {
+  value: string;
+  onChange: (val: string) => void;
+  disabled?: boolean;
+}
+
+const TARGET_ROLE_OPTIONS = [
+  { value: "all", label: "@all (Broadcast to Entire Team)", shortLabel: "@all (Team)", dot: "bg-zinc-400" },
+  { value: "architect", label: "@architect", shortLabel: "@architect", dot: "bg-blue-400" },
+  { value: "coder", label: "@coder", shortLabel: "@coder", dot: "bg-emerald-400" },
+  { value: "reviewer", label: "@reviewer", shortLabel: "@reviewer", dot: "bg-amber-400" },
+  { value: "tester", label: "@tester", shortLabel: "@tester", dot: "bg-purple-400" },
+  { value: "devops", label: "@devops", shortLabel: "@devops", dot: "bg-rose-400" },
+];
+
+const TargetRoleDropdown: React.FC<TargetRoleDropdownProps> = ({ value, onChange, disabled }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+    if (isOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isOpen]);
+
+  const currentOption =
+    TARGET_ROLE_OPTIONS.find((opt) => opt.value.toLowerCase() === value.toLowerCase()) ||
+    TARGET_ROLE_OPTIONS[0];
+
+  return (
+    <div ref={containerRef} className="relative flex-1 min-w-0">
+      {/* Hidden native select for test automation & accessibility */}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        data-testid="operator-target-select"
+        className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
+      >
+        {TARGET_ROLE_OPTIONS.map((opt) => (
+          <option key={opt.value} value={opt.value}>
+            {opt.label}
+          </option>
+        ))}
+      </select>
+
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full flex items-center justify-between gap-1.5 bg-surface-container hover:bg-surface-container-high border border-white/10 hover:border-white/20 rounded-lg px-2.5 py-1.5 text-[11px] font-mono text-on-surface transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
+        title="Select directive recipient role"
+      >
+        <div className="flex items-center gap-1.5 truncate">
+          <span className={`w-1.5 h-1.5 rounded-full ${currentOption.dot} shrink-0`} />
+          <span className="truncate text-on-surface">{currentOption.shortLabel || currentOption.label}</span>
+        </div>
+        <ChevronDown
+          size={11}
+          className={`text-on-surface-variant shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`}
+        />
+      </button>
+
+      {isOpen && !disabled && (
+        <div className="absolute left-0 bottom-full mb-1 min-w-[210px] w-full bg-[#16171b] border border-white/15 rounded-xl shadow-2xl p-1 z-50 flex flex-col gap-0.5 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100">
+          {TARGET_ROLE_OPTIONS.map((opt) => {
+            const isSelected = opt.value.toLowerCase() === value.toLowerCase();
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => {
+                  onChange(opt.value);
+                  setIsOpen(false);
+                }}
+                className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg text-[11px] font-mono transition-colors text-left cursor-pointer ${
+                  isSelected
+                    ? "bg-primary-container/20 text-primary-container font-semibold"
+                    : "text-on-surface-variant hover:text-on-surface hover:bg-white/5"
+                }`}
+              >
+                <div className="flex items-center gap-2 truncate">
+                  <span className={`w-1.5 h-1.5 rounded-full ${opt.dot} shrink-0`} />
+                  <span className="truncate">{opt.label}</span>
+                </div>
+                {isSelected && <Check size={11} className="text-primary-container shrink-0 ml-1" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const TeamChatPanel: React.FC = () => {
   const { teamMessages, injectPrompt, activeJobId, jobStatus, activeRepair } = useTeamStore();
+  const { uploadedFiles, openPreview } = useFileUploadStore();
+  const { useRagInChat, toggleUseRagInChat, indexStatus } = useRAGStore();
+  const currentWorkspace = useWorkspaceStore((state) => state?.currentWorkspace);
+  const memories = useMemoryStore((state) => state.memories);
   const [prompt, setPrompt] = useState("");
   const [targetRole, setTargetRole] = useState<string>("all");
   const [isUrgent, setIsUrgent] = useState(false);
@@ -94,7 +314,21 @@ export const TeamChatPanel: React.FC = () => {
 
     setInjecting(true);
     try {
-      await injectPrompt(prompt.trim(), targetRole, isUrgent);
+      let finalPrompt = prompt.trim();
+      if (useRagInChat && currentWorkspace?.path) {
+        try {
+          const results = await useRAGStore.getState().search(currentWorkspace.path, prompt.trim(), 5);
+          if (results && results.length > 0) {
+            const contextText = results
+              .map((r) => `--- ${r.file_path} (${r.line_range}) ---\n${r.chunk_text}`)
+              .join("\n\n");
+            finalPrompt = `${prompt.trim()}\n\nRelevant files from codebase:\n${contextText}`;
+          }
+        } catch {
+          // If RAG search fails, proceed with base prompt
+        }
+      }
+      await injectPrompt(finalPrompt, targetRole, isUrgent);
       setPrompt("");
       setIsUrgent(false);
     } catch {
@@ -119,72 +353,108 @@ export const TeamChatPanel: React.FC = () => {
       className="flex flex-col h-full bg-surface-container-low rounded-xl border border-white/5 overflow-hidden select-none"
     >
       {/* Header */}
-      <div className="p-3 border-b border-white/5 flex items-center justify-between bg-[#121216]">
-        <div className="flex items-center gap-2">
-          <MessageSquare size={15} className="text-primary-container" />
-          <h3 className="text-xs font-bold uppercase tracking-wider text-on-surface">
-            Team Comms Feed
-          </h3>
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/5 text-on-surface-variant font-mono">
-            {filteredMessages.length} / {teamMessages.length}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {/* Role Filter Selector */}
-          <div className="flex items-center gap-1 bg-surface-container border border-white/10 rounded-lg px-2 py-1">
-            <Filter size={11} className="text-on-surface-variant" />
-            <select
-              value={roleFilter}
-              onChange={(e) => setRoleFilter(e.target.value)}
-              data-testid="role-filter"
-              className="bg-transparent text-[10px] font-mono text-on-surface focus:outline-none cursor-pointer"
-              title="Filter messages by role"
-            >
-              <option value="all">All Roles</option>
-              <option value="architect">Architect</option>
-              <option value="coder">Coder</option>
-              <option value="reviewer">Reviewer</option>
-              <option value="tester">Tester</option>
-              <option value="devops">DevOps</option>
-              <option value="operator">Operator</option>
-            </select>
+      <div className="p-2.5 px-3 border-b border-white/5 flex flex-col gap-2 bg-surface-container-lowest shrink-0">
+        {/* Row 1: Title, Count, Auto-scroll */}
+        <div className="flex items-center justify-between gap-2 min-w-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <MessageSquare size={14} className="text-primary-container shrink-0" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-on-surface whitespace-nowrap">
+              Team Comms
+            </h3>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-container text-on-surface-variant font-mono whitespace-nowrap">
+              {filteredMessages.length} / {teamMessages.length}
+            </span>
+            {memories.length > 0 && (
+              <div
+                data-testid="team-chat-memory-indicator"
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-cyan-950/60 border border-cyan-800/60 text-[10px] font-mono text-cyan-300 whitespace-nowrap"
+                title={`${memories.length} lessons learned from past mistakes active in agent context`}
+              >
+                <Brain size={10} className="text-cyan-400 shrink-0" />
+                <span>{memories.length} memory</span>
+              </div>
+            )}
           </div>
 
           {/* Auto-scroll toggle button */}
           <button
             onClick={() => setAutoScroll((prev) => !prev)}
             data-testid="autoscroll-toggle"
-            className={`flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-mono border transition-colors cursor-pointer ${
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono border transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
               autoScroll
                 ? "bg-primary-container/20 text-primary-container border-primary-container/30"
-                : "bg-white/5 text-on-surface-variant border-white/10 hover:text-on-surface"
+                : "bg-surface-container text-on-surface-variant border-white/10 hover:text-on-surface"
             }`}
-            title="Toggle automatic scrolling to latest message"
           >
-            <ArrowDown size={11} className={autoScroll ? "animate-bounce" : "opacity-50"} />
+            <ArrowDown size={11} className={autoScroll ? "animate-bounce text-primary-container" : "opacity-50"} />
             <span>Auto-scroll: {autoScroll ? "ON" : "OFF"}</span>
           </button>
+        </div>
+
+        {/* Row 2: Role Filter selector */}
+        <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-white/5 min-w-0">
+          <span className="text-[10px] font-mono text-on-surface-variant flex items-center gap-1.5 shrink-0">
+            <Filter size={10} className="text-on-surface-variant/80" />
+            <span>Feed Role:</span>
+          </span>
+          <RoleFilterDropdown value={roleFilter} onChange={setRoleFilter} />
         </div>
       </div>
 
       {/* Active Repair Warning Banner */}
       {activeRepair && (
-        <div
-          data-testid="repair-banner"
-          className="mx-3 mt-2.5 p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between shadow-sm animate-pulse"
-        >
-          <div className="flex items-center gap-2">
-            <span className="text-sm">🔄</span>
-            <span className="font-semibold">
-              Repair Round {activeRepair.round}/{activeRepair.max_rounds}: Coder fixing {activeRepair.failures?.length || 1} test failure{(activeRepair.failures?.length || 1) === 1 ? "" : "s"}
-            </span>
+        <div className="px-3 pt-2.5 shrink-0 bg-surface-container-low">
+          <div
+            data-testid="repair-banner"
+            className="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs flex items-center justify-between shadow-sm animate-pulse"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-sm shrink-0">🔄</span>
+              <span className="font-semibold truncate">
+                Repair Round {activeRepair.round}/{activeRepair.max_rounds}: Coder fixing {activeRepair.failures?.length || 1} test failure{(activeRepair.failures?.length || 1) === 1 ? "" : "s"}
+              </span>
+            </div>
+            {activeRepair.failures && activeRepair.failures.length > 0 && (
+              <span className="text-[10px] font-mono opacity-80 max-w-[200px] truncate shrink-0">
+                {activeRepair.failures[0]}
+              </span>
+            )}
           </div>
-          {activeRepair.failures && activeRepair.failures.length > 0 && (
-            <span className="text-[10px] font-mono opacity-80 max-w-[200px] truncate">
-              {activeRepair.failures[0]}
+        </div>
+      )}
+
+      {/* Attached Files Bar in Team Chat Feed */}
+      {uploadedFiles.length > 0 && (
+        <div className="px-3 pt-2 shrink-0">
+          <button
+            type="button"
+            data-testid="team-attached-files-bar"
+            onClick={() => {
+              if (uploadedFiles[0]) void openPreview(uploadedFiles[0]);
+            }}
+            className="w-full flex items-center justify-between p-2 rounded-lg bg-surface-container border border-white/10 hover:border-primary/40 text-xs text-on-surface transition-colors cursor-pointer shadow-xs"
+            title="View attached files in this job"
+          >
+            <div className="flex items-center gap-2 truncate min-w-0">
+              <Paperclip size={13} className="text-primary-container shrink-0" />
+              <span className="font-semibold text-[11px] truncate shrink-0">
+                Attached Files ({uploadedFiles.length})
+              </span>
+              <div className="flex items-center gap-1 truncate">
+                {uploadedFiles.slice(0, 3).map((f) => (
+                  <span
+                    key={f.file_id}
+                    className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-variant text-on-surface-variant truncate max-w-[90px]"
+                  >
+                    {f.filename}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <span className="text-[10px] text-primary-container font-mono shrink-0 ml-2">
+              View All
             </span>
-          )}
+          </button>
         </div>
       )}
 
@@ -238,7 +508,7 @@ export const TeamChatPanel: React.FC = () => {
                 <div
                   key={msgId}
                   data-testid="decision-message"
-                  className="rounded-xl p-3 text-xs flex flex-col gap-2 bg-[#141820] border border-blue-500/20 shadow-sm"
+                  className="rounded-xl p-3 text-xs flex flex-col gap-2 bg-surface-container border border-blue-500/20 shadow-sm"
                 >
                   <div className="flex items-center justify-between text-[10px] font-mono">
                     <div className="flex items-center gap-1.5">
@@ -278,7 +548,7 @@ export const TeamChatPanel: React.FC = () => {
                     {isExpanded && (
                       <div
                         data-testid="decision-rationale"
-                        className="p-2.5 rounded-lg bg-black/40 border border-white/5 text-[11px] font-mono text-on-surface-variant leading-relaxed select-text"
+                        className="p-2.5 rounded-lg bg-surface-container-lowest border border-white/5 text-[11px] font-mono text-on-surface-variant leading-relaxed select-text"
                       >
                         {rationaleText}
                       </div>
@@ -306,7 +576,7 @@ export const TeamChatPanel: React.FC = () => {
                   data-testid="handoff-card"
                   role="button"
                   tabIndex={0}
-                  className="rounded-xl p-3 text-xs flex flex-col gap-2 bg-gradient-to-br from-primary-container/10 via-surface-container to-surface-container border border-primary-container/30 hover:border-primary-container/60 hover:bg-primary-container/15 transition-all cursor-pointer group shadow-sm"
+                  className="rounded-xl p-3 text-xs flex flex-col gap-2 bg-surface-container border border-primary-container/30 hover:border-primary-container/60 hover:bg-surface-container-high transition-all cursor-pointer group shadow-sm"
                 >
                   <div className="flex items-center justify-between text-[10px] font-mono">
                     <div className="flex items-center gap-1.5">
@@ -491,46 +761,68 @@ export const TeamChatPanel: React.FC = () => {
       <form
         onSubmit={handleInject}
         data-testid="operator-injection-form"
-        className="p-3 border-t border-white/5 flex flex-col gap-2.5 bg-[#101014]"
+        className="p-3 border-t border-white/5 flex flex-col gap-2 bg-surface-container-lowest shrink-0"
       >
-        <div className="flex items-center justify-between text-[11px] text-on-surface-variant font-mono">
-          <div className="flex items-center gap-2">
-            <span>Target:</span>
-            <select
+        {/* Row 1: Target Selector (Left) + RAG Toggle (Right) */}
+        <div className="flex items-center justify-between gap-2 text-[11px] text-on-surface-variant font-mono min-w-0">
+          <div className="flex items-center gap-1.5 flex-1 min-w-0">
+            <span className="shrink-0 text-on-surface-variant font-medium text-[10px]">Target:</span>
+            <TargetRoleDropdown
               value={targetRole}
-              onChange={(e) => setTargetRole(e.target.value)}
+              onChange={setTargetRole}
               disabled={!activeJobId || jobStatus === "completed" || jobStatus === "cancelled"}
-              data-testid="operator-target-select"
-              className="bg-surface-container border border-white/10 rounded px-2 py-0.5 text-[10px] font-mono text-on-surface focus:outline-none focus:border-primary-container cursor-pointer"
-            >
-              <option value="all">@all (Broadcast to Entire Team)</option>
-              <option value="architect">@architect</option>
-              <option value="coder">@coder</option>
-              <option value="reviewer">@reviewer</option>
-              <option value="tester">@tester</option>
-              <option value="devops">@devops</option>
-            </select>
+            />
           </div>
 
-          {/* Priority Toggle: Normal vs Urgent */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsUrgent((prev) => !prev)}
-              data-testid="operator-urgent-toggle"
-              className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono border transition-all cursor-pointer ${
-                isUrgent
-                  ? "bg-rose-500/20 text-rose-400 border-rose-500/40 font-bold"
-                  : "bg-white/5 text-on-surface-variant border-white/10 hover:text-on-surface"
-              }`}
-            >
-              <Zap size={11} className={isUrgent ? "text-rose-400 fill-rose-400" : ""} />
-              <span>Priority: {isUrgent ? "Urgent (Pause)" : "Normal"}</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={toggleUseRagInChat}
+            data-testid="rag-chat-toggle"
+            className={`flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] font-mono border transition-all cursor-pointer shrink-0 ${
+              useRagInChat
+                ? "bg-primary-container/20 text-primary border-primary/30 font-semibold shadow-xs"
+                : "bg-surface-container text-on-surface-variant border-white/10 hover:text-on-surface"
+            }`}
+            title="Toggle Semantic RAG codebase context"
+          >
+            <Database size={11} className={useRagInChat ? "text-primary fill-primary/20" : ""} />
+            <span>RAG: {useRagInChat ? "ON" : "OFF"}</span>
+          </button>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Row 2: RAG Context Status Strip (when RAG is active) */}
+        {useRagInChat && (
+          <div
+            data-testid="rag-context-badge"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary-container/15 text-primary border border-primary-container/25 text-[10px] font-mono min-w-0 shadow-xs"
+            title="Semantic RAG is providing relevant codebase snippets to agents"
+          >
+            <Database size={10} className="shrink-0 text-primary" />
+            <span className="truncate">
+              Using {indexStatus.indexed_files > 0 ? Math.min(5, indexStatus.indexed_files) : 5} relevant files from codebase
+            </span>
+          </div>
+        )}
+
+        {/* Row 2: Priority Toggle + Prompt Input + Inject Button */}
+        <div className="flex items-center gap-2 min-w-0">
+          {/* Priority Toggle: Normal vs Urgent */}
+          <button
+            type="button"
+            onClick={() => setIsUrgent((prev) => !prev)}
+            data-testid="operator-urgent-toggle"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[10px] font-mono border transition-all cursor-pointer shrink-0 whitespace-nowrap ${
+              isUrgent
+                ? "bg-rose-500/20 text-rose-400 border-rose-500/40 font-bold shadow-sm"
+                : "bg-surface-container text-on-surface-variant border-white/10 hover:text-on-surface"
+            }`}
+            title="Toggle priority (Urgent pauses running cycles)"
+          >
+            <Zap size={11} className={isUrgent ? "text-rose-400 fill-rose-400" : ""} />
+            <span>{isUrgent ? "⚡ Urgent (Pause)" : "Normal"}</span>
+          </button>
+
+          {/* Prompt Input */}
           <input
             type="text"
             value={prompt}
@@ -540,25 +832,27 @@ export const TeamChatPanel: React.FC = () => {
             placeholder={
               activeJobId
                 ? isUrgent
-                  ? "Urgent instruction (will pause current cycle)..."
-                  : "Inject directive into running team..."
-                : "Launch a team workflow to inject directives..."
+                  ? "Urgent instruction (pauses)..."
+                  : "Direct team or inject..."
+                : "Enter steering directive..."
             }
-            className="flex-1 bg-surface-container border border-white/10 rounded-lg px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary-container font-mono disabled:opacity-50"
+            className="flex-1 min-w-0 bg-surface-container border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:outline-none focus:border-primary-container font-mono disabled:opacity-50"
           />
+
+          {/* Inject Button */}
           <button
             type="submit"
             disabled={!prompt.trim() || !activeJobId || injecting}
             data-testid="operator-submit-btn"
-            className={`p-2 rounded-lg font-mono text-xs flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-ui-label-bold text-xs transition-all cursor-pointer disabled:opacity-40 shrink-0 whitespace-nowrap ${
               isUrgent
-                ? "bg-rose-500 text-white hover:bg-rose-600"
-                : "bg-primary-container text-on-primary-container hover:opacity-90"
+                ? "bg-rose-500 text-white hover:bg-rose-600 shadow-sm"
+                : "bg-primary-container text-on-primary-container hover:opacity-90 shadow-sm"
             }`}
             title="Inject Directive"
           >
-            <Send size={13} />
-            <span className="hidden sm:inline">Inject</span>
+            <Send size={12} />
+            <span>Inject</span>
           </button>
         </div>
       </form>

@@ -25,6 +25,7 @@ import {
   Search,
   Globe,
   Monitor,
+  DollarSign,
 } from "lucide-react";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useAIStore } from "../../stores/aiStore";
@@ -32,6 +33,7 @@ import { useEditorStore } from "../../stores/editorStore";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useBackendStore } from "../../stores/backendStore";
 import { useRunStore } from "../../stores/runStore";
+import { useCostStore } from "../../stores/costStore";
 import { api } from "../../lib/api";
 import { PROVIDER_PRESETS } from "../../lib/providerPresets";
 
@@ -39,7 +41,7 @@ interface SettingsModalProps {
   onClose: () => void;
 }
 
-type Category = "general" | "providers" | "editor" | "terminal" | "toolchains" | "git" | "mcp" | "agents" | "automation" | "timeline" | "theme" | "security" | "about";
+type Category = "general" | "providers" | "budget" | "editor" | "terminal" | "toolchains" | "git" | "mcp" | "agents" | "automation" | "timeline" | "theme" | "security" | "about";
 
 interface ThemeSwatch {
   id: string;
@@ -72,6 +74,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
   const aiBaseUrl = useAIStore((s) => s.baseUrl);
   const aiModel = useAIStore((s) => s.model);
+  const currentWorkspace = useWorkspaceStore((s) => s.currentWorkspace);
 
   const [configuredKeys, setConfiguredKeys] = useState<string[]>([]);
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
@@ -131,6 +134,44 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [agentPlannerModel, setAgentPlannerModel] = useState(
     () => localStorage.getItem("code-os:agent.plannerModel") || "gpt-4o"
   );
+
+  // Budget & Costs Guard State
+  const budget = useCostStore((s) => s.budget);
+  const showTopBarPill = useCostStore((s) => s.showTopBarPill);
+  const setShowTopBarPill = useCostStore((s) => s.setShowTopBarPill);
+  const openCostModal = useCostStore((s) => s.openModal);
+  const fetchBudget = useCostStore((s) => s.fetchBudget);
+  const updateBudget = useCostStore((s) => s.updateBudget);
+  const resetTodaySpend = useCostStore((s) => s.resetTodaySpend);
+
+  const [dailyLimitInput, setDailyLimitInput] = useState<string>("5.00");
+  const [sessionLimitInput, setSessionLimitInput] = useState<string>("2.00");
+  const [autoDowngradeInput, setAutoDowngradeInput] = useState<number>(90);
+  const [hardStopInput, setHardStopInput] = useState<number>(100);
+  const [downgradeModelInput, setDowngradeModelInput] = useState<string>("groq/llama-3.3-70b");
+  const [dailyLimitEnabled, setDailyLimitEnabled] = useState<boolean>(false);
+  const [sessionLimitEnabled, setSessionLimitEnabled] = useState<boolean>(false);
+  const [isResettingSpend, setIsResettingSpend] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (activeCategory === "budget") {
+      void fetchBudget(currentWorkspace?.path);
+    }
+  }, [activeCategory, currentWorkspace?.path, fetchBudget]);
+
+  useEffect(() => {
+    if (budget) {
+      const hasDaily = budget.daily_limit_usd !== null && budget.daily_limit_usd > 0;
+      setDailyLimitEnabled(hasDaily);
+      if (hasDaily) setDailyLimitInput(String(budget.daily_limit_usd));
+      const hasSession = budget.session_limit_usd !== null && budget.session_limit_usd > 0;
+      setSessionLimitEnabled(hasSession);
+      if (hasSession) setSessionLimitInput(String(budget.session_limit_usd));
+      if (budget.auto_downgrade_at_percent) setAutoDowngradeInput(budget.auto_downgrade_at_percent);
+      if (budget.hard_stop_at_percent) setHardStopInput(budget.hard_stop_at_percent);
+      if (budget.downgrade_model) setDowngradeModelInput(budget.downgrade_model);
+    }
+  }, [budget]);
   const [agentDeveloperModel, setAgentDeveloperModel] = useState(
     () => localStorage.getItem("code-os:agent.developerModel") || "claude-3-5-sonnet-20241022"
   );
@@ -170,7 +211,6 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     setTimeout(() => setFeedback(null), 2500);
   };
 
-  const currentWorkspace = useWorkspaceStore((s) => s.currentWorkspace);
   const freshness = useBackendStore((s) => s.freshness);
   const checkFreshness = useBackendStore((s) => s.checkFreshness);
   const [trustedCommands, setTrustedCommands] = useState<string[]>([]);
@@ -590,6 +630,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const navCategories = [
     { id: "general", label: "General", icon: "tune" },
     { id: "providers", label: "Providers & Models", icon: "smart_toy" },
+    { id: "budget", label: "Budget & Costs", icon: "payments" },
     { id: "editor", label: "Editor", icon: "edit_note" },
     { id: "terminal", label: "Terminal", icon: "terminal" },
     { id: "toolchains", label: "Toolchains & Runtimes", icon: "code_blocks" },
@@ -742,6 +783,27 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
                     </label>
                   </div>
+
+                  <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                    <div>
+                      <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Show Spend Indicator in Top Bar</div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">Display real-time cost indicator in the top bar ($ Today: $X.XX).</div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="toggle-topbar-cost-pill-general"
+                        checked={showTopBarPill}
+                        onChange={async (e) => {
+                          const next = e.target.checked;
+                          await setShowTopBarPill(next, currentWorkspace?.path);
+                          showFeedback(`Top bar spend indicator ${next ? "enabled" : "hidden"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
                 </div>
 
                 {/* Backend Process Freshness Card */}
@@ -839,6 +901,262 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       );
                     })}
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Category: Budget & Costs ──────────────────────────────────── */}
+            {activeCategory === "budget" && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <h2 className="font-headline-md text-headline-md text-on-surface mb-1 font-bold flex items-center gap-2">
+                      <span className="material-symbols-outlined text-primary">payments</span>
+                      <span>Budget Guard &amp; Spending Caps</span>
+                    </h2>
+                    <p className="font-ui-label-reg text-ui-label-reg text-on-surface-variant">
+                      Configure top bar spend indicator, daily limits, session caps, auto-downgrades, and spend reset.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    id="btn-open-cost-dashboard"
+                    onClick={() => {
+                      openCostModal();
+                      onClose();
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-primary/15 hover:bg-primary/25 text-primary border border-primary/30 text-xs font-bold transition-all cursor-pointer shadow-xs shrink-0"
+                  >
+                    <span className="material-symbols-outlined text-xs">analytics</span>
+                    <span>Open Dashboard</span>
+                  </button>
+                </div>
+
+                {/* 0. Top Bar Spend Indicator Toggle Card */}
+                <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-6 space-y-2 shadow-md">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
+                        <span className="material-symbols-outlined text-sm text-primary">visibility</span>
+                        <span>Show Spend in Top Bar</span>
+                      </div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                        Display the real-time spend badge ($ Today: $X.XX) in the top navigation bar. Toggle off to keep the top bar clean.
+                      </div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        id="toggle-topbar-cost-pill"
+                        checked={showTopBarPill}
+                        onChange={async (e) => {
+                          const next = e.target.checked;
+                          await setShowTopBarPill(next, currentWorkspace?.path);
+                          showFeedback(`Top bar spend badge ${next ? "enabled" : "hidden"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
+                </div>
+
+                {/* 1. Daily Budget Limit Card */}
+                <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-6 space-y-4 shadow-md">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
+                        <DollarSign size={16} className="text-primary" />
+                        <span>Daily Spending Limit</span>
+                      </div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                        Enforce a hard stop or auto-downgrade when 24h spend reaches this USD threshold.
+                      </div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={dailyLimitEnabled}
+                        onChange={async (e) => {
+                          const next = e.target.checked;
+                          setDailyLimitEnabled(next);
+                          const limitVal = next ? parseFloat(dailyLimitInput) || 5.0 : 0;
+                          await updateBudget({ daily_limit_usd: limitVal, workspace: currentWorkspace?.path });
+                          showFeedback(`Daily limit ${next ? `set to $${limitVal.toFixed(2)}` : "disabled"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
+
+                  {dailyLimitEnabled && (
+                    <div className="pt-2 flex items-center gap-3 border-t border-surface-container-high/30">
+                      <div className="flex-1 max-w-xs">
+                        <label className="font-caption text-caption text-on-surface-variant mb-1 block">
+                          Daily USD Cap ($)
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-2 text-on-surface-variant font-mono text-xs font-bold">$</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            value={dailyLimitInput}
+                            onChange={(e) => setDailyLimitInput(e.target.value)}
+                            onBlur={async () => {
+                              const val = parseFloat(dailyLimitInput) || 5.0;
+                              await updateBudget({ daily_limit_usd: val, workspace: currentWorkspace?.path });
+                              showFeedback(`Daily limit updated: $${val.toFixed(2)}`);
+                            }}
+                            className="w-full bg-[#131318] border border-surface-container-high rounded-lg pl-7 pr-3 py-1.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-on-surface-variant/70 pt-4">
+                        Current today's spend: <span className="font-mono text-cyan-300 font-bold">${(budget.today_spend_usd || 0).toFixed(2)}</span> ({budget.usage_percent || 0}% used)
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 2. Session Budget Limit Card */}
+                <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-6 space-y-4 shadow-md">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
+                        <span className="material-symbols-outlined text-sm text-amber-400">timelapse</span>
+                        <span>Session Spending Limit</span>
+                      </div>
+                      <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                        Cap expenditure within a single active agent execution session.
+                      </div>
+                    </div>
+                    <label className="relative inline-block w-10 h-6 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={sessionLimitEnabled}
+                        onChange={async (e) => {
+                          const next = e.target.checked;
+                          setSessionLimitEnabled(next);
+                          const limitVal = next ? parseFloat(sessionLimitInput) || 2.0 : 0;
+                          await updateBudget({ session_limit_usd: limitVal, workspace: currentWorkspace?.path });
+                          showFeedback(`Session limit ${next ? `set to $${limitVal.toFixed(2)}` : "disabled"}`);
+                        }}
+                        className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                      />
+                      <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                    </label>
+                  </div>
+
+                  {sessionLimitEnabled && (
+                    <div className="pt-2 flex items-center gap-3 border-t border-surface-container-high/30">
+                      <div className="flex-1 max-w-xs">
+                        <label className="font-caption text-caption text-on-surface-variant mb-1 block">
+                          Session USD Cap ($)
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-2 text-on-surface-variant font-mono text-xs font-bold">$</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0.01"
+                            value={sessionLimitInput}
+                            onChange={(e) => setSessionLimitInput(e.target.value)}
+                            onBlur={async () => {
+                              const val = parseFloat(sessionLimitInput) || 2.0;
+                              await updateBudget({ session_limit_usd: val, workspace: currentWorkspace?.path });
+                              showFeedback(`Session limit updated: $${val.toFixed(2)}`);
+                            }}
+                            className="w-full bg-[#131318] border border-surface-container-high rounded-lg pl-7 pr-3 py-1.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Automatic Safeguards & Downgrade Model Card */}
+                <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-6 space-y-4 shadow-md">
+                  <h3 className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
+                    <span className="material-symbols-outlined text-sm text-cyan-400">tune</span>
+                    <span>Safeguards &amp; Model Downgrade</span>
+                  </h3>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="font-caption text-caption text-on-surface-variant mb-1 block">
+                        Auto-Downgrade Threshold (%)
+                      </label>
+                      <input
+                        type="number"
+                        min={10}
+                        max={100}
+                        value={autoDowngradeInput}
+                        onChange={(e) => setAutoDowngradeInput(Number(e.target.value))}
+                        onBlur={async () => {
+                          await updateBudget({ auto_downgrade_at_percent: autoDowngradeInput, workspace: currentWorkspace?.path });
+                          showFeedback(`Auto-downgrade threshold: ${autoDowngradeInput}%`);
+                        }}
+                        className="w-full bg-[#131318] border border-surface-container-high rounded-lg p-2.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none"
+                      />
+                      <p className="text-[10px] text-on-surface-variant/60 mt-1">Default 90%. Swaps to downgrade model before hard stop.</p>
+                    </div>
+
+                    <div>
+                      <label className="font-caption text-caption text-on-surface-variant mb-1 block">
+                        Downgrade Model Target
+                      </label>
+                      <select
+                        value={downgradeModelInput}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          setDowngradeModelInput(val);
+                          await updateBudget({ downgrade_model: val, workspace: currentWorkspace?.path });
+                          showFeedback(`Downgrade model set to ${val}`);
+                        }}
+                        className="w-full bg-[#131318] border border-surface-container-high rounded-lg p-2.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none cursor-pointer"
+                      >
+                        <option value="groq/llama-3.3-70b">groq/llama-3.3-70b (Fast &amp; Cost-Effective)</option>
+                        <option value="groq/llama-3.1-8b-instant">groq/llama-3.1-8b-instant (Ultra Low Cost)</option>
+                        <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Low Cost Cloud)</option>
+                        <option value="openai/gpt-4o-mini">openai/gpt-4o-mini (Lightweight Frontier)</option>
+                        <option value="ollama/local">ollama/local (Local Hardware - $0.00)</option>
+                      </select>
+                      <p className="text-[10px] text-on-surface-variant/60 mt-1">Model swapped automatically when threshold is reached.</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 4. Admin Action Card: Reset Today's Spend */}
+                <div className="bg-[#1e1f24] rounded-xl border border-surface-container-high/40 p-6 flex items-center justify-between shadow-md">
+                  <div>
+                    <h3 className="font-ui-label-bold text-ui-label-bold text-on-surface flex items-center gap-2">
+                      <RotateCcw size={15} className="text-rose-400" />
+                      <span>Reset Today's Spend</span>
+                    </h3>
+                    <p className="font-caption text-caption text-on-surface-variant mt-0.5">
+                      Clears today's recorded expenditure ledger for testing or resetting budget quotas.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isResettingSpend}
+                    onClick={async () => {
+                      setIsResettingSpend(true);
+                      const ok = await resetTodaySpend(currentWorkspace?.path);
+                      setIsResettingSpend(false);
+                      if (ok) {
+                        showFeedback("Today's spend has been reset to $0.00");
+                      } else {
+                        showFeedback("Failed to reset today's spend");
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-bold transition-all cursor-pointer disabled:opacity-40"
+                  >
+                    <RotateCcw size={13} className={isResettingSpend ? "animate-spin" : ""} />
+                    <span>Reset Today's Spend</span>
+                  </button>
                 </div>
               </div>
             )}

@@ -72,6 +72,10 @@ async function request<T>(path: string, options: RequestOptions = {}, isRetry = 
     ...(options.headers as Record<string, string> | undefined),
   };
 
+  if (typeof FormData !== "undefined" && options.body instanceof FormData) {
+    delete headers["Content-Type"];
+  }
+
   if (token) {
     headers["Authorization"] = `Bearer ${token}`;
   }
@@ -121,14 +125,28 @@ export const api = {
       ...options,
       method: "POST",
       query,
-      body: body === undefined ? undefined : JSON.stringify(body)
+      body:
+        body === undefined
+          ? undefined
+          : typeof FormData !== "undefined" && body instanceof FormData
+          ? (body as any)
+          : typeof body === "string"
+          ? body
+          : JSON.stringify(body),
     }),
   put: <T>(path: string, body?: unknown, query?: RequestOptions["query"], options?: RequestOptions) =>
     request<T>(path, {
       ...options,
       method: "PUT",
       query,
-      body: body === undefined ? undefined : JSON.stringify(body)
+      body:
+        body === undefined
+          ? undefined
+          : typeof FormData !== "undefined" && body instanceof FormData
+          ? (body as any)
+          : typeof body === "string"
+          ? body
+          : JSON.stringify(body),
     }),
   delete: <T>(path: string, query?: RequestOptions["query"], options?: RequestOptions) =>
     request<T>(path, {
@@ -136,16 +154,41 @@ export const api = {
       method: "DELETE",
       query
     }),
+  blob: async (path: string, options: RequestOptions = {}): Promise<Blob> => {
+    const token = await _ensureToken();
+    const headers: Record<string, string> = {
+      ...(options.headers as Record<string, string> | undefined),
+    };
+    if (token) {
+      headers["Authorization"] = `Bearer ${token}`;
+    }
+    const response = await fetch(url(path, options.query), {
+      ...options,
+      headers,
+    });
+    if (!response.ok) {
+      throw new Error(`Request failed with status ${response.status}`);
+    }
+    return response.blob();
+  },
   stream: async (path: string, body: unknown, onToken: (token: string) => void, signal?: AbortSignal) => {
     const sessionToken = await _ensureToken();
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (sessionToken) {
       headers["Authorization"] = `Bearer ${sessionToken}`;
     }
+    const effectiveBody = typeof body === "object" && body !== null ? { ...(body as Record<string, any>) } : body;
+    if (path === "/api/ai/chat-agent/stream" && typeof effectiveBody === "object" && effectiveBody !== null) {
+      const uploadStore = (window as any).__fileUploadStore?.getState?.();
+      if (uploadStore?.uploadedFiles?.length && !(effectiveBody as any).file_ids) {
+        (effectiveBody as any).file_ids = uploadStore.uploadedFiles.map((f: any) => f.file_id);
+      }
+    }
+
     const response = await fetch(url(path), {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify(effectiveBody),
       signal
     });
     if (!response.ok || !response.body) {

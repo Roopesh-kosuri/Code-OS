@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 
 def create_handoff(
-    from_role: TeamRole,
-    to_role: TeamRole,
+    from_role: TeamRole | str,
+    to_role: TeamRole | str,
     handoff_type: HandoffType,
     payload: dict[str, Any],
     summary: str = "",
@@ -29,8 +29,8 @@ def create_handoff(
 
 
 def create_diff_handoff(
-    from_role: TeamRole,
-    to_role: TeamRole,
+    from_role: TeamRole | str,
+    to_role: TeamRole | str,
     diffs: list[dict[str, Any]] | list[str],
     modified_files: Optional[list[str]] = None,
     summary: str = "",
@@ -46,8 +46,8 @@ def create_diff_handoff(
 
 
 def create_test_output_handoff(
-    from_role: TeamRole,
-    to_role: TeamRole,
+    from_role: TeamRole | str,
+    to_role: TeamRole | str,
     test_output: str,
     passed: bool,
     exit_code: int = 0,
@@ -68,8 +68,8 @@ def create_test_output_handoff(
 
 
 def create_review_notes_handoff(
-    from_role: TeamRole,
-    to_role: TeamRole,
+    from_role: TeamRole | str,
+    to_role: TeamRole | str,
     notes: list[str] | str,
     approved: bool,
     critical_issues: Optional[list[str]] = None,
@@ -88,8 +88,8 @@ def create_review_notes_handoff(
 
 
 def create_files_handoff(
-    from_role: TeamRole,
-    to_role: TeamRole,
+    from_role: TeamRole | str,
+    to_role: TeamRole | str,
     files: list[dict[str, Any]] | list[str],
     summary: str = "",
     task_id: Optional[str] = None,
@@ -101,8 +101,8 @@ def create_files_handoff(
 
 
 def create_stack_trace_handoff(
-    from_role: TeamRole,
-    to_role: TeamRole,
+    from_role: TeamRole | str,
+    to_role: TeamRole | str,
     traces: list[str] | str,
     command: str = "",
     summary: str = "",

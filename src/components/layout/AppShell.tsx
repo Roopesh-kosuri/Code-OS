@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AIChatPanel } from "../../features/ai/AIChatPanel";
+import { RonyChatUploadWrapper } from "../../features/files/RonyChatUploadWrapper";
 import { EditorWorkspace } from "../../features/editor/EditorWorkspace";
 import { FileExplorer } from "../../features/explorer/FileExplorer";
 import { GitPanel } from "../git/GitPanel";
@@ -20,21 +21,46 @@ import { SettingsModal } from "../settings/SettingsModal";
 import { RecentFilesModal } from "../../features/editor/RecentFilesModal";
 import { OpenFolderModal } from "../workspace/OpenFolderModal";
 import { WelcomeScreen } from "../workspace/WelcomeScreen";
+import { SessionReplayPanel } from "../../features/ai/session/SessionReplayPanel";
+import { StagingReviewPanel } from "../../features/staging/StagingReviewPanel";
+import { AgenticTerminalPanel } from "../../features/terminal/AgenticTerminalPanel";
+import { useAgenticTerminalStore } from "../../features/terminal/agenticTerminalStore";
+import { GitAutopilotModal } from "../../features/git/GitAutopilotModal";
+import { SemanticSearchPanel } from "../../features/rag/SemanticSearchPanel";
+import { useRAGStore } from "../../features/rag/ragStore";
+import { VoiceModePanel } from "../../features/voice/VoiceModePanel";
+import { useVoiceStore } from "../../features/voice/voiceStore";
+import { useGitAutopilotStore } from "../../features/git/gitAutopilotStore";
+import { DiagramGeneratorPanel } from "../../features/diagrams/DiagramGeneratorPanel";
+import { useDiagramStore } from "../../features/diagrams/diagramStore";
+import { SecurityDashboardPanel } from "../../features/security/SecurityDashboardPanel";
+import { useSecurityStore } from "../../features/security/securityStore";
+import { StandupGeneratorPanel } from "../../features/standup/StandupGeneratorPanel";
+import { PipelineGeneratorPanel } from "../../features/cicd/PipelineGeneratorPanel";
+import { AgentMemoryPanel } from "../../features/memory/AgentMemoryPanel";
+import { useMemoryStore } from "../../features/memory/memoryStore";
+import { Shield, ClipboardList, GitBranch, Brain } from "lucide-react";
 
 // ── Activity Bar Button Sub-component ────────────────────────────────────────
 
 function ActivityBarButton({
   iconName,
+  icon,
   label,
   active,
   onClick,
   id,
+  badge,
+  badgeClassName,
 }: {
-  iconName: string;
+  iconName?: string;
+  icon?: React.ReactNode;
   label: string;
   active: boolean;
   onClick: () => void;
   id?: string;
+  badge?: number | string;
+  badgeClassName?: string;
 }) {
   return (
     <button
@@ -48,14 +74,28 @@ function ActivityBarButton({
       title={label}
       aria-label={label}
     >
-      <span
-        className="material-symbols-outlined text-[20px] group-hover:scale-105 transition-transform"
-        style={active ? { fontVariationSettings: "'FILL' 1" } : undefined}
-      >
-        {iconName}
-      </span>
+      {icon ? (
+        <span className="flex items-center justify-center text-[22px] group-hover:scale-110 transition-transform">
+          {icon}
+        </span>
+      ) : (
+        <span
+          className="material-symbols-outlined text-[22px] group-hover:scale-110 transition-transform"
+          style={active ? { fontVariationSettings: "'FILL' 1" } : undefined}
+        >
+          {iconName}
+        </span>
+      )}
+      {badge !== undefined && (
+        <span
+          data-testid={`${id}-badge`}
+          className={`absolute top-1.5 right-2 ${badgeClassName || "bg-cyan-500 text-black"} text-[9px] font-bold px-1.5 py-0.2 rounded-full min-w-[14px] text-center leading-tight shadow-sm`}
+        >
+          {badge}
+        </span>
+      )}
       {/* Tooltip */}
-      <div className="absolute left-14 bg-surface-container-high border border-outline-variant/30 text-on-surface px-2.5 py-1 rounded-md font-caption text-caption opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-xl">
+      <div className="absolute left-[70px] bg-surface-container-high border border-outline-variant/30 text-on-surface px-2.5 py-1 rounded-md font-caption text-caption opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-xl">
         {label}
       </div>
     </button>
@@ -65,8 +105,19 @@ function ActivityBarButton({
 // ── Main AppShell ─────────────────────────────────────────────────────────────
 
 export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
-  const [activeTopView, setActiveTopView] = useState<"main" | "agent" | "duo" | "verifier" | "diagnostics" | "proposals">("main");
+  const [activeTopView, setActiveTopView] = useState<"main" | "sessions" | "agent" | "duo" | "verifier" | "diagnostics" | "proposals">("main");
   const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
+  const activeTerminalCount = useAgenticTerminalStore((state) => state.getActiveCount());
+  const indexedFilesCount = useRAGStore((state) => state.indexStatus.indexed_files);
+  const voiceIsOpen = useVoiceStore((state) => state.isOpen);
+  const closeVoiceModal = useVoiceStore((state) => state.closeModal);
+  const generatedDiagramsCount = Object.values(
+    useDiagramStore((state) => state.diagrams)
+  ).filter(Boolean).length;
+  const securityCriticalCount = useSecurityStore(
+    (state) => state.scanSummary.critical + state.scanSummary.high
+  );
+  const memoryCount = useMemoryStore((state) => state.memories.length);
 
   const [activeSidebar, setActiveSidebar] = useState(() => {
     return localStorage.getItem("code-os:layout-active-sidebar") || "explorer";
@@ -90,7 +141,7 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
 
   // Sizes from localStorage
   const [sidebarWidth, setSidebarWidth] = useState(() => {
-    return Number(localStorage.getItem("code-os:layout-sidebar-width") ?? "220");
+    return Number(localStorage.getItem("code-os:layout-sidebar-width") ?? "260");
   });
   const [aiPanelWidth, setAiPanelWidth] = useState(() => {
     return Number(localStorage.getItem("code-os:layout-ai-width") ?? "340");
@@ -237,6 +288,11 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
 
       {/* ── Main View Container ────────────────────────────────────────────── */}
       <div className="flex flex-1 min-h-0 w-full overflow-hidden">
+        {/* Session Replay View */}
+        <div className={activeTopView === "sessions" ? "flex-1 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
+          <SessionReplayPanel onBackToMain={() => setActiveTopView("main")} />
+        </div>
+
         {/* Agent Console View */}
         <div className={activeTopView === "agent" ? "flex-1 min-h-0 overflow-hidden flex flex-col h-full" : "hidden"}>
           <AgentConsole />
@@ -268,9 +324,9 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
             <WelcomeScreen backendDown={backendDown} />
           ) : (
             <>
-              {/* 1. Side Navigation Rail (w-16) */}
-              <aside className="bg-surface-container-low flex flex-col items-center py-4 space-y-6 h-full w-16 rounded-xl flex-shrink-0 border border-surface-container-high transition-all duration-200 ease-in-out">
-                <div className="flex-1 flex flex-col items-center space-y-4 w-full mt-2">
+              {/* 1. Side Navigation Rail (w-[68px]) */}
+              <aside className="bg-surface-container-low flex flex-col items-center py-3.5 h-full max-h-full w-[68px] rounded-xl flex-shrink-0 border border-surface-container-high overflow-hidden transition-all duration-200 ease-in-out shadow-sm">
+                <div className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden rail-scrollbar flex flex-col items-center space-y-2 py-0.5">
                   <ActivityBarButton
                     id="activity-btn-explorer"
                     iconName="folder"
@@ -310,6 +366,69 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                     onClick={() => handleActivityClick("agent")}
                   />
                   <ActivityBarButton
+                    id="activity-btn-sessions"
+                    iconName="history"
+                    label="Session Replay"
+                    active={showSidebar && activeSidebar === "sessions"}
+                    onClick={() => handleActivityClick("sessions")}
+                  />
+                  <ActivityBarButton
+                    id="activity-btn-agentic-terminal"
+                    iconName="terminal"
+                    label="Agent Terminal"
+                    active={showSidebar && activeSidebar === "agentic-terminal"}
+                    onClick={() => handleActivityClick("agentic-terminal")}
+                    badge={activeTerminalCount > 0 ? activeTerminalCount : undefined}
+                  />
+                  <ActivityBarButton
+                    id="activity-btn-rag"
+                    iconName="database"
+                    label="Knowledge Base"
+                    active={showSidebar && activeSidebar === "rag"}
+                    onClick={() => handleActivityClick("rag")}
+                    badge={indexedFilesCount > 0 ? indexedFilesCount : undefined}
+                  />
+                  <ActivityBarButton
+                    id="activity-btn-diagrams"
+                    iconName="schema"
+                    label="Architecture Diagrams"
+                    active={showSidebar && activeSidebar === "diagrams"}
+                    onClick={() => handleActivityClick("diagrams")}
+                    badge={generatedDiagramsCount > 0 ? generatedDiagramsCount : undefined}
+                  />
+                  <ActivityBarButton
+                    id="activity-btn-security"
+                    icon={<Shield size={20} />}
+                    label="Security"
+                    active={showSidebar && activeSidebar === "security"}
+                    onClick={() => handleActivityClick("security")}
+                    badge={securityCriticalCount > 0 ? securityCriticalCount : undefined}
+                    badgeClassName="bg-red-500 text-white"
+                  />
+                  <ActivityBarButton
+                    id="activity-btn-standup"
+                    icon={<ClipboardList size={20} />}
+                    label="Standup"
+                    active={showSidebar && activeSidebar === "standup"}
+                    onClick={() => handleActivityClick("standup")}
+                  />
+                  <ActivityBarButton
+                    id="activity-btn-cicd"
+                    icon={<GitBranch size={20} />}
+                    label="CI/CD"
+                    active={showSidebar && activeSidebar === "cicd"}
+                    onClick={() => handleActivityClick("cicd")}
+                  />
+                  <ActivityBarButton
+                    id="activity-btn-memory"
+                    icon={<Brain size={20} />}
+                    label="Memory & Feedback"
+                    active={showSidebar && (activeSidebar === "memory" || activeSidebar === "agent-memory")}
+                    onClick={() => handleActivityClick("agent-memory")}
+                    badge={memoryCount > 0 ? memoryCount : undefined}
+                    badgeClassName="bg-cyan-500 text-black"
+                  />
+                  <ActivityBarButton
                     id="activity-btn-extensions"
                     iconName="extension"
                     label="Extensions"
@@ -318,7 +437,7 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                   />
                 </div>
 
-                <div className="flex flex-col items-center space-y-4 w-full pb-2 border-t border-surface-variant pt-4">
+                <div className="mt-auto flex flex-col items-center space-y-2 w-full pb-1 border-t border-surface-variant/40 pt-2.5 shrink-0">
                   <ActivityBarButton
                     id="activity-btn-aichat"
                     iconName="auto_awesome"
@@ -329,6 +448,33 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                       return !v;
                     })}
                   />
+
+                  {/* Ship It — Git Autopilot */}
+                  <button
+                    id="ship-it-btn"
+                    data-testid="ship-it-btn"
+                    onClick={() => {
+                      const store = useGitAutopilotStore.getState();
+                      store.setOpen(true);
+                      if (currentWorkspace?.path) {
+                        void store.analyze(currentWorkspace.path);
+                      }
+                    }}
+                    className="w-full flex justify-center py-2.5 relative group transition-all duration-200 ease-in-out cursor-pointer text-on-surface-variant hover:bg-surface-variant/40 hover:text-primary"
+                    title="Ship It — Git Autopilot"
+                    aria-label="Ship It"
+                  >
+                    <span
+                      className="material-symbols-outlined text-[22px] group-hover:scale-110 transition-transform"
+                    >
+                      rocket_launch
+                    </span>
+                    {/* Tooltip */}
+                    <div className="absolute left-[70px] bg-surface-container-high border border-outline-variant/30 text-on-surface px-2.5 py-1 rounded-md font-caption text-caption opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity whitespace-nowrap z-50 shadow-xl">
+                      Ship It
+                    </div>
+                  </button>
+
                   <ActivityBarButton
                     id="activity-btn-settings"
                     iconName="settings"
@@ -349,13 +495,20 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                       {activeSidebar === "git" ? <GitPanel />
                         : activeSidebar === "search" ? <SearchPanel />
+                        : activeSidebar === "rag" ? <SemanticSearchPanel />
                         : activeSidebar === "repo" ? <RepoUnderstanding />
                         : activeSidebar === "diff" ? <DiffViewer />
-                        : activeSidebar === "memory" ? <MemoryPanel />
+                        : (activeSidebar === "memory" || activeSidebar === "agent-memory") ? <AgentMemoryPanel />
                         : activeSidebar === "context" ? <ContextPanel />
                         : activeSidebar === "agent" ? <AgentConsole compact />
                         : activeSidebar === "diagnostics" ? <PerformanceDashboard />
                         : activeSidebar === "duo" ? <DuoPanel compact />
+                        : activeSidebar === "sessions" ? <SessionReplayPanel compact onOpenFullView={() => setActiveTopView("sessions")} />
+                        : activeSidebar === "agentic-terminal" ? <AgenticTerminalPanel />
+                        : activeSidebar === "diagrams" ? <DiagramGeneratorPanel />
+                        : activeSidebar === "security" ? <SecurityDashboardPanel />
+                        : activeSidebar === "standup" ? <StandupGeneratorPanel />
+                        : activeSidebar === "cicd" ? <PipelineGeneratorPanel />
                         : <FileExplorer />}
                     </div>
                   </aside>
@@ -408,7 +561,9 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                   className="bg-surface-container-low rounded-xl flex flex-col overflow-hidden flex-shrink-0 border border-surface-container-high shadow-lg"
                   style={{ width: `${aiPanelWidth}px` }}
                 >
-                  <AIChatPanel />
+                  <RonyChatUploadWrapper>
+                    <AIChatPanel />
+                  </RonyChatUploadWrapper>
                 </aside>
               )}
             </>
@@ -434,6 +589,17 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
           }}
         />
       )}
+      <StagingReviewPanel />
+      <GitAutopilotModal />
+      <VoiceModePanel
+        isOpen={voiceIsOpen}
+        onClose={closeVoiceModal}
+        onSendToAgent={(text) => {
+          // Dispatch custom event that AIChatPanel can listen to for injection
+          window.dispatchEvent(new CustomEvent("code-os:voice-inject", { detail: { text } }));
+          closeVoiceModal();
+        }}
+      />
     </div>
   );
 }

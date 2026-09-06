@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import json
+import uuid
 import logging
 import subprocess
 from abc import ABC, abstractmethod
@@ -52,9 +54,32 @@ DEVOPS_ALLOWLIST_PREFIXES = (
     "npx ",
     "npx.cmd ",
     "pytest",
+    "python -m",
+    "python.exe -m",
     "python -m pytest",
     "python.exe -m pytest",
+    "node ",
+    "node.exe ",
 )
+
+
+SAFE_CUSTOM_TOOLS = {
+    "read_file",
+    "list_directory",
+    "search_code",
+    "edit_file",
+    "run_test",
+    "git_diff",
+    "git_log",
+    "run_command",
+}
+
+
+FORBIDDEN_CUSTOM_TOOLS = {
+    "computer_use", "computer", "click", "mouse", "type_key",
+    "browser", "browser_subagent", "browser_controller", "open_browser_url",
+    "shell", "terminal_raw", "system_exec", "eval", "exec", "sudo",
+}
 
 
 class BaseTeamRole(ABC):
@@ -65,7 +90,8 @@ class BaseTeamRole(ABC):
     def validate_tool_permission(self, tool_name: str, arguments: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
         """Check whether the tool (and its specific arguments) is permitted for this role."""
         if tool_name not in self.allowed_tools:
-            return False, f"Tool '{tool_name}' is disallowed for role '{self.role.value}'."
+            role_val = self.role.value if hasattr(self.role, "value") else str(self.role)
+            return False, f"Tool '{tool_name}' is disallowed for role '{role_val}'."
         return True, ""
 
     def execute_tool(
@@ -79,9 +105,10 @@ class BaseTeamRole(ABC):
         """Execute a tool call subject to strict role permission enforcement."""
         allowed, reason = self.validate_tool_permission(tool_name, arguments)
         if not allowed:
-            logger.warning("Tool permission denied: [%s] %s -> %s", self.role.value, tool_name, reason)
+            role_val = self.role.value if hasattr(self.role, "value") else str(self.role)
+            logger.warning("Tool permission denied: [%s] %s -> %s", role_val, tool_name, reason)
             if raise_on_disallowed:
-                raise PermissionError(f"Permission denied for role '{self.role.value}': {reason}")
+                raise PermissionError(f"Permission denied for role '{role_val}': {reason}")
             return ToolResult(tool_name=tool_name, success=False, output="", error=reason)
 
         return self._dispatch_tool(tool_name, arguments, workspace, staged_changes)
@@ -212,6 +239,158 @@ class DevOpsRole(BaseTeamRole):
         """Run allowlisted shell commands safely in workspace."""
         cmd = arguments.get("command", "") or arguments.get("cmd", "")
         norm_ws = normalize_workspace(workspace)
+
+        # Check if agentic terminal session exists for this workspace
+        try:
+            from app.features.ai.terminal.agentic_terminal_service import (
+                get_active_session_for_workspace,
+                execute_command as exec_term_cmd,
+            )
+            active_term = get_active_session_for_workspace(str(norm_ws))
+            if active_term:
+                import asyncio
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    hist = executor.submit(
+                        asyncio.run,
+                        exec_term_cmd(active_term["terminal_id"], cmd)
+                    ).result()
+
+                success = hist.get("exit_code") == 0
+                out = (hist.get("stdout") or "") + ("\n" + hist.get("stderr") if hist.get("stderr") else "")
+                return ToolResult(
+                    tool_name="run_command",
+                    success=success,
+                    output=out.strip(),
+                    error="" if success else f"Command exited with code {hist.get('exit_code')}",
+                )
+        except Exception as exc:
+            logger.warning("DevOpsRole agentic terminal streaming fallback: %s", exc)
+
+        try:
+            if os.name == "nt":
+                args = ["powershell", "-NoLogo", "-NoProfile", "-Command", cmd]
+            else:
+                args = ["bash", "-c", cmd]
+
+            proc = subprocess.run(
+                args,
+                cwd=str(norm_ws),
+                capture_output=True,
+                text=True,
+                timeout=45.0,
+            )
+            raw = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+            success = proc.returncode == 0
+            return ToolResult(
+                tool_name="run_command",
+                success=success,
+                output=raw.strip(),
+                error="" if success else f"Command exited with code {proc.returncode}",
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(tool_name="run_command", success=False, output="", error=f"Command timed out: {cmd}")
+        except Exception as exc:
+            return ToolResult(tool_name="run_command", success=False, output="", error=f"Execution error: {exc}")
+
+
+class CustomTeamRole(BaseTeamRole):
+    """Dynamically provisioned custom agent role subject to strict safety boundaries."""
+
+    def __init__(
+        self,
+        id: str = "",
+        workspace: str = "",
+        name: str = "Custom Agent",
+        handle: str = "custom",
+        description: str = "",
+        color: str = "#38bdf8",
+        icon: str = "bot",
+        allowed_tools: Optional[list[str] | set[str] | str] = None,
+        provider: str = "openai",
+        model: str = "gpt-4o",
+        **kwargs: Any,
+    ) -> None:
+        self.id = id or f"crole_{uuid.uuid4().hex[:8]}"
+        self.workspace = workspace
+        self.name = name
+        self.handle = handle if handle.startswith("@") else f"@{handle}"
+        self.role_handle = handle.lstrip("@").lower()
+        self.role = self.role_handle
+        self.description = description
+        self.color = color
+        self.icon = icon or "bot"
+        self.provider = provider
+        self.model = model
+
+        # Parse tools
+        if isinstance(allowed_tools, str):
+            try:
+                raw_tools = json.loads(allowed_tools)
+            except Exception:
+                raw_tools = [t.strip() for t in allowed_tools.split(",") if t.strip()]
+        else:
+            raw_tools = list(allowed_tools or [])
+
+        # Strict safety bounds: only allow safe tools, strip forbidden tools
+        sanitized: set[str] = set()
+        for t in raw_tools:
+            t_norm = str(t).strip().lower()
+            if (
+                t_norm in FORBIDDEN_CUSTOM_TOOLS
+                or "computer" in t_norm
+                or "browser" in t_norm
+                or "shell" in t_norm
+            ):
+                logger.warning("Forbidden tool '%s' rejected for custom role '%s'", t, self.handle)
+                continue
+            if t_norm in SAFE_CUSTOM_TOOLS:
+                sanitized.add(t_norm)
+            else:
+                logger.warning("Non-allowlisted tool '%s' rejected for custom role '%s'", t, self.handle)
+
+        self.allowed_tools = sanitized
+
+    @classmethod
+    def from_row(cls, row: dict[str, Any] | Any) -> CustomTeamRole:
+        """Construct a CustomTeamRole from a custom_roles row or dictionary."""
+        data = dict(row) if hasattr(row, "keys") else row
+        return cls(
+            id=data.get("id", ""),
+            workspace=data.get("workspace", ""),
+            name=data.get("name", "Custom Agent"),
+            handle=data.get("handle", "custom"),
+            description=data.get("description", ""),
+            color=data.get("color", "#38bdf8"),
+            icon=data.get("icon", "bot"),
+            allowed_tools=data.get("allowed_tools", []),
+            provider=data.get("provider", "openai"),
+            model=data.get("model", "gpt-4o"),
+        )
+
+    def validate_tool_permission(self, tool_name: str, arguments: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
+        base_allowed, base_reason = super().validate_tool_permission(tool_name, arguments)
+        if not base_allowed:
+            return False, base_reason
+
+        # Guard run_command strictly with allowlist
+        if tool_name == "run_command":
+            cmd = ""
+            if arguments:
+                cmd = (arguments.get("command", "") or arguments.get("cmd", "")).strip()
+            if not cmd:
+                return False, f"CustomTeamRole [{self.name}]: run_command requires a non-empty 'command' argument."
+
+            cmd_lower = cmd.lower()
+            if not any(cmd_lower.startswith(p) or cmd_lower == p.strip() for p in DEVOPS_ALLOWLIST_PREFIXES):
+                return False, f"CustomTeamRole [{self.name}]: command '{cmd}' is not allowlisted. Permitted: git, npm, npx, pytest, python -m, node."
+
+        return True, ""
+
+    def _handle_run_command(self, workspace: str, arguments: dict[str, Any]) -> ToolResult:
+        """Execute allowlisted commands safely in workspace."""
+        cmd = arguments.get("command", "") or arguments.get("cmd", "")
+        norm_ws = normalize_workspace(workspace)
         try:
             if os.name == "nt":
                 args = ["powershell", "-NoLogo", "-NoProfile", "-Command", cmd]
@@ -247,11 +426,52 @@ ROLE_REGISTRY: dict[TeamRole, type[BaseTeamRole]] = {
     TeamRole.DEVOPS: DevOpsRole,
 }
 
+_CUSTOM_ROLE_REGISTRY: dict[str, CustomTeamRole] = {}
 
-def get_role_instance(role: TeamRole | str) -> BaseTeamRole:
-    """Instantiate a role handler from a TeamRole enum or string."""
-    r = TeamRole(role) if isinstance(role, str) else role
-    cls = ROLE_REGISTRY.get(r)
-    if not cls:
-        raise ValueError(f"No role implementation registered for {role}")
-    return cls()
+
+def register_custom_role(role: CustomTeamRole) -> None:
+    """Register a custom role instance into the global in-memory lookup."""
+    clean_handle = role.role_handle
+    _CUSTOM_ROLE_REGISTRY[clean_handle] = role
+
+
+def clear_custom_roles_registry() -> None:
+    """Clear all registered custom roles (useful in tests)."""
+    _CUSTOM_ROLE_REGISTRY.clear()
+
+
+def get_role_instance(
+    role: TeamRole | str,
+    custom_role_row: Optional[dict[str, Any]] = None,
+    custom_roles: Optional[list[dict[str, Any]]] = None,
+) -> BaseTeamRole:
+    """Instantiate a role handler from a TeamRole enum, string, or custom role specification."""
+    if isinstance(role, BaseTeamRole):
+        return role
+
+    if custom_role_row is not None:
+        return CustomTeamRole.from_row(custom_role_row)
+
+    # 1. Built-in registry
+    try:
+        r = TeamRole(role) if isinstance(role, str) else role
+        cls = ROLE_REGISTRY.get(r)
+        if cls:
+            return cls()
+    except ValueError:
+        pass
+
+    clean_handle = str(role).lstrip("@").lower()
+
+    # 2. Provided custom_roles list (e.g. from job snapshot or workspace query)
+    if custom_roles:
+        for r_dict in custom_roles:
+            r_handle = str(r_dict.get("handle", "")).lstrip("@").lower()
+            if r_handle == clean_handle:
+                return CustomTeamRole.from_row(r_dict)
+
+    # 3. Global in-memory custom role registry
+    if clean_handle in _CUSTOM_ROLE_REGISTRY:
+        return _CUSTOM_ROLE_REGISTRY[clean_handle]
+
+    raise ValueError(f"No role implementation registered for {role}")

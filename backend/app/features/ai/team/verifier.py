@@ -242,6 +242,18 @@ class VerificationGate:
                     "details": repair_payload,
                 })
 
+                # Log mistake into agent memory for future self-improvement
+                try:
+                    from app.features.ai.memory.memory_service import log_mistake
+                    asyncio.create_task(log_mistake(
+                        workspace=workspace,
+                        category="failed_test",
+                        raw_event_or_lesson=f"Failed tests in {job_id} round {round_num}: {'; '.join(failures)}",
+                        source_event_id=f"{job_id}_r{round_num}",
+                    ))
+                except Exception as exc:
+                    logger.debug("Failed to log test failure memory: %s", exc)
+
                 # Create repair task assigned to Coder role
                 repair_task = TeamTask(
                     task_id=f"{job_id}_repair_r{round_num}",
@@ -323,6 +335,18 @@ class VerificationGate:
                     "content": f"🔄 Repair Round {round_num}/{max_repair_rounds}: Coder fixing {len(blockers)} review blocker(s)",
                     "details": repair_payload,
                 })
+
+                # Log mistake into agent memory for future self-improvement
+                try:
+                    from app.features.ai.memory.memory_service import log_mistake
+                    asyncio.create_task(log_mistake(
+                        workspace=workspace,
+                        category="repair_loop",
+                        raw_event_or_lesson=f"Review blockers in {job_id} round {round_num}: {'; '.join(blockers)}",
+                        source_event_id=f"{job_id}_r{round_num}",
+                    ))
+                except Exception as exc:
+                    logger.debug("Failed to log repair loop memory: %s", exc)
 
                 repair_task = TeamTask(
                     task_id=f"{job_id}_repair_r{round_num}",

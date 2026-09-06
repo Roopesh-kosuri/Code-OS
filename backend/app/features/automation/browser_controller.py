@@ -71,9 +71,17 @@ class BrowserController:
     @property
     def profile_path(self) -> Path:
         """Isolated dedicated user data directory inside workspace."""
-        path = Path(self.workspace) / ".code_os" / "browser-profile"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        try:
+            path = Path(self.workspace) / ".code_os" / "browser-profile"
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except (PermissionError, OSError):
+            import hashlib
+            from app.core.config import get_settings
+            safe_name = hashlib.md5(str(self.workspace).encode()).hexdigest()[:12]
+            path = get_settings().data_dir / "browser-profiles" / safe_name
+            path.mkdir(parents=True, exist_ok=True)
+            return path
 
     @property
     def profile_dir(self) -> Path:
@@ -83,9 +91,17 @@ class BrowserController:
     @property
     def screenshots_dir(self) -> Path:
         """Screenshots storage directory inside workspace."""
-        path = Path(self.workspace) / ".code_os" / "screenshots"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        try:
+            path = Path(self.workspace) / ".code_os" / "screenshots"
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except (PermissionError, OSError):
+            import hashlib
+            from app.core.config import get_settings
+            safe_name = hashlib.md5(str(self.workspace).encode()).hexdigest()[:12]
+            path = get_settings().data_dir / "screenshots" / safe_name
+            path.mkdir(parents=True, exist_ok=True)
+            return path
 
     async def _ensure_initialized(self) -> None:
         """Launch persistent Playwright browser context if not already active."""

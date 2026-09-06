@@ -38,6 +38,13 @@ import { registerInlineCompletionProvider, useInlineCompletionStore } from "./in
 import { installDebugDecorations } from "../../components/editor/MonacoPane";
 import { debugClient } from "../../components/debug/debugClient";
 import { DebugPanel } from "../../components/debug/DebugPanel";
+import { useGhostTextStore } from "./ghostTextStore";
+import {
+  attachGhostTextListener,
+  installGhostTextKeybindings,
+  acceptGhostText,
+  rejectGhostText,
+} from "./ghostTextManager";
 import { DebugToolbar } from "../../components/debug/DebugToolbar";
 import { api } from "../../lib/api";
 
@@ -126,6 +133,13 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
   const errorLensDecorationsRef = useRef<string[]>([]);
   const blameDecorationsRef = useRef<string[]>([]);
 
+  const editorIdRef = useRef<string>(`monaco_${Math.random().toString(36).slice(2, 9)}`);
+  const editorId = editorIdRef.current;
+  const ghostStream = useGhostTextStore(
+    (s) => s.ghostStreams[file?.path || ""] || s.ghostStreams[file?.path?.replace(/\\/g, "/") || ""]
+  );
+  const hasGhost = Boolean(ghostStream?.chunks?.length);
+
   if (!file) {
     return (
       <div className="grid h-full place-items-center text-sm text-on-surface-variant/50 bg-[#0a0a0c]">
@@ -166,6 +180,30 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
   useEffect(() => {
     void fetchBlame();
   }, [fetchBlame]);
+
+  // Register editor tab with backend for Ghost Text streaming
+  useEffect(() => {
+    if (!file?.path) return;
+    const ws = currentWorkspace?.path || "";
+    void useGhostTextStore.getState().registerEditor(ws, file.path, editorId);
+
+    return () => {
+      void useGhostTextStore.getState().unregisterEditor(editorId);
+    };
+  }, [file?.path, currentWorkspace?.path, editorId]);
+
+  // Attach ghost text decorations and keybindings to Monaco instance
+  useEffect(() => {
+    if (!editorInstance || !monacoInstance || !file?.path) return;
+
+    const cleanupListener = attachGhostTextListener(editorInstance, monacoInstance, file.path);
+    const cleanupKeybindings = installGhostTextKeybindings(editorInstance, monacoInstance, file.path, editorId);
+
+    return () => {
+      cleanupListener();
+      cleanupKeybindings();
+    };
+  }, [editorInstance, monacoInstance, file?.path, editorId]);
 
   // Error Lens: parse diagnostics & render markers + inline decorations
   useEffect(() => {
@@ -479,6 +517,33 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
           </button>
         </div>
       )}
+
+      {/* Ghost Text Stream Floating Banner */}
+      {hasGhost && (
+        <div
+          data-testid="ghost-text-banner"
+          className="absolute bottom-4 right-6 z-40 flex items-center gap-2.5 rounded-lg bg-[#18191f]/95 backdrop-blur-md border border-cyan-500/40 px-3 py-1.5 shadow-2xl animate-fade-in text-xs font-mono text-cyan-300 select-none"
+        >
+          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+          <span>AI Streaming Diff ({ghostStream?.chunks?.length || 0} chunks)</span>
+          <span className="text-on-surface-variant/70 text-[11px] border-l border-white/10 pl-2">
+            <kbd className="px-1.5 py-0.5 rounded bg-white/10 text-white font-sans text-[10px] font-semibold">Tab</kbd> Accept
+            <kbd className="ml-1.5 px-1.5 py-0.5 rounded bg-white/10 text-white font-sans text-[10px] font-semibold">Esc</kbd> Reject
+          </span>
+          <button
+            onClick={() => void acceptGhostText(editorInstance, editorId, file.path)}
+            className="px-2 py-0.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 text-[11px] font-medium transition-colors cursor-pointer"
+          >
+            Accept
+          </button>
+          <button
+            onClick={() => void rejectGhostText(editorInstance, editorId, file.path)}
+            className="px-2 py-0.5 rounded bg-red-500/20 hover:bg-red-500/30 text-red-300 text-[11px] font-medium transition-colors cursor-pointer"
+          >
+            Reject
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -501,6 +566,7 @@ export function EditorWorkspace() {
   const updateContent = useEditorStore((state) => state.updateContent);
   const toggleSplit = useEditorStore((state) => state.toggleSplit);
   const activeFile = openFiles.find((file) => file.path === activePath);
+  const ghostStreams = useGhostTextStore((state) => state.ghostStreams);
   const isFetchingCompletion = useInlineCompletionStore((s) => s.isFetching);
   const lastLatencyMs = useInlineCompletionStore((s) => s.lastLatencyMs);
   const cursorPosition = useEditorStore((state) => state.cursorPosition) || { line: 1, col: 1 };
@@ -629,6 +695,17 @@ export function EditorWorkspace() {
                 <FileIcon filename={file.name} size={15} />
 
                 <span className="truncate max-w-[150px] font-mono text-[11.5px]">{file.name}</span>
+
+                {Boolean(ghostStreams[file.path]?.chunks?.length || ghostStreams[file.path.replace(/\\/g, "/")]?.chunks?.length) && (
+                  <span
+                    data-testid="ghost-tab-badge"
+                    title="AI editing... Press Tab to accept, Esc to reject"
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-cyan-500/15 text-[10px] text-cyan-300 font-mono border border-cyan-500/30 animate-pulse shrink-0 select-none"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                    AI editing...
+                  </span>
+                )}
 
                 {file.dirty && (
                   <div className="w-1.5 h-1.5 rounded-full bg-primary ml-0.5 shrink-0" />

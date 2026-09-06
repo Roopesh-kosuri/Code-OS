@@ -282,11 +282,41 @@ select {
   background: #859396;
 }
 
+/* Custom sleek activity bar rail scrollbar */
+.rail-scrollbar::-webkit-scrollbar {
+  width: 3px;
+}
+
+.rail-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.rail-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+}
+
+.rail-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 218, 243, 0.4);
+}
+
+.rail-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+}
+
 select {
   -webkit-appearance: none;
   -moz-appearance: none;
   appearance: none;
 }
+
+select option,
+select optgroup {
+  background-color: #16171b;
+  color: #e5e1e4;
+}
+
 
 button { -webkit-tap-highlight-color: transparent; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
@@ -389,6 +419,46 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 
 .animate-popover-in {
   animation: popoverIn 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* ── Liquid Glass System ─────────────────────────────────────────────────── */
+.liquid-glass-popover {
+  background: linear-gradient(160deg, rgba(18, 21, 33, 0.98) 0%, rgba(12, 14, 23, 0.99) 100%) !important;
+  backdrop-filter: blur(28px) saturate(200%) contrast(108%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%) contrast(108%);
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow:
+    0 24px 60px -8px rgba(0, 0, 0, 0.95),
+    0 0 0 1px rgba(255, 255, 255, 0.08) inset,
+    0 1px 0 0 rgba(255, 255, 255, 0.22) inset,
+    0 0 25px -2px rgba(0, 218, 243, 0.08) !important;
+}
+
+.liquid-glass-card {
+  background: linear-gradient(165deg, rgba(16, 18, 29, 0.96) 0%, rgba(10, 11, 19, 0.98) 100%) !important;
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  box-shadow:
+    0 18px 45px -6px rgba(0, 0, 0, 0.9),
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+    0 1px 0 0 rgba(255, 255, 255, 0.18) inset,
+    0 0 20px -2px rgba(0, 218, 243, 0.06) !important;
+}
+
+.liquid-glass-search {
+  background: rgba(22, 26, 40, 0.92) !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+.liquid-glass-item {
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.liquid-glass-item:hover {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.04) 100%) !important;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
 }
 
 @keyframes dockedSlideUp {
@@ -527,3 +597,114 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 /* Debugger decorations use Monaco's standard decoration API. */
 .code-os-breakpoint { background: radial-gradient(circle, #ef4444 0 42%, transparent 46%); }
 .code-os-debug-line { background: rgba(250, 204, 21, 0.18); }
+
+/* ── Ghost Text & Inline Diffs (Cursor-style Monaco streaming) ───────────── */
+.ghost-text-line-insert {
+  background-color: rgba(0, 218, 243, 0.08) !important;
+  border-left: 2px solid #00daf3 !important;
+}
+
+.ghost-text-line-replace {
+  background-color: rgba(168, 85, 247, 0.08) !important;
+  border-left: 2px solid #a855f7 !important;
+}
+
+.ghost-text-line-delete {
+  background-color: rgba(239, 68, 68, 0.08) !important;
+  border-left: 2px solid #ef4444 !important;
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.ghost-text-inline-insert {
+  color: #00daf3cc !important;
+  font-style: italic !important;
+  font-family: var(--font-mono, monospace) !important;
+  user-select: none !important;
+  opacity: 0.88;
+}
+
+.ghost-text-inline-replace {
+  color: #c084fccc !important;
+  font-style: italic !important;
+  font-family: var(--font-mono, monospace) !important;
+  user-select: none !important;
+  opacity: 0.88;
+}
+
+.ghost-text-inline-delete {
+  color: #f87171aa !important;
+  font-style: italic !important;
+  font-family: var(--font-mono, monospace) !important;
+  user-select: none !important;
+  opacity: 0.75;
+}
+
+.ghost-text-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(0, 218, 243, 0.12);
+  border: 1px solid rgba(0, 218, 243, 0.35);
+  color: #00daf3;
+  font-size: 10px;
+  font-family: var(--font-mono, monospace);
+  letter-spacing: 0.02em;
+}
+
+/* ── Smart Staging / PR Review View ──────────────────────────────────────── */
+.staging-diff-line-insert {
+  background-color: rgba(16, 185, 129, 0.12);
+  border-left: 2px solid #10b981;
+  color: #6ee7b7;
+}
+
+.staging-diff-line-delete {
+  background-color: rgba(244, 63, 94, 0.12);
+  border-left: 2px solid #f43f5e;
+  color: #fda4af;
+}
+
+.staging-diff-line-context {
+  color: #94a3b8;
+}
+
+/* ── Enhanced Auto-Scaling Chat Input ── */
+.rony-chat-wrapper form {
+  border-radius: 12px !important;
+  background: rgba(18, 20, 28, 0.92) !important;
+  backdrop-filter: blur(16px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.rony-chat-wrapper form:focus-within {
+  border-color: rgba(0, 218, 243, 0.45) !important;
+  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.6), 0 0 14px rgba(0, 218, 243, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+}
+
+.rony-chat-wrapper .rony-upload-portal-mount {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  background: rgba(14, 16, 22, 0.4) !important;
+}
+
+.rony-chat-wrapper form textarea {
+  min-height: 32px !important;
+  max-height: 200px !important;
+  height: 32px;
+  line-height: 18px !important;
+  padding: 6px 12px !important;
+  font-size: 12px !important;
+  transition: height 0.12s cubic-bezier(0.16, 1, 0.3, 1) !important;
+  resize: none !important;
+}
+
+.rony-chat-wrapper form textarea::placeholder {
+  font-size: 11.5px !important;
+  color: rgba(186, 201, 204, 0.55) !important;
+}
+
+

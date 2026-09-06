@@ -68,6 +68,21 @@ export interface AgentMetric {
   message_count: number;
 }
 
+export interface CustomAgentRole {
+  id: string;
+  workspace: string;
+  name: string;
+  handle: string;
+  description: string;
+  color: string;
+  icon: string;
+  allowed_tools: string[];
+  provider?: string | null;
+  model?: string | null;
+  created_at?: number;
+  updated_at?: number;
+}
+
 export interface TeamConfig {
   id?: string;
   workspace?: string;
@@ -85,6 +100,9 @@ export interface TeamConfig {
   max_repair_rounds: number;
   max_concurrency: number;
   auto_verify: boolean;
+  auto_model_selection?: boolean;
+  smart_router_enabled?: boolean;
+  custom_roles?: CustomAgentRole[];
 }
 
 export const DEFAULT_TEAM_CONFIG: TeamConfig = {
@@ -102,6 +120,8 @@ export const DEFAULT_TEAM_CONFIG: TeamConfig = {
   max_repair_rounds: 3,
   max_concurrency: 3,
   auto_verify: true,
+  auto_model_selection: false,
+  smart_router_enabled: false,
 };
 
 export interface FinalReport {
@@ -138,6 +158,16 @@ export interface TeamStoreState {
   sseStatus: "disconnected" | "connecting" | "connected" | "error";
   reconnectAttempts: number;
   error: string | null;
+  customRoles: CustomAgentRole[];
+  fetchCustomRoles: (workspace?: string) => Promise<void>;
+  addCustomRole: (roleData: Partial<CustomAgentRole> & { name: string; handle: string }) => Promise<CustomAgentRole>;
+  deleteCustomRole: (roleId: string, workspace?: string) => Promise<void>;
+
+  // Smart Model Router
+  smartRouterEnabled: boolean;
+  taskDifficultyMap: Record<string, { difficulty: string; confidence: number; assigned_model: string; tier?: string }>;
+  toggleSmartRouter: (enabled?: boolean) => void;
+  updateTaskDifficulty: (taskId: string, info: { difficulty: string; confidence: number; assigned_model: string; tier?: string }) => void;
 
   // Actions
   setActiveJobId: (jobId: string | null) => void;
@@ -149,7 +179,8 @@ export interface TeamStoreState {
   submitTeamJob: (
     workspace: string,
     userRequest: string,
-    configOverride?: Partial<TeamConfig>
+    configOverride?: Partial<TeamConfig>,
+    fileIds?: string[]
   ) => Promise<string>;
   injectPrompt: (prompt: string, targetRole?: string, urgent?: boolean) => Promise<void>;
   pauseJob: () => Promise<void>;
@@ -182,10 +213,33 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
   },
   teamConfig: DEFAULT_TEAM_CONFIG,
   selectedTaskId: null,
+  customRoles: [],
   sseConnection: null,
   sseStatus: "disconnected",
   reconnectAttempts: 0,
   error: null,
+  smartRouterEnabled: false,
+  taskDifficultyMap: {},
+
+  toggleSmartRouter: (enabled) =>
+    set((state) => {
+      const nextVal = enabled !== undefined ? enabled : !state.smartRouterEnabled;
+      return {
+        smartRouterEnabled: nextVal,
+        teamConfig: {
+          ...state.teamConfig,
+          smart_router_enabled: nextVal,
+        },
+      };
+    }),
+
+  updateTaskDifficulty: (taskId, info) =>
+    set((state) => ({
+      taskDifficultyMap: {
+        ...state.taskDifficultyMap,
+        [taskId]: info,
+      },
+    })),
 
   setActiveJobId: (jobId) => {
     set({ activeJobId: jobId });
@@ -370,6 +424,21 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
 
       case "team_metrics": {
         if (data && typeof data === "object") {
+          // If this is a Smart Router difficulty assignment event:
+          if (data.task_id && data.difficulty) {
+            set((s) => ({
+              taskDifficultyMap: {
+                ...s.taskDifficultyMap,
+                [data.task_id]: {
+                  difficulty: data.difficulty,
+                  confidence: data.confidence ?? 1.0,
+                  assigned_model: data.assigned_model ?? "",
+                  tier: data.tier ?? data.difficulty,
+                },
+              },
+            }));
+          }
+
           const nextMetrics = { ...state.agentMetrics };
           // Could be keyed by role or overall summary
           if (data.by_role) {
@@ -481,9 +550,21 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
     }
   },
 
-  submitTeamJob: async (workspace, userRequest, configOverride) => {
+  submitTeamJob: async (workspace, userRequest, configOverride, fileIds) => {
     set({ error: null, jobStatus: "queued" });
-    const cfg = { ...get().teamConfig, ...(configOverride || {}) };
+    const cfg = {
+      ...get().teamConfig,
+      ...(configOverride || {}),
+      workspace,
+      smart_router_enabled: configOverride?.smart_router_enabled ?? get().smartRouterEnabled,
+    };
+    if (!cfg.custom_roles || cfg.custom_roles.length === 0) {
+      cfg.custom_roles = get().customRoles;
+    }
+
+    const effectiveFileIds =
+      fileIds ||
+      ((window as any).__fileUploadStore?.getState?.()?.uploadedFiles?.map((f: any) => f.file_id) || []);
 
     try {
       const res = await api.post<{ job_id: string; status: string; task_count: number }>(
@@ -492,6 +573,7 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
           workspace,
           user_request: userRequest,
           team_config: cfg,
+          file_ids: effectiveFileIds,
         }
       );
 
@@ -641,6 +723,55 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
       md += `- **${role.toUpperCase()}**: $${Number(m.total_cost || 0).toFixed(4)} (${m.total_tokens.toLocaleString()} tokens)\n`;
     }
     return md;
+  },
+
+  fetchCustomRoles: async (workspace?: string) => {
+    try {
+      const res = await api.get<{ roles: CustomAgentRole[]; count: number }>(
+        "/api/team/roles",
+        workspace ? { workspace } : undefined
+      );
+      if (res && Array.isArray(res.roles)) {
+        set({ customRoles: res.roles });
+      }
+    } catch (e) {
+      console.warn("Failed to fetch custom roles", e);
+    }
+  },
+
+  addCustomRole: async (roleData) => {
+    try {
+      const res = await api.post<{ role: CustomAgentRole; success: boolean }>(
+        "/api/team/roles",
+        roleData
+      );
+      if (res && res.role) {
+        const saved = res.role;
+        set((state) => ({
+          customRoles: [...state.customRoles.filter((r) => r.id !== saved.id), saved],
+        }));
+        return saved;
+      }
+      throw new Error("Failed to save custom role");
+    } catch (err: any) {
+      set({ error: err?.message || "Failed to create custom role" });
+      throw err;
+    }
+  },
+
+  deleteCustomRole: async (roleId: string, workspace?: string) => {
+    try {
+      await api.delete(
+        `/api/team/roles/${roleId}`,
+        workspace ? { workspace } : undefined
+      );
+      set((state) => ({
+        customRoles: state.customRoles.filter((r) => r.id !== roleId),
+      }));
+    } catch (err: any) {
+      set({ error: err?.message || "Failed to delete custom role" });
+      throw err;
+    }
   },
 
   reset: () => {

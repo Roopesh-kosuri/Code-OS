@@ -40,6 +40,7 @@ class ChatAgentStreamRequest(BaseModel):
     vision_model: str | None = None
     vision_provider: str | None = None
     vision_base_url: str | None = None
+    file_ids: list[str] = Field(default_factory=list)
 
 
 class ApprovalResponse(BaseModel):
@@ -132,13 +133,37 @@ async def chat_agent_stream(payload: ChatAgentStreamRequest) -> StreamingRespons
     """
     from .chat_harness import run_chat_agent, ChatAgentRequest
     
+    # Context injection for uploaded files
+    effective_messages = [dict(m) for m in payload.messages]
+    if payload.file_ids:
+        from .file_ingestion.service import get_uploaded_file
+        file_blocks = []
+        for fid in payload.file_ids:
+            fdata = get_uploaded_file(fid, payload.workspace)
+            if fdata and fdata.get("content"):
+                fname = fdata.get("filename", "file")
+                fcontent = fdata.get("content", "")
+                file_blocks.append(f"[{fname}]:\n{fcontent}")
+        if file_blocks:
+            injected_header = "Attached files:\n\n" + "\n\n".join(file_blocks)
+            if effective_messages:
+                last_msg = dict(effective_messages[-1])
+                if last_msg.get("role") == "user":
+                    existing = last_msg.get("content", "")
+                    last_msg["content"] = f"{injected_header}\n\n{existing}" if existing else injected_header
+                    effective_messages[-1] = last_msg
+                else:
+                    effective_messages.append({"role": "user", "content": injected_header})
+            else:
+                effective_messages.append({"role": "user", "content": injected_header})
+
     agent_request = ChatAgentRequest(
         provider=payload.provider,
         model=payload.model,
         base_url=payload.base_url,
         temperature=payload.temperature,
         api_key_provider=payload.api_key_provider,
-        messages=payload.messages,
+        messages=effective_messages,
         workspace=payload.workspace,
         attached_paths=payload.attached_paths,
         attached_images=payload.attached_images,

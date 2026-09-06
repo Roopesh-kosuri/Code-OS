@@ -23,8 +23,13 @@ class ConnectionPool:
         self._write_conn: Optional[aiosqlite.Connection] = None
         self._write_lock: Optional[asyncio.Lock] = None
         self._all_conns: List[aiosqlite.Connection] = []
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def initialize(self) -> aiosqlite.Connection:
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
         self._read_queue = asyncio.Queue()
         self._write_lock = asyncio.Lock()
         self._all_conns.clear()
@@ -155,10 +160,21 @@ def _get_db_lock() -> asyncio.Lock:
 
 async def get_db() -> aiosqlite.Connection:
     """Return the shared single SQLite connection for the application."""
-    global _db
-    if _db is None:
+    global _db, _pool
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    needs_init = False
+    if _db is None or _pool is None or _pool._write_conn is None:
+        needs_init = True
+    elif getattr(_pool, "_loop", None) is not None and (_pool._loop is not current_loop or _pool._loop.is_closed()):
+        needs_init = True
+
+    if needs_init:
         async with _get_db_lock():
-            if _db is None:
+            if _db is None or _pool is None or _pool._write_conn is None or (getattr(_pool, "_loop", None) is not None and (_pool._loop is not current_loop or _pool._loop.is_closed())):
                 await init_db()
     return _db
 
@@ -166,7 +182,12 @@ async def get_db() -> aiosqlite.Connection:
 async def get_pool() -> ConnectionPool:
     """Return the aiosqlite connection pool."""
     global _pool
-    if _pool is None or _pool._write_conn is None:
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+
+    if _pool is None or _pool._write_conn is None or (getattr(_pool, "_loop", None) is not None and (_pool._loop is not current_loop or _pool._loop.is_closed())):
         await get_db()
     return _pool
 
@@ -515,6 +536,86 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (8, 'agent_jobs_final_report')")
         await db.commit()
 
+    # Migration 9: Custom agent roles table and job-start snapshot column
+    if 9 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS custom_roles (
+                    id TEXT PRIMARY KEY,
+                    workspace TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    handle TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    color TEXT NOT NULL DEFAULT '#38bdf8',
+                    icon TEXT NOT NULL DEFAULT 'bot',
+                    allowed_tools TEXT NOT NULL DEFAULT '[]',
+                    provider TEXT NOT NULL DEFAULT 'openai',
+                    model TEXT NOT NULL DEFAULT 'gpt-4o',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_custom_roles_workspace ON custom_roles(workspace);")
+            await db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_roles_workspace_handle ON custom_roles(workspace, handle);")
+
+            try:
+                await db.execute("ALTER TABLE agent_jobs ADD COLUMN custom_roles_snapshot TEXT DEFAULT NULL")
+            except Exception as exc:
+                logger.debug("Migration 9 custom_roles_snapshot column: %s", exc)
+        except Exception as exc:
+            logger.debug("Migration 9 custom_roles: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (9, 'custom_roles_and_snapshot')")
+        await db.commit()
+
+    # Migration 10: Unified Cost Dashboard & Budget Guard cost_events table
+    if 10 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS cost_events (
+                    id TEXT PRIMARY KEY,
+                    workspace TEXT NOT NULL,
+                    job_id TEXT,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    cost_usd REAL NOT NULL DEFAULT 0.0,
+                    timestamp REAL NOT NULL
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_cost_events_workspace_ts ON cost_events(workspace, timestamp);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_cost_events_job ON cost_events(job_id);")
+        except Exception as exc:
+            logger.debug("Migration 10 cost_events: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (10, 'cost_events_table')")
+        await db.commit()
+
+    # Migration 11: Agent Memories (AI Learns from Mistakes)
+    if 11 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_memories (
+                    id TEXT PRIMARY KEY,
+                    workspace TEXT NOT NULL,
+                    category TEXT NOT NULL CHECK (category IN ('rejected_edit', 'failed_test', 'repair_loop', 'user_correction', 'security_fix', 'manual')),
+                    lesson TEXT NOT NULL,
+                    source_event_id TEXT,
+                    confidence INTEGER NOT NULL DEFAULT 100,
+                    times_applied INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_applied_at TEXT
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_agent_memories_ws_cat ON agent_memories(workspace, category);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_agent_memories_ws_conf ON agent_memories(workspace, confidence);")
+        except Exception as exc:
+            logger.debug("Migration 11 agent_memories: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (11, 'agent_memories_table')")
+        await db.commit()
+
 
 async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
     """Initialize connection pool and tables if they do not exist."""
@@ -526,6 +627,14 @@ async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
         db_path = settings.database_path
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if _pool is not None:
+        try:
+            await _pool.close()
+        except Exception:
+            pass
+        _pool = None
+        _db = None
 
     _pool = ConnectionPool(db_path, read_count=4)
     try:
@@ -897,6 +1006,34 @@ async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
         );
         CREATE INDEX IF NOT EXISTS idx_team_messages_job ON team_messages(job_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_team_messages_sender ON team_messages(sender_role);
+
+        CREATE TABLE IF NOT EXISTS cost_events (
+            id TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            job_id TEXT,
+            provider TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL DEFAULT 0.0,
+            timestamp REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cost_events_workspace_ts ON cost_events(workspace, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_cost_events_job ON cost_events(job_id);
+
+        CREATE TABLE IF NOT EXISTS agent_memories (
+            id TEXT PRIMARY KEY,
+            workspace TEXT NOT NULL,
+            category TEXT NOT NULL CHECK (category IN ('rejected_edit', 'failed_test', 'repair_loop', 'user_correction', 'security_fix', 'manual')),
+            lesson TEXT NOT NULL,
+            source_event_id TEXT,
+            confidence INTEGER NOT NULL DEFAULT 100,
+            times_applied INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_applied_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_memories_ws_cat ON agent_memories(workspace, category);
+        CREATE INDEX IF NOT EXISTS idx_agent_memories_ws_conf ON agent_memories(workspace, confidence);
         """
     )
 

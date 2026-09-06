@@ -1,14 +1,10 @@
 /**
  * build-backend.js — Compiles the Python FastAPI backend into a standalone
- * executable using PyInstaller so end-users do NOT need Python installed.
+ * directory package using PyInstaller (--onedir mode) with watchdog supervisor.
  *
  * Called automatically during `npm run build` before electron-builder.
- * Output: backend-dist/backend-server.exe (Windows)
- *         backend-dist/backend-server     (Linux/Mac)
- *
- * NOTE: PyInstaller often exits with code 1 even on successful builds when
- * it encounters non-fatal import warnings. We treat any exit code as OK as
- * long as the binary exists after the run.
+ * Output: backend/dist/backend/watchdog_launcher.exe (Windows)
+ *         backend/dist/backend/watchdog_launcher     (Linux/Mac)
  */
 
 import { spawnSync } from 'child_process';
@@ -20,48 +16,56 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ROOT = path.join(__dirname, '..');
-const DIST_DIR = path.join(ROOT, 'backend-dist');
-const exeName = process.platform === 'win32' ? 'backend-server.exe' : 'backend-server';
+const BACKEND_DIR = path.join(ROOT, 'backend');
+const DIST_DIR = path.join(BACKEND_DIR, 'dist', 'backend');
+const exeName = process.platform === 'win32' ? 'watchdog_launcher.exe' : 'watchdog_launcher';
 const outputPath = path.join(DIST_DIR, exeName);
 
-// Ensure output directory exists
-if (!fs.existsSync(DIST_DIR)) {
-  fs.mkdirSync(DIST_DIR, { recursive: true });
-}
-
-console.log('[build-backend] Starting PyInstaller backend compilation...');
+console.log('[build-backend] Starting PyInstaller --onedir backend compilation...');
+console.log(`[build-backend] Target: ${outputPath}`);
 
 function runPyInstaller(pythonCmd) {
-  const result = spawnSync(
-    pythonCmd,
-    ['-m', 'PyInstaller', 'backend-server.spec',
-     '--distpath', 'backend-dist',
-     '--workpath', 'backend-build',
-     '--clean', '--noconfirm'],
-    {
-      cwd: ROOT,
-      stdio: 'inherit',
-      env: { ...process.env },
-      // Don't throw on non-zero exit — PyInstaller exits 1 on warnings
-    }
-  );
-  // spawnSync returns null for status if process was killed
-  return result.status !== null;
+  try {
+    const result = spawnSync(
+      pythonCmd,
+      [
+        '-m', 'PyInstaller', 'build.spec',
+        '--distpath', 'dist',
+        '--workpath', 'build',
+        '--clean', '--noconfirm',
+      ],
+      {
+        cwd: BACKEND_DIR,
+        stdio: 'inherit',
+        env: { ...process.env },
+      }
+    );
+    return result.status !== null;
+  } catch (err) {
+    return false;
+  }
 }
 
-// Try python first, then python3
-const ran = runPyInstaller('python') || runPyInstaller('python3');
+// Try py first on Windows, then python, then python3
+const commands = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+let ran = false;
 
-if (!ran) {
+for (const cmd of commands) {
+  console.log(`[build-backend] Attempting build with '${cmd}'...`);
+  ran = runPyInstaller(cmd);
+  if (ran && fs.existsSync(outputPath)) {
+    break;
+  }
+}
+
+if (!ran && !fs.existsSync(outputPath)) {
   console.error('[build-backend] Could not spawn Python. Ensure Python 3.11+ is in PATH.');
 }
 
-// Check if binary was actually produced (the real success signal)
+// Check if binary was actually produced
 if (fs.existsSync(outputPath)) {
   const sizeMB = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(1);
   console.log(`[build-backend] ✓ Compiled successfully: ${outputPath} (${sizeMB} MB)`);
 } else {
-  console.warn('[build-backend] WARNING: Binary not found at', outputPath);
-  console.warn('[build-backend] Packaged app will fall back to system Python.');
-  // Not a fatal error — packaged app falls back to system Python
+  console.warn('[build-backend] WARNING: Executable not found at', outputPath);
 }

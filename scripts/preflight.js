@@ -1,4 +1,4 @@
-﻿/**
+/**
  * preflight.js - Pre-packaging preflight check.
  *
  * Verifies that all required build artefacts exist before electron-builder
@@ -32,11 +32,12 @@ if (!fs.existsSync(electronMain)) {
   errors.push(`Missing: ${electronMain}  →  run 'npm run build:electron' first`);
 }
 
-// 3. PyInstaller backend binary (platform-specific)
-const exeName = process.platform === 'win32' ? 'backend-server.exe' : 'backend-server';
-const backendBin = path.join(ROOT, 'backend-dist', exeName);
-if (!fs.existsSync(backendBin)) {
-  errors.push(`Missing: ${backendBin}  →  run 'npm run build:backend-exe' first`);
+// 3. PyInstaller backend binary / package (--onedir mode)
+const launcherName = process.platform === 'win32' ? 'watchdog_launcher.exe' : 'watchdog_launcher';
+const backendDir = path.join(ROOT, 'backend', 'dist', 'backend', launcherName);
+const legacyBin = path.join(ROOT, 'backend-dist', process.platform === 'win32' ? 'backend-server.exe' : 'backend-server');
+if (!fs.existsSync(backendDir) && !fs.existsSync(legacyBin)) {
+  errors.push(`Missing: ${backendDir}  →  run 'node scripts/build-backend.js' first`);
 }
 
 // 4. Bundled Python runtime for current platform

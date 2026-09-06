@@ -19,6 +19,7 @@ interface CustomSelectProps {
   placeholder?: string;
   className?: string;
   align?: "left" | "right";
+  variant?: "default" | "liquid-glass";
 }
 
 export const CustomSelect: React.FC<CustomSelectProps> = ({
@@ -29,6 +30,7 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   placeholder = "Select an option",
   className = "",
   align = "left",
+  variant = "default",
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -59,6 +61,121 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
   }, [isOpen]);
 
   const SelectedIcon = selectedOption?.icon;
+
+  if (variant === "liquid-glass") {
+    return (
+      <div className={`relative inline-block w-full ${className}`} ref={dropdownRef}>
+        {/* Trigger Button Matching LiquidGlassModelSelector */}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => setIsOpen((prev) => !prev)}
+          className={`w-full text-left rounded-lg border transition-all duration-150 flex items-center justify-between gap-2.5 cursor-pointer shadow-sm group px-3 py-2 ${
+            disabled
+              ? "opacity-50 cursor-not-allowed bg-[#131622]/40 border-white/5"
+              : isOpen
+                ? "bg-[#181b29] border-primary/60 ring-1 ring-primary/30 shadow-[0_0_16px_rgba(0,218,243,0.2)]"
+                : "bg-[#131622]/90 hover:bg-[#191c2c] border-white/10 hover:border-white/25 hover:shadow-[0_2px_8px_rgba(0,0,0,0.4)]"
+          }`}
+        >
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            <div className="p-1.5 rounded-md bg-primary/10 border border-primary/20 text-primary shrink-0">
+              {SelectedIcon ? (
+                <SelectedIcon size={14} className={selectedOption?.iconColor || "text-primary"} />
+              ) : (
+                <Check size={14} className="text-primary" />
+              )}
+            </div>
+            <div className="flex flex-col min-w-0 flex-1">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="font-semibold text-xs text-white truncate group-hover:text-primary transition-colors">
+                  {selectedOption ? selectedOption.label : placeholder}
+                </span>
+                {selectedOption?.badge && (
+                  <span
+                    className={`text-[9px] px-1.5 py-0.2 rounded-full font-mono font-medium border shrink-0 ${
+                      selectedOption.badgeColor || "bg-primary/15 text-primary border-primary/30"
+                    }`}
+                  >
+                    {selectedOption.badge}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] text-on-surface-variant/70 font-mono truncate">
+                {selectedOption?.description || selectedOption?.value || "Provider"}
+              </span>
+            </div>
+          </div>
+
+          <ChevronDown
+            size={13}
+            className={`text-on-surface-variant shrink-0 ml-1 transition-transform duration-200 ${
+              isOpen ? "rotate-180 text-primary" : "group-hover:text-white"
+            }`}
+          />
+        </button>
+
+        {/* Floating Glassmorphic Dropdown Menu */}
+        {isOpen && (
+          <div
+            className={`absolute ${align === "right" ? "right-0" : "left-0"} top-full mt-1.5 w-full min-w-[240px] max-h-[300px] overflow-y-auto liquid-glass-popover rounded-xl shadow-2xl p-1.5 z-50 animate-popover-in custom-scrollbar`}
+          >
+            <div className="space-y-0.5">
+              {options.map((opt) => {
+                const isSelected = opt.value === value;
+                const OptIcon = opt.icon;
+
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => {
+                      onChange(opt.value);
+                      setIsOpen(false);
+                    }}
+                    className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs transition-all text-left cursor-pointer liquid-glass-item ${
+                      isSelected
+                        ? "bg-primary/20 text-white font-bold border border-primary/40 shadow-[0_0_12px_rgba(0,218,243,0.15)]"
+                        : "text-on-surface hover:text-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      {OptIcon && (
+                        <div className="p-1 rounded bg-primary/10 border border-primary/20 shrink-0">
+                          <OptIcon size={13} className={opt.iconColor || "text-primary"} />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate font-semibold text-white">{opt.label}</span>
+                          {opt.badge && (
+                            <span
+                              className={`text-[9px] px-1.5 py-0.2 rounded-full font-mono font-medium border ${
+                                opt.badgeColor || "bg-primary/15 text-primary border-primary/30"
+                              }`}
+                            >
+                              {opt.badge}
+                            </span>
+                          )}
+                        </div>
+                        {opt.description && (
+                          <p className="text-[10px] text-on-surface-variant/70 font-mono truncate">{opt.description}</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {isSelected && (
+                      <Check size={13} className="shrink-0 text-primary animate-in zoom-in-50 ml-1.5" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className={`relative inline-block w-full ${className}`} ref={dropdownRef}>
@@ -147,3 +264,4 @@ export const CustomSelect: React.FC<CustomSelectProps> = ({
     </div>
   );
 };
+

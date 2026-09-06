@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   FileCode,
   ShieldAlert,
@@ -9,8 +9,10 @@ import {
   Layers,
   ShieldCheck,
   Loader2,
+  GitPullRequest,
 } from "lucide-react";
 import type { PendingApprovalState } from "../../stores/aiStore";
+import { useStagingStore } from "../staging/stagingStore";
 
 interface DockedApprovalCardProps {
   pendingApproval: PendingApprovalState;
@@ -45,6 +47,13 @@ export function DockedApprovalCard({
       new CustomEvent("code-os:switch-top-view", { detail: "proposals" })
     );
   };
+
+  useEffect(() => {
+    if (queueCount > 3) {
+      const jobId = (pendingApproval as any).job_id || pendingApproval.metadata?.job_id || "agent_job";
+      void useStagingStore.getState().openReview(jobId);
+    }
+  }, [queueCount, pendingApproval]);
 
   const handleApprove = () => {
     setIsApproving(true);
@@ -117,7 +126,8 @@ export function DockedApprovalCard({
           {/* Badges */}
           <div className="flex items-center gap-1.5 shrink-0">
             {(() => {
-              const role = (pendingApproval.agent_role || pendingApproval.metadata?.agent_role || "").toLowerCase();
+              const rawRole = pendingApproval.agent_role || pendingApproval.metadata?.agent_role || "";
+              const role = rawRole.toLowerCase();
               const ROLE_BADGE_MAP: Record<string, { label: string; className: string }> = {
                 architect: { label: "Architect", className: "bg-blue-500/20 text-blue-300 border-blue-500/40" },
                 coder: { label: "Coder", className: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" },
@@ -126,13 +136,16 @@ export function DockedApprovalCard({
                 devops: { label: "DevOps", className: "bg-red-500/20 text-red-300 border-red-500/40" },
               };
               const roleBadge = ROLE_BADGE_MAP[role];
-              if (!roleBadge) return null;
+              if (!roleBadge && !rawRole) return null;
+              const label = roleBadge ? roleBadge.label : rawRole;
+              const cls = roleBadge ? roleBadge.className : "bg-indigo-500/20 text-indigo-300 border-indigo-500/40";
+              const testId = (pendingApproval.metadata?.handle || role || rawRole).toLowerCase().replace(/^@/, "");
               return (
                 <span
-                  data-testid={`approval-role-badge-${role}`}
-                  className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${roleBadge.className}`}
+                  data-testid={`approval-role-badge-${testId}`}
+                  className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${cls}`}
                 >
-                  {roleBadge.label}
+                  {label}
                 </span>
               );
             })()}
@@ -157,6 +170,32 @@ export function DockedApprovalCard({
         <p className="text-[11.5px] text-on-surface-variant leading-relaxed font-medium">
           {displayReason}
         </p>
+
+        {/* Multi-file PR Review Banner */}
+        {queueCount > 3 && (
+          <div
+            data-testid="multi-file-staging-banner"
+            className="p-2 rounded-lg bg-primary/15 border border-primary/30 flex items-center justify-between gap-2"
+          >
+            <div className="flex items-center gap-2 min-w-0 text-primary text-xs font-semibold">
+              <GitPullRequest size={15} className="shrink-0" />
+              <span className="truncate">
+                {queueCount} files staged. GitHub-PR view is open for safe multi-file review.
+              </span>
+            </div>
+            <button
+              type="button"
+              data-testid="switch-to-pr-review-btn"
+              onClick={() => {
+                const jobId = (pendingApproval as any).job_id || pendingApproval.metadata?.job_id || "agent_job";
+                void useStagingStore.getState().openReview(jobId);
+              }}
+              className="px-2.5 py-1 rounded bg-primary text-black font-bold text-[11px] shrink-0 hover:bg-primary/90 cursor-pointer"
+            >
+              Open PR Review
+            </button>
+          </div>
+        )}
 
         {/* Native Host Isolation Badge */}
         {!isEdit && (

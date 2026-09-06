@@ -5,6 +5,7 @@ import logging
 import time
 from typing import Any, Callable, Coroutine, Optional
 
+from ....core.paths import normalize_path
 from ..agents.agent_factory import AgentFactory
 from ..step_tracker import (
     log_step_pending,
@@ -52,6 +53,13 @@ class TeamOrchestrator:
         self.max_concurrency = max(1, self.team_config.max_concurrency)
         self._semaphore = asyncio.Semaphore(self.max_concurrency)
 
+        # Snapshot custom roles for job execution (Refinement R1 & R4)
+        self.custom_roles: list[dict[str, Any]] = list(getattr(self.team_config, "custom_roles", []))
+        self.custom_roles_by_handle: dict[str, dict[str, Any]] = {
+            str(cr.get("handle", "")).lstrip("@").lower(): cr
+            for cr in self.custom_roles
+        }
+
         # DAG and execution state tracking
         self.completed_task_ids: set[str] = set()
         self.failed_task_ids: set[str] = set()
@@ -97,11 +105,20 @@ class TeamOrchestrator:
     ) -> Any:
         """Tag and dispatch an interactive approval request for edit_file or run_command."""
         from ..harness.approval_coordinator import request_approval
-        role_str = role.value if isinstance(role, TeamRole) else str(role).lower()
+        handle_key = role.value.lower() if isinstance(role, TeamRole) else str(role).lstrip("@").lower()
+        custom_role_def = self.custom_roles_by_handle.get(handle_key)
+        if custom_role_def:
+            role_display_name = custom_role_def.get("name") or handle_key
+            role_handle = custom_role_def.get("handle") or handle_key
+        else:
+            role_display_name = role.value if isinstance(role, TeamRole) else str(role)
+            role_handle = role_display_name.lower()
+
         action_id = f"appr_{task_id}_{int(time.time() * 1000)}"
 
         metadata = {
-            "agent_role": role_str,
+            "agent_role": role_display_name,
+            "handle": role_handle,
             "task_id": task_id,
             "team_mode": True,
             "reason": reason,
@@ -117,14 +134,14 @@ class TeamOrchestrator:
             command=command,
             path=path,
             diff_summary=diff_summary,
-            agent_role=role_str,
+            agent_role=role_display_name,
             metadata=metadata,
         )
 
         self.emit_event("team_approval", {
             "action_id": action_id,
             "action_type": action_type,
-            "agent_role": role_str,
+            "agent_role": role_display_name,
             "task_id": task_id,
             "detail": detail,
             "reason": reason,
@@ -150,6 +167,24 @@ class TeamOrchestrator:
 
         start_time = time.time()
         effective_job_id = job_id or tasks[0].job_id or f"job_{int(start_time)}"
+
+        # Workspace Isolation check (Refinement R4)
+        builtin_values = {br.value for br in TeamRole}
+        for t in tasks:
+            r = t.role
+            r_str = r.value if isinstance(r, TeamRole) else str(r)
+            r_handle = r_str.lstrip("@").lower()
+            if r_handle not in builtin_values and not isinstance(r, TeamRole):
+                if r_handle not in self.custom_roles_by_handle:
+                    raise ValueError(
+                        f"Workspace isolation violation: role '{r_str}' is not defined in workspace '{self.workspace}'"
+                    )
+                cr = self.custom_roles_by_handle[r_handle]
+                cr_ws = cr.get("workspace")
+                if cr_ws and normalize_path(cr_ws) != normalize_path(self.workspace):
+                    raise ValueError(
+                        f"Workspace isolation violation: role '{r_str}' belongs to workspace '{cr_ws}', not '{self.workspace}'"
+                    )
 
         tasks_by_id = {t.task_id: t for t in tasks}
         all_task_ids = set(tasks_by_id.keys())
@@ -325,11 +360,12 @@ class TeamOrchestrator:
             self.running_task_ids.add(task.task_id)
             task.status = "running"
             task.started_at = time.time()
+            role_str = task.role.value if isinstance(task.role, TeamRole) else str(task.role)
 
             self.emit_event("team_step_update", {
                 "task_id": task.task_id,
                 "status": "running",
-                "role": task.role.value,
+                "role": role_str,
                 "active_concurrency": self.active_concurrency,
             })
 
@@ -341,10 +377,10 @@ class TeamOrchestrator:
                     task_id=task.task_id,
                     job_id=task.job_id,
                     step_num=1,
-                    step_type=f"team_role_{task.role.value}",
+                    step_type=f"team_role_{role_str}",
                     payload={
                         "title": task.title,
-                        "role": task.role.value,
+                        "role": role_str,
                         "dependencies": task.dependencies,
                     },
                 )
@@ -352,6 +388,40 @@ class TeamOrchestrator:
                 step_logged = True
             except Exception as exc:
                 logger.warning("Step tracker write-ahead log error: %s", exc)
+
+            # ── 1.5 Smart Model Router: Classify Difficulty & Route Model ──
+            if getattr(self.team_config, "smart_router_enabled", False):
+                try:
+                    from app.features.ai.smart_router.difficulty_classifier import classify_task_difficulty
+                    from app.features.ai.smart_router.model_router import route_model
+
+                    files = (task.context or {}).get("files") if isinstance(task.context, dict) else None
+                    classification = classify_task_difficulty(task.title, file_list=files)
+                    routed = route_model(classification["difficulty"])
+                    assigned_model_str = f"{routed['provider']}/{routed['model']}"
+
+                    if task.context is None:
+                        task.context = {}
+                    task.context["difficulty"] = classification["difficulty"]
+                    task.context["difficulty_confidence"] = classification["confidence"]
+                    task.context["assigned_model"] = assigned_model_str
+                    task.context["tier"] = routed["tier"]
+                    task.context["smart_router_config"] = {
+                        "provider": routed["provider"],
+                        "model": routed["model"],
+                        "tier": routed["tier"],
+                        "fallback_models": routed.get("fallback_models", []),
+                    }
+
+                    self.emit_event("team_metrics", {
+                        "task_id": task.task_id,
+                        "difficulty": classification["difficulty"],
+                        "confidence": classification["confidence"],
+                        "assigned_model": assigned_model_str,
+                        "tier": routed["tier"],
+                    })
+                except Exception as ex:
+                    logger.warning("Smart model router error: %s", ex)
 
             try:
                 # ── 2. Execute Task Logic ───────────────────────────────
@@ -376,15 +446,17 @@ class TeamOrchestrator:
                 self.emit_event("team_step_update", {
                     "task_id": task.task_id,
                     "status": "completed",
-                    "role": task.role.value,
+                    "role": role_str,
                 })
 
                 if handoff:
+                    from_role_str = handoff.from_role.value if isinstance(handoff.from_role, TeamRole) else str(handoff.from_role)
+                    to_role_str = handoff.to_role.value if isinstance(handoff.to_role, TeamRole) else str(handoff.to_role)
                     self.emit_event("team_handoff", {
                         "task_id": task.task_id,
-                        "from_role": handoff.from_role.value,
-                        "to_role": handoff.to_role.value,
-                        "type": handoff.type.value,
+                        "from_role": from_role_str,
+                        "to_role": to_role_str,
+                        "type": handoff.type.value if hasattr(handoff.type, "value") else str(handoff.type),
                         "summary": handoff.summary,
                     })
 
@@ -421,8 +493,19 @@ class TeamOrchestrator:
         if self._custom_task_executor is not None:
             return await self._custom_task_executor(task, prior_handoffs)
 
-        # 2. Get provider configuration for role from TeamConfig
-        provider_config = self.team_config.get_role_provider_config(task.role)
+        # 2. Get provider configuration for role from TeamConfig or Smart Router override
+        if getattr(self.team_config, "smart_router_enabled", False) and task.context and "smart_router_config" in task.context:
+            sr_cfg = task.context["smart_router_config"]
+            provider_config = {
+                "provider": sr_cfg["provider"],
+                "model": sr_cfg["model"],
+            }
+        else:
+            provider_config = self.team_config.get_role_provider_config(
+                task.role,
+                task_title=task.title,
+                task_context=task.context,
+            )
 
         # 3. Format prior handoff context for agent
         handoff_prompt = ""
@@ -430,11 +513,28 @@ class TeamOrchestrator:
             handoff_blocks = [format_handoff_for_prompt(h) for h in prior_handoffs]
             handoff_prompt = "\n\n".join(handoff_blocks)
 
+        # Retrieve relevant past lessons learned for this task
+        try:
+            from app.features.ai.memory.memory_service import get_relevant_memories, increment_applied
+            memories = await get_relevant_memories(self.workspace, task.title, top_k=5)
+            if memories:
+                lesson_lines = [f"- {m['lesson']}" for m in memories]
+                memory_block = "## LESSONS LEARNED (from past mistakes):\n" + "\n".join(lesson_lines)
+                handoff_prompt = f"{handoff_prompt}\n\n{memory_block}" if handoff_prompt else memory_block
+                for m in memories:
+                    try:
+                        await increment_applied(m["id"])
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.debug("Orchestrator failed to fetch memories: %s", exc)
+
         # 4. Role handler instantiation and tool execution
-        role_handler = get_role_instance(task.role)
+        role_handler = get_role_instance(task.role, custom_roles=self.custom_roles)
 
         # 5. Dispatch via AgentFactory
-        agent = AgentFactory.create_agent(task.role.value, provider_config=provider_config)
+        role_str = task.role.value if isinstance(task.role, TeamRole) else str(task.role)
+        agent = AgentFactory.create_agent(role_str, provider_config=provider_config)
 
         # If agent implements execute:
         full_context = task.context.copy()
@@ -450,7 +550,7 @@ class TeamOrchestrator:
         )
 
         return {
-            "role": task.role.value,
+            "role": role_str,
             "status": getattr(output, "status", "completed"),
             "reasoning": getattr(output, "reasoning", ""),
             "proposals": [p.model_dump() for p in getattr(output, "proposals", [])] if hasattr(output, "proposals") else [],
@@ -460,8 +560,9 @@ class TeamOrchestrator:
     def _create_task_handoff(self, task: TeamTask, result: dict[str, Any]) -> HandoffArtifact:
         """Package a task's output into a structured HandoffArtifact for dependent tasks."""
         role = task.role
+        role_val = (role.value if isinstance(role, TeamRole) else str(role)).lower()
 
-        if role == TeamRole.CODER:
+        if role == TeamRole.CODER or role_val == "coder":
             proposals = result.get("proposals", [])
             modified_files = [p.get("path", "") for p in proposals if isinstance(p, dict)]
             return create_diff_handoff(
@@ -473,7 +574,7 @@ class TeamOrchestrator:
                 task_id=task.task_id,
             )
 
-        elif role == TeamRole.TESTER:
+        elif role == TeamRole.TESTER or role_val == "tester":
             test_res = result.get("test_results") or {}
             passed = test_res.get("passed", True) if isinstance(test_res, dict) else True
             output_str = str(test_res.get("output", result.get("reasoning", "")))
@@ -486,7 +587,7 @@ class TeamOrchestrator:
                 task_id=task.task_id,
             )
 
-        elif role == TeamRole.REVIEWER:
+        elif role == TeamRole.REVIEWER or role_val == "reviewer":
             reasoning = result.get("reasoning", "")
             return create_review_notes_handoff(
                 from_role=TeamRole.REVIEWER,
@@ -497,7 +598,7 @@ class TeamOrchestrator:
                 task_id=task.task_id,
             )
 
-        elif role == TeamRole.DEVOPS:
+        elif role == TeamRole.DEVOPS or role_val == "devops":
             return create_stack_trace_handoff(
                 from_role=TeamRole.DEVOPS,
                 to_role=TeamRole.ARCHITECT,
@@ -506,11 +607,24 @@ class TeamOrchestrator:
                 task_id=task.task_id,
             )
 
-        else:  # ARCHITECT or other
+        elif role == TeamRole.ARCHITECT or role_val == "architect":
+            files_list = [result.get("reasoning", "")]
+            if task.context and "attached_files" in task.context:
+                files_list.append(task.context["attached_files"])
             return create_files_handoff(
                 from_role=TeamRole.ARCHITECT,
                 to_role=TeamRole.CODER,
-                files=[result.get("reasoning", "")],
+                files=files_list,
                 summary="Architectural specification and task breakdown.",
+                task_id=task.task_id,
+            )
+
+        else:
+            reasoning = result.get("reasoning", "")
+            return create_files_handoff(
+                from_role=role,
+                to_role=TeamRole.REVIEWER,
+                files=[reasoning] if reasoning else [],
+                summary=f"Custom agent {role_val} completed execution.",
                 task_id=task.task_id,
             )
