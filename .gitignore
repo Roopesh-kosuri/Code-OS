@@ -68,7 +68,8 @@ stresstest_ws/
 scratch_test_preview.html
 scratch_preview_captured.jpg
 *.log
-verify_*.py
+/verify_*.py
+!backend/app/features/ai/refactoring/verify_service.py
 walkthrough.md
 *walkthrough*.md
 
