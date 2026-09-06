@@ -67,5 +67,6 @@ if (fs.existsSync(outputPath)) {
   const sizeMB = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(1);
   console.log(`[build-backend] ✓ Compiled successfully: ${outputPath} (${sizeMB} MB)`);
 } else {
-  console.warn('[build-backend] WARNING: Executable not found at', outputPath);
+  console.error('[build-backend] ERROR: Executable not found at', outputPath);
+  process.exit(1);
 }

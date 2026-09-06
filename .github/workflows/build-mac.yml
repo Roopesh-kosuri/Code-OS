@@ -7,6 +7,8 @@ name: macOS Production Release Build (macOS ONLY)
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -69,6 +71,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload macOS Installer Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CODE-OS-macOS-Installer
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: warn
 
       - name: Upload macOS DMG to GitHub Release
         uses: softprops/action-gh-release@v2
