@@ -17,7 +17,7 @@
 
 [![Watch the demo](https://img.youtube.com/vi/2LZ2V9nhz34/maxresdefault.jpg)](https://www.youtube.com/watch?v=2LZ2V9nhz34)
 
-🌐 [**CODE OS Website**](https://roopesh-kosuri.github.io/websitecodeos/)
+🌐 [**CODE OS Website**](https://code-os-phi.vercel.app/)
 
 **[Getting Started](#-getting-started)** · **[Download](#-download)** · **[New in v4.0.0 (Titan Update)](#-new-in-v400--the-titan-update)** · **[Features](#-what-it-can-do)** · **[Rony Agent](#-rony-agent--the-chat-harness)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
 
