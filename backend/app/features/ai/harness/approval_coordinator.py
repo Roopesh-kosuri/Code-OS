@@ -82,7 +82,7 @@ def _load_trusted_commands(workspace: str) -> list[str]:
 
 def _save_trusted_command(workspace: str, pattern: str) -> bool:
     pattern = pattern.strip()
-    if not pattern:
+    if not pattern or pattern == "*" or any(op in pattern for op in (";", "&&", "||", "|", "&")):
         return False
     try:
         cmds = _load_trusted_commands(workspace)
@@ -114,16 +114,35 @@ def _is_command_trusted(workspace: str, cmd: str) -> bool:
     """Check if command matches any workspace trusted command pattern."""
     if not workspace or not cmd:
         return False
-    trusted = _load_trusted_commands(workspace)
     cmd_clean = cmd.strip()
+
+    # Never trust compound commands or shell chaining
+    if any(op in cmd_clean for op in (";", "&&", "||", "|", "&")):
+        return False
+
+    trusted = _load_trusted_commands(workspace)
+    try:
+        import shlex
+        cmd_parts = shlex.split(cmd_clean)
+        cmd_exec = cmd_parts[0] if cmd_parts else ""
+    except Exception:
+        cmd_exec = cmd_clean.split()[0] if cmd_clean.split() else ""
+
     for pattern in trusted:
-        if pattern == cmd_clean:
+        pat_clean = pattern.strip()
+        # Reject bare wildcard patterns
+        if not pat_clean or pat_clean == "*":
+            continue
+        if any(op in pat_clean for op in (";", "&&", "||", "|", "&")):
+            continue
+
+        if pat_clean == cmd_clean:
             return True
-        if pattern.endswith("*"):
-            prefix = pattern[:-1].strip()
-            if cmd_clean.startswith(prefix):
+        if pat_clean.endswith("*"):
+            prefix = pat_clean[:-1].strip()
+            if prefix and (cmd_exec == prefix or cmd_clean.startswith(prefix + " ") or cmd_clean == prefix):
                 return True
-        if pattern in ("pytest", "npm test", "python -m pytest") and (cmd_clean == pattern or cmd_clean.startswith(pattern + " ")):
+        if pat_clean in ("pytest", "npm test", "python -m pytest") and (cmd_clean == pat_clean or cmd_clean.startswith(pat_clean + " ")):
             return True
     return False
 

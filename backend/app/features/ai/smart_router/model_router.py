@@ -63,6 +63,29 @@ def reset_model_tiers_to_default() -> dict[str, list[str]]:
     return get_model_tiers()
 
 
+def validate_model_tiers_against_catalog() -> list[dict[str, Any]]:
+    """
+    Validate active model tiers against known provider models in PROVIDER_CATALOG.
+    Returns list of warnings for uncatalogued or unavailable models.
+    """
+    from ..catalog import PROVIDER_CATALOG
+    warnings = []
+    for tier, models in MODEL_TIERS.items():
+        for m_str in models:
+            provider, model_id = parse_model_string(m_str)
+            catalog_models = PROVIDER_CATALOG.get(provider, [])
+            match = next((m for m in catalog_models if m.id == model_id or m.name.lower() == model_id.lower()), None)
+            if match is None:
+                msg = f"Configured model '{m_str}' in tier '{tier}' is not in provider catalog."
+                logger.warning("smart_router: %s", msg)
+                warnings.append({"tier": tier, "model": m_str, "warning": msg, "type": "missing"})
+            elif not match.available:
+                msg = f"Configured model '{m_str}' in tier '{tier}' is marked unavailable in catalog."
+                logger.warning("smart_router: %s", msg)
+                warnings.append({"tier": tier, "model": m_str, "warning": msg, "type": "unavailable"})
+    return warnings
+
+
 def route_model(
     task_difficulty: str,
     available_providers: Optional[list[str]] = None,

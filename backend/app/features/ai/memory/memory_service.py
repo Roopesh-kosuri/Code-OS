@@ -205,10 +205,62 @@ async def log_mistake(
     if not lesson:
         lesson = await synthesize_lesson(raw_event_or_lesson, category=category)
 
+    db = await get_db()
+    cursor = await db.execute(
+        """
+        SELECT * FROM agent_memories
+        WHERE workspace = ? AND category = ? AND lesson = ?
+        """,
+        (norm_ws, category, lesson),
+    )
+    existing = await cursor.fetchone()
+    if existing:
+        existing_id = existing["id"]
+        new_times = existing["times_applied"] + 1
+        new_conf = min(100, max(existing["confidence"], confidence))
+        now_ts = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            """
+            UPDATE agent_memories
+            SET confidence = ?, times_applied = ?, last_applied_at = ?
+            WHERE id = ?
+            """,
+            (new_conf, new_times, now_ts, existing_id),
+        )
+        await db.commit()
+
+        try:
+            coll = _get_memory_collection(norm_ws)
+            if coll is not None:
+                coll.update(
+                    ids=[existing_id],
+                    documents=[lesson],
+                    metadatas=[{
+                        "workspace": norm_ws,
+                        "category": category,
+                        "confidence": new_conf,
+                        "source_event_id": source_event_id or existing["source_event_id"] or "",
+                    }],
+                )
+        except Exception as exc:
+            logger.debug("Failed to update ChromaDB for deduplicated memory %s: %s", existing_id, exc)
+
+        return {
+            "id": existing_id,
+            "workspace": norm_ws,
+            "category": category,
+            "lesson": lesson,
+            "source_event_id": source_event_id or existing["source_event_id"],
+            "confidence": new_conf,
+            "times_applied": new_times,
+            "created_at": existing["created_at"],
+            "last_applied_at": now_ts,
+            "deduplicated": True,
+        }
+
     mem_id = f"mem_{uuid.uuid4().hex[:12]}"
     now_ts = datetime.now(timezone.utc).isoformat()
 
-    db = await get_db()
     await db.execute(
         """
         INSERT INTO agent_memories (id, workspace, category, lesson, source_event_id, confidence, times_applied, created_at, last_applied_at)

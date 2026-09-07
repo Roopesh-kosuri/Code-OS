@@ -13,6 +13,7 @@ Security rules enforced here:
   * The trust-check supports subdirectories: trusting /proj covers /proj/src.
 """
 
+import os
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -117,3 +118,55 @@ def ensure_directory(path: Path) -> None:
 def ensure_file(path: Path) -> None:
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
+
+
+def verify_path_unchanged(path: Path | str, resolved_at_check: Path) -> bool:
+    """
+    Re-resolve path to detect TOCTOU symlink swaps between check and use.
+    Returns True if resolved path matches check-time resolution.
+    """
+    try:
+        current_resolved = Path(path).resolve()
+        return current_resolved == resolved_at_check.resolve()
+    except Exception:
+        return False
+
+
+def safe_read_file(workspace: str, target: str) -> str:
+    """
+    Safely read file within workspace, re-verifying path resolution before read.
+    """
+    verified_path = ensure_within_workspace(workspace, target)
+    candidate = Path(target) if Path(target).is_absolute() else Path(workspace) / target
+    if not verify_path_unchanged(candidate, verified_path):
+        raise HTTPException(status_code=403, detail="TOCTOU detected: path changed between check and use")
+    ensure_file(verified_path)
+    return verified_path.read_text(encoding="utf-8", errors="replace")
+
+
+def safe_write_file(workspace: str, target: str, content: str) -> Path:
+    """
+    Safely write file within workspace using atomic temporary write + rename
+    and re-verifying resolution to prevent symlink swap races.
+    """
+    import tempfile
+    verified_path = ensure_within_workspace(workspace, target)
+    parent_dir = verified_path.parent
+    parent_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile("w", dir=str(parent_dir), delete=False, encoding="utf-8") as tf:
+        tf.write(content)
+        temp_name = tf.name
+
+    try:
+        if not is_within_workspace(normalize_workspace(workspace), verified_path):
+            raise HTTPException(status_code=403, detail="Target path escaped workspace")
+        os.replace(temp_name, str(verified_path))
+        return verified_path
+    except Exception:
+        if os.path.exists(temp_name):
+            try:
+                os.remove(temp_name)
+            except OSError:
+                pass
+        raise

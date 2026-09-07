@@ -1,7 +1,7 @@
 {
   "name": "code-os",
-  "version": "4.0.0",
-  "description": "CODE OS v4.0.0 - Next-generation agentic AI operating system for developers",
+  "version": "4.5.0",
+  "description": "CODE OS v4.5.0 - Next-generation agentic AI operating system for developers",
   "private": true,
   "type": "module",
   "main": "dist-electron/main.js",

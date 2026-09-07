@@ -1231,7 +1231,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         raw_tool_name = "__".join(parts[2:]) if len(parts) >= 3 else tc.name
 
                         from ..mcp.mcp_manager import mcp_manager
-                        from ...workspaces.trust_service import get_workspace_trust
+                        from ..workspaces.trust_service import get_workspace_trust
                         trust = await get_workspace_trust(workspace)
                         is_trusted = trust.get("trusted", False)
 
@@ -1507,19 +1507,133 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 )
                     elif tc.name == "run_test":
                         cmd = tc.arguments.get("command") or tc.arguments.get("test_path") or "pytest"
-                        result = await _execute_command_async(workspace, cmd)
-                        _append_activity_log(workspace, {
-                            "action_type": "command_run",
-                            "target": cmd,
-                            "outcome": "success" if result.success else "failed",
-                            "tier": tier,
-                            "token_count": 0,
-                            "details": result.output[:200] if result.success else result.error[:200],
-                        })
+                        from .sandbox.policy import validate_test_command
+                        is_allowed, test_status, test_reason = validate_test_command(cmd)
+
+                        if test_status == "blocked" or _is_command_malicious(cmd):
+                            policy_err = f"Test command blocked by security policy: {test_reason or 'potential command injection'}"
+                            logger.warning("chat_harness: Malicious or dangerous test command rejected: %s", cmd)
+                            yield _sse_status("tool_skipped", policy_err, tool="run_test", command=cmd)
+                            yield _sse_command_result(cmd, policy_err, exit_code=1, success=False, reason="security_policy_blocked")
+                            _append_activity_log(workspace, {
+                                "action_type": "security_policy_blocked",
+                                "target": cmd,
+                                "outcome": "blocked",
+                                "tier": tier,
+                                "token_count": 0,
+                                "details": policy_err,
+                            })
+                            result = ToolResult(
+                                tool_name="run_test",
+                                success=False,
+                                output="",
+                                error=json.dumps({
+                                    "reason": "security_policy_blocked",
+                                    "detail": policy_err,
+                                    "command": cmd,
+                                }),
+                                failure_reason="security_policy_blocked",
+                                failure_detail=policy_err,
+                            )
+                        elif test_status == "needs_approval" and not _is_command_trusted(workspace, cmd) and not _is_command_safe(cmd, workspace):
+                            action_id = str(uuid.uuid4())
+                            caps = _detect_container_runtime()
+                            is_native_fallback = not caps.get("docker_available")
+                            reason_text = f"Unrecognized test runner requires user approval: `{cmd}`"
+                            pending = PendingApproval(
+                                action_id=action_id,
+                                action_type="command",
+                                detail=cmd,
+                                reason=reason_text,
+                                workspace=workspace,
+                                command=cmd,
+                                is_native_fallback=is_native_fallback,
+                            )
+                            _pending_approvals[action_id] = pending
+                            yield _sse_approval_request(
+                                action_id=action_id,
+                                action_type="command",
+                                detail=cmd,
+                                reason=pending.reason,
+                                command=cmd,
+                                is_native_fallback=is_native_fallback,
+                            )
+                            yield _sse_status("approval_required", f"Approval needed to run test: {cmd}", command=cmd)
+                            try:
+                                await asyncio.wait_for(pending.event.wait(), timeout=COMMAND_APPROVAL_TIMEOUT_SECONDS)
+                                if pending.approved:
+                                    yield _sse_status("tool", f"Approved: Running {cmd}...", tool="run_test", command=cmd)
+                                    result = await _execute_command_async(workspace, cmd)
+                                    if not result.success:
+                                        try:
+                                            from .memory.memory_service import log_mistake
+                                            asyncio.create_task(log_mistake(
+                                                workspace=workspace,
+                                                category="failed_test",
+                                                raw_event_or_lesson=f"Failed test command '{cmd}': {result.error or result.output}",
+                                                source_event_id=f"test_{uuid.uuid4().hex[:8]}",
+                                            ))
+                                        except Exception as exc:
+                                            logger.debug("Failed to log test failure memory: %s", exc)
+                                else:
+                                    denied_msg = f"Test command '{cmd}' was rejected by user."
+                                    yield _sse_status("tool", f"Denied: Execution of {cmd} was rejected by user.", tool="run_test")
+                                    yield _sse_command_result(cmd, denied_msg, exit_code=1, success=False, reason="user_denied")
+                                    result = ToolResult(
+                                        tool_name="run_test",
+                                        success=False,
+                                        output="",
+                                        error=json.dumps({"reason": "user_denied", "detail": denied_msg, "command": cmd}),
+                                        failure_reason="user_denied",
+                                        failure_detail=denied_msg,
+                                    )
+                            except asyncio.TimeoutError:
+                                timeout_msg = f"Test execution timed out waiting for user approval: '{cmd}'"
+                                yield _sse_command_result(cmd, timeout_msg, exit_code=1, success=False, reason="approval_timeout")
+                                result = ToolResult(
+                                    tool_name="run_test",
+                                    success=False,
+                                    output="",
+                                    error=json.dumps({"reason": "approval_timeout", "detail": timeout_msg, "command": cmd}),
+                                    failure_reason="approval_timeout",
+                                    failure_detail=timeout_msg,
+                                )
+                        else:
+                            result = await _execute_command_async(workspace, cmd)
+                            if not result.success:
+                                try:
+                                    from .memory.memory_service import log_mistake
+                                    asyncio.create_task(log_mistake(
+                                        workspace=workspace,
+                                        category="failed_test",
+                                        raw_event_or_lesson=f"Failed test command '{cmd}': {result.error or result.output}",
+                                        source_event_id=f"test_{uuid.uuid4().hex[:8]}",
+                                    ))
+                                except Exception as exc:
+                                    logger.debug("Failed to log test failure memory: %s", exc)
+                            _append_activity_log(workspace, {
+                                "action_type": "command_run",
+                                "target": cmd,
+                                "outcome": "success" if result.success else "failed",
+                                "tier": tier,
+                                "token_count": 0,
+                                "details": result.output[:200] if result.success else result.error[:200],
+                            })
                     elif tc.name == "run_command":
                         cmd = tc.arguments.get("command", "")
-                        require_sandbox = bool(tc.arguments.get("require_sandbox", False) or tc.arguments.get("sandboxed", False))
                         caps = _detect_container_runtime()
+                        from .sandbox.policy import should_require_sandbox, is_dangerous_command
+                        from ..workspaces.trust_service import get_workspace_trust
+                        ws_trust = await get_workspace_trust(workspace)
+                        is_trusted_ws = ws_trust.get("trusted", False)
+                        is_cmd_trusted = _is_command_trusted(workspace, cmd)
+                        is_cmd_safe = _is_command_safe(cmd, workspace)
+                        require_sandbox = should_require_sandbox(
+                            workspace, cmd,
+                            is_trusted=is_trusted_ws,
+                            is_safe=is_cmd_safe,
+                            is_command_trusted=is_cmd_trusted,
+                        )
 
                         # Step 1: Pre-Execution Semantic Policy Filter (Prompt Injection Defense)
                         if _is_command_malicious(cmd):
@@ -1543,33 +1657,50 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                     "reason": "security_policy_blocked",
                                     "detail": policy_err,
                                     "command": cmd,
-                                }),
+                                    }),
                                 failure_reason="security_policy_blocked",
                                 failure_detail=policy_err,
                             )
-                        elif require_sandbox:
-                            # User or tool requested strict container sandbox execution (fail-closed)
-                            try:
-                                yield _sse_status("tool", f"[Container Sandbox] Running command: {cmd}", tool="run_command", command=cmd, sandboxed=True)
-                                result = await _execute_command_sandboxed(workspace, cmd)
-                                if not result.success:
-                                    yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
-                            except SandboxUnavailableError as exc:
-                                logger.error("chat_harness: Sandbox unavailable: %s", exc)
-                                yield _sse_error(str(exc))
-                                yield _sse_command_result(cmd, str(exc), exit_code=1, success=False, reason="sandbox_unavailable")
-                                result = ToolResult(
-                                    tool_name="run_command",
-                                    success=False,
-                                    output="",
-                                    error=json.dumps({
-                                        "reason": "sandbox_unavailable",
-                                        "detail": str(exc),
-                                        "command": cmd,
-                                    }),
-                                    failure_reason="sandbox_unavailable",
-                                    failure_detail=str(exc),
-                                )
+                        elif require_sandbox and is_dangerous_command(cmd) and not caps.get("docker_available"):
+                            # Dangerous command requiring container isolation cannot fall back to host execution
+                            sandbox_err = "This command requires sandboxing but Docker is not available. Install Docker or approve for host execution."
+                            logger.warning("chat_harness: Dangerous command requires sandbox but Docker is unavailable: %s", cmd)
+                            yield _sse_error(sandbox_err)
+                            yield _sse_command_result(cmd, sandbox_err, exit_code=1, success=False, reason="sandbox_unavailable")
+                            result = ToolResult(
+                                tool_name="run_command",
+                                success=False,
+                                output="",
+                                error=json.dumps({
+                                    "reason": "sandbox_unavailable",
+                                    "detail": sandbox_err,
+                                    "command": cmd,
+                                }),
+                                failure_reason="sandbox_unavailable",
+                                failure_detail=sandbox_err,
+                            )
+                        elif require_sandbox and caps.get("docker_available"):
+                                try:
+                                    yield _sse_status("tool", f"[Container Sandbox] Running command: {cmd}", tool="run_command", command=cmd, sandboxed=True)
+                                    result = await _execute_command_sandboxed(workspace, cmd)
+                                    if not result.success:
+                                        yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
+                                except SandboxUnavailableError as exc:
+                                    logger.error("chat_harness: Sandbox unavailable: %s", exc)
+                                    yield _sse_error(str(exc))
+                                    yield _sse_command_result(cmd, str(exc), exit_code=1, success=False, reason="sandbox_unavailable")
+                                    result = ToolResult(
+                                        tool_name="run_command",
+                                        success=False,
+                                        output="",
+                                        error=json.dumps({
+                                            "reason": "sandbox_unavailable",
+                                            "detail": str(exc),
+                                            "command": cmd,
+                                        }),
+                                        failure_reason="sandbox_unavailable",
+                                        failure_detail=str(exc),
+                                    )
                         elif _is_command_trusted(workspace, cmd):
                             yield _sse_status("tool", f"[Trusted] Running command: {cmd}", tool="run_command", command=cmd, trusted=True)
                             result = await _execute_command_async(workspace, cmd)

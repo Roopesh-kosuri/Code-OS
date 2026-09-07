@@ -51,14 +51,17 @@ def classify_task_difficulty(
     file_list: Optional[list[str]] = None,
     use_llm_fallback: bool = False,
 ) -> dict[str, Any]:
-    """Classify the difficulty of a task into HARD, MEDIUM, or EASY.
+    """Experimental Difficulty Heuristic:
+    Classifies task difficulty into HARD, MEDIUM, or EASY based on keyword
+    matching and codebase complexity metrics (file count, LOC thresholds).
 
     Returns:
         {
             "difficulty": "HARD" | "MEDIUM" | "EASY",
             "confidence": float (0.0 to 1.0),
             "score": float,
-            "reasons": list[str]
+            "reasons": list[str],
+            "method": "heuristic"
         }
     """
     if not task_description:

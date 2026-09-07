@@ -885,7 +885,9 @@ def _is_command_safe(command: str, workspace: str = "") -> bool:
                         target_path = Path(arg)
                         if target_path.is_absolute():
                             norm_ws = normalize_workspace(workspace)
-                            if not str(target_path.resolve()).startswith(str(norm_ws.resolve())):
+                            try:
+                                target_path.resolve().relative_to(norm_ws.resolve())
+                            except ValueError:
                                 return False
                         elif ".." in arg.replace("\\", "/").split("/"):
                             ensure_within_workspace(workspace, arg)

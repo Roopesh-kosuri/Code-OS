@@ -38,7 +38,7 @@ jobs:
       - name: Install Backend Dependencies & PyInstaller
         run: |
           python -m pip install --upgrade pip
-          pip install --prefer-binary pytest pytest-asyncio pytest-cov pyinstaller
+          pip install --prefer-binary pytest pytest-asyncio pytest-cov pyinstaller bandit pip-audit
           pip install --prefer-binary -r backend/requirements.txt
 
       - name: Install Frontend Dependencies
@@ -46,6 +46,25 @@ jobs:
 
       - name: Run TypeScript Typechecks
         run: npm run typecheck
+
+      - name: Run Bandit (Python security linter)
+        run: bandit -r backend/app -f json -o bandit-report.json || true
+
+      - name: Run pip-audit (Python dependency vulnerabilities)
+        run: pip-audit --format json --output pip-audit-report.json || true
+
+      - name: Run npm audit (Frontend dependencies)
+        run: npm audit --json > npm-audit-report.json || true
+
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-reports
+          path: |
+            bandit-report.json
+            pip-audit-report.json
+            npm-audit-report.json
 
       - name: Compile Production App Build
         run: npm run build

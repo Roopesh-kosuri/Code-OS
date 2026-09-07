@@ -154,7 +154,14 @@ async def execute_command(
         raise ValueError(f"Terminal session {terminal_id} not found")
 
     workspace = session["workspace"]
-    full_cmd = f"{command} {' '.join(args)}" if args else command
+    import shlex
+    from app.features.terminal.service import _build_safe_environment
+
+    if args:
+        sanitized_args = " ".join(shlex.quote(str(a)) for a in args)
+        full_cmd = f"{command} {sanitized_args}"
+    else:
+        full_cmd = command
     session["status"] = "running"
 
     t0 = time.perf_counter()
@@ -171,12 +178,14 @@ async def execute_command(
     exit_code: Optional[int] = None
 
     try:
-        # Spawn subprocess
+        # Spawn subprocess with sanitized environment (prevent secret / API key leaks)
+        safe_env = _build_safe_environment()
         proc = await asyncio.create_subprocess_shell(
             full_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workspace,
+            env=safe_env,
         )
         _ACTIVE_PROCESSES[terminal_id] = proc
 

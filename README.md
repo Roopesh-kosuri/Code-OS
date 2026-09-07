@@ -5,7 +5,7 @@
 ### A local-first AI IDE that plans, codes, and reviews your software — and never touches disk without your say-so.
 
 [![CI/CD](./docs/badges/cicd.svg)](https://github.com/Roopesh-kosuri/Code-OS/actions/workflows/build-mac.yml)
-[![License: PolyForm Noncommercial 1.0.0](./docs/badges/license.svg)](./License.md)
+[![License](https://img.shields.io/badge/license-PolyForm--NC--1.0.0-blue)](./License.md)
 ![Platform](./docs/badges/platform.svg)
 
 ![Made with Electron](./docs/badges/electron.svg)

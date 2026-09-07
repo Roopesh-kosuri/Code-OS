@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, session } from "electron";
 import path from "node:path";
 
 const isDev = !app.isPackaged;
@@ -7,6 +7,7 @@ import { execFileSync } from "node:child_process";
 import { BackendProcess } from "./services/backendProcess.js";
 import { CaptureService } from "./services/captureService.js";
 import * as pty from "node-pty";
+import { validateExternalUrl } from "./utils/urlValidator.js";
 
 const backend = new BackendProcess();
 let mainWindow: BrowserWindow | null = null;
@@ -105,8 +106,20 @@ async function createWindow(): Promise<void> {
   mainWindow.setMenuBarVisibility(false);
 
 
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    const responseHeaders = { ...details.responseHeaders };
+    responseHeaders["Content-Security-Policy"] = [
+      "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ws://localhost:8000 http://localhost:8000 ws://127.0.0.1:8000 http://127.0.0.1:8000 ws://127.0.0.1:11434 http://127.0.0.1:11434 https://api.openai.com https://api.anthropic.com https://api.groq.com https://api.deepseek.com https://api.mistral.ai https://openrouter.ai https://integrate.api.nvidia.com https://generativelanguage.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com; worker-src 'self' blob:;",
+    ];
+    callback({ responseHeaders });
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    if (validateExternalUrl(url)) {
+      void shell.openExternal(url);
+    } else {
+      console.warn(`[security] Blocked windowOpenHandler with disallowed scheme: ${url}`);
+    }
     return { action: "deny" };
   });
 
@@ -153,8 +166,18 @@ ipcMain.handle("shell:reveal", (_event, targetPath: string) => {
   shell.showItemInFolder(targetPath);
 });
 
-ipcMain.handle("shell:openExternal", (_event, url: string) => {
-  void shell.openExternal(url);
+ipcMain.handle("shell:openExternal", async (_event, url: string) => {
+  if (!validateExternalUrl(url)) {
+    console.warn(`[security] Blocked shell:openExternal with disallowed scheme: ${url}`);
+    return false;
+  }
+  try {
+    await shell.openExternal(url);
+    return true;
+  } catch (err) {
+    console.error(`[shell] Failed to open external URL:`, err);
+    return false;
+  }
 });
 
 ipcMain.handle("clipboard:copy", (_event, text: string) => {

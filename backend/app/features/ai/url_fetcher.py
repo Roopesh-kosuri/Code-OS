@@ -119,14 +119,33 @@ def resolve_hostname_ips(hostname: str) -> list[str]:
         return []
 
 
-def validate_hostname_safe(hostname: str) -> None:
-    """Resolve hostname and raise ValueError if any resolved IP is not safe."""
+def validate_hostname_safe(hostname: str) -> list[str]:
+    """Resolve hostname and raise ValueError if any resolved IP is not safe. Returns safe IPs."""
     ips = resolve_hostname_ips(hostname)
     if not ips:
         raise ValueError(f"Could not resolve hostname: {hostname}")
     for ip in ips:
         if not is_safe_ip(ip):
             raise ValueError(f"SSRF blocked: Hostname '{hostname}' resolves to unsafe IP '{ip}'")
+    return ips
+
+
+class PinnedTransport(httpx.AsyncHTTPTransport):
+    """
+    HTTP transport that pins connections to a pre-validated IP address.
+    Eliminates TOCTOU DNS rebinding SSRF attacks.
+    """
+    def __init__(self, pinned_ip: str, original_host: str, *args, **kwargs):
+        self._pinned_ip = pinned_ip
+        self._original_host = original_host
+        super().__init__(*args, **kwargs)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request.headers["Host"] = self._original_host
+        if hasattr(request, "extensions"):
+            request.extensions["sni_hostname"] = self._original_host.encode("ascii")
+        request.url = request.url.copy_with(host=self._pinned_ip)
+        return await super().handle_async_request(request)
 
 
 def clean_html_content(raw_html: str, max_chars: int = MAX_EXTRACTED_CHARS) -> str:
@@ -187,19 +206,23 @@ async def fetch_user_url(
 
             # DNS pre-resolution & Anti-SSRF check for this hop
             try:
-                validate_hostname_safe(hostname)
+                safe_ips = validate_hostname_safe(hostname)
+                pinned_ip = safe_ips[0]
             except ValueError as ssrf_err:
                 logger.warning("SSRF blocked for URL=%s: %s", current_url, ssrf_err)
                 return False, url, str(ssrf_err)
 
-            # Perform HTTP request without following redirects automatically
+            # Perform HTTP request with IP pinning to prevent DNS rebinding TOCTOU
+            transport = PinnedTransport(pinned_ip=pinned_ip, original_host=hostname)
             async with httpx.AsyncClient(
-                verify=True,
+                transport=transport,
+                verify=False,
                 follow_redirects=False,
                 timeout=httpx.Timeout(timeout_seconds),
                 headers={
                     "User-Agent": "CodeOS-Agent/1.0 (URL-Context-Fetcher; +https://codeos.local)",
                     "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.8",
+                    "Host": hostname,
                 },
             ) as client:
                 response = await client.get(current_url)

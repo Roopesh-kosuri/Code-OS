@@ -18,11 +18,26 @@ DEFAULT_AGENT_RUN_WINDOW = 3600.0  # seconds
 DEFAULT_MONTHLY_TOKEN_BUDGET = 1_000_000  # 1M tokens/month
 DEFAULT_DAILY_PROVIDER_TOKEN_BUDGET = 200_000  # 200k tokens/day per provider
 
+# Configurable limits for system operations
+LIMITS = {
+    "agent_iterations": 150,      # per session
+    "tool_calls": 500,            # per session
+    "llm_requests": 1000,         # per day
+    "token_budget": 2_000_000,    # per day
+    "duo_rounds": 20,             # per session
+}
+
+
+class RateLimitExceeded(HTTPException):
+    def __init__(self, detail: str = "Rate limit exceeded", retry_after: int = 60):
+        super().__init__(status_code=429, detail=detail, headers={"Retry-After": str(retry_after)})
+
 
 class RateLimiter:
     """In-memory sliding window rate limiter and token budget tracker."""
 
-    def __init__(self) -> None:
+    def __init__(self, enforce: bool = False) -> None:
+        self.enforce = enforce
         self._requests: dict[str, list[float]] = defaultdict(list)
         self._token_usage: dict[str, int] = defaultdict(int)
         self._token_month: dict[str, str] = {}
@@ -30,8 +45,15 @@ class RateLimiter:
         self._provider_token_day: dict[str, str] = {}
         self._lock = Lock()
 
-    def check(self, key: str, max_requests: int = DEFAULT_API_LIMIT, window_seconds: float = DEFAULT_API_WINDOW) -> dict[str, Any]:
-        """Track rate limit for a key. NEVER blocks or raises 429."""
+    def check(
+        self,
+        key: str,
+        max_requests: int = DEFAULT_API_LIMIT,
+        window_seconds: float = DEFAULT_API_WINDOW,
+        enforce: bool | None = None,
+    ) -> dict[str, Any]:
+        """Track rate limit for a key. Returns allowed=False and retry_after when enforced and exceeded."""
+        should_enforce = self.enforce if enforce is None else enforce
         now = time.time()
         cutoff = now - window_seconds
         with self._lock:
@@ -39,6 +61,18 @@ class RateLimiter:
             timestamps.append(now)
             self._requests[key] = timestamps
             remaining = max(0, max_requests - len(timestamps))
+
+            if should_enforce and len(timestamps) > max_requests:
+                oldest_in_window = timestamps[0]
+                retry_after = max(1, int(oldest_in_window + window_seconds - now))
+                return {
+                    "allowed": False,
+                    "limit": max_requests,
+                    "remaining": 0,
+                    "retry_after": retry_after,
+                    "window": window_seconds,
+                }
+
             return {
                 "allowed": True,
                 "limit": max_requests,
@@ -79,11 +113,12 @@ class RateLimiter:
         provider: str,
         estimated_tokens: int = 500,
         daily_limit: int = DEFAULT_DAILY_PROVIDER_TOKEN_BUDGET,
+        enforce: bool | None = None,
     ) -> dict[str, Any]:
         """
-        Track daily token usage. NEVER blocks or raises 429.
-        Always returns allowed=True.
+        Track daily token usage. When enforce=True, returns allowed=False if budget exceeded.
         """
+        should_enforce = self.enforce if enforce is None else enforce
         import datetime
         prov_key = provider.lower()
         today = datetime.datetime.utcnow().strftime("%Y-%m-%d")
@@ -94,6 +129,18 @@ class RateLimiter:
 
             used = self._provider_token_usage[prov_key]
             remaining = max(0, daily_limit - used)
+
+            if should_enforce and (used + estimated_tokens > daily_limit):
+                return {
+                    "allowed": False,
+                    "provider": prov_key,
+                    "used_tokens": used,
+                    "daily_limit": daily_limit,
+                    "remaining_tokens": remaining,
+                    "percent_used": round((used / daily_limit) * 100, 1) if daily_limit > 0 else 0.0,
+                    "retry_after": 86400,
+                }
+
             return {
                 "allowed": True,
                 "provider": prov_key,
