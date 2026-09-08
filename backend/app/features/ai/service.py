@@ -333,7 +333,8 @@ async def provider_for(request: ChatRequest):
     if request.provider == "auto":
         # Check API keys in priority order for auto-routing
         _KEY_PRIORITY = ["openai-compatible", "openai", "groq", "anthropic", "gemini",
-                         "deepseek", "mistral", "openrouter", "nvidia-nim"]
+                         "deepseek", "mistral", "openrouter", "nvidia-nim",
+                         "moonshot", "glm", "qwen"]
         api_key_id: str | None = None
         for kid in _KEY_PRIORITY:
             if await get_api_key(kid):
@@ -353,6 +354,9 @@ async def provider_for(request: ChatRequest):
                 "mistral": "https://api.mistral.ai/v1",
                 "openrouter": "https://openrouter.ai/api/v1",
                 "nvidia-nim": "https://integrate.api.nvidia.com/v1",
+                "moonshot": "https://api.moonshot.cn/v1",
+                "glm": "https://open.bigmodel.cn/api/paas/v4",
+                "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             }
             request.base_url = settings.get(f"{api_key_id}.baseUrl") or _DEFAULT_URLS.get(api_key_id, "https://api.openai.com/v1")
             
@@ -366,6 +370,9 @@ async def provider_for(request: ChatRequest):
                 "mistral": "mistral-large-latest",
                 "openrouter": "openai/gpt-4o",
                 "nvidia-nim": "minimaxai/minimax-m3",
+                "moonshot": "kimi-latest",
+                "glm": "glm-4-plus",
+                "qwen": "qwen-plus",
             }
             if not request.model:
                 request.model = settings.get(f"{api_key_id}.model") or _DEFAULT_MODELS.get(api_key_id, "openai/gpt-oss-120b" if api_key_id == "groq" else "gpt-4o")
@@ -386,6 +393,9 @@ async def provider_for(request: ChatRequest):
         "mistral": "mistral-large-latest",
         "openrouter": "openai/gpt-4o",
         "nvidia-nim": "minimaxai/minimax-m3",
+        "moonshot": "kimi-latest",
+        "glm": "glm-4-plus",
+        "qwen": "qwen-plus",
         "ollama": "llama3",
     }
 
@@ -406,9 +416,15 @@ async def provider_for(request: ChatRequest):
         "openrouter": "https://openrouter.ai/api/v1",
         "nvidia-nim": "https://integrate.api.nvidia.com/v1",
         "nvidia": "https://integrate.api.nvidia.com/v1",
+        "moonshot": "https://api.moonshot.cn/v1",
+        "glm": "https://open.bigmodel.cn/api/paas/v4",
+        "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     }
 
-    if request.provider == "openai-compatible" or request.provider in ("groq", "openai", "gemini", "deepseek", "mistral", "openrouter", "nvidia-nim"):
+    if request.provider == "openai-compatible" or request.provider in (
+        "groq", "openai", "gemini", "deepseek", "mistral", "openrouter",
+        "nvidia-nim", "moonshot", "glm", "qwen"
+    ):
         key_id = request.api_key_provider or ("nvidia-nim" if request.provider == "nvidia-nim" else request.provider)
         if key_id == "openai-compatible" and request.provider in _DEFAULT_URLS:
             key_id = request.provider

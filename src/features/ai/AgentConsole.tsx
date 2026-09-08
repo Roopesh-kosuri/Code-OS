@@ -132,6 +132,15 @@ const PROVIDER_OPTIONS: CustomSelectOption[] = [
     description: "Llama 3.1, MiniMax, DeepSeek",
   },
   {
+    value: "moonshot",
+    label: "Moonshot (Kimi)",
+    icon: Sparkles,
+    iconColor: "text-violet-400",
+    badge: "Kimi K3",
+    badgeColor: "bg-violet-500/15 text-violet-300 border border-violet-500/30",
+    description: "Kimi K2, Kimi Thinking, 128K ctx",
+  },
+  {
     value: "custom",
     label: "Custom endpoint",
     icon: Server,
@@ -157,6 +166,14 @@ const AGENT_CONSOLE_MODEL_SUGGESTIONS: Record<string, { id: string; label: strin
     { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
     { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
     { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
+  ],
+  moonshot: [
+    { id: "kimi-latest", label: "kimi-latest", tag: "Recommended" },
+    { id: "kimi-k2-thinking", label: "kimi-k2-thinking", tag: "Reasoning" },
+    { id: "kimi-k2-turbo-preview", label: "kimi-k2-turbo", tag: "Fast" },
+    { id: "kimi-k2-0905-preview", label: "kimi-k2 (0905)" },
+    { id: "moonshot-v1-128k", label: "moonshot-128k", tag: "Long ctx" },
+    { id: "moonshot-v1-32k", label: "moonshot-32k" },
   ],
   openrouter: [
     { id: "openai/gpt-5.5", label: "gpt-5.5", tag: "Flagship" },
@@ -673,17 +690,22 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
               </div>
             </div>
 
-            {/* File Upload Zone */}
-            <FileUploadZone compact workspace={workspace?.path} />
-
-            {/* Instruction Textarea */}
+            {/* Instruction Textarea — expands to fill space, supports drag-drop */}
             <textarea
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
-              placeholder="Describe the autonomous multi-agent task (e.g. Implement user authentication with JWT, refactor database layer, add unit tests)..."
-              rows={5}
+              onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("border-primary-container"); }}
+              onDragLeave={(e) => e.currentTarget.classList.remove("border-primary-container")}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.currentTarget.classList.remove("border-primary-container");
+                const text = e.dataTransfer.getData("text");
+                if (text) setInstruction((prev) => prev ? `${prev}\n${text}` : text);
+              }}
+              placeholder="Enter your task or drop a file here...\n\nDescribe the autonomous multi-agent task (e.g. Implement user authentication with JWT, refactor database layer, add unit tests)..."
+              rows={8}
               disabled={isRunning}
-              className="w-full bg-[#131315] border border-surface-variant rounded-lg p-4 font-code-main text-code-main text-on-surface placeholder:text-outline-variant focus:border-primary-container focus:outline-none focus:ring-1 focus:ring-primary-container/20 transition-all resize-none disabled:opacity-50"
+              className="w-full bg-[#131315] border border-surface-variant rounded-lg p-3 font-code-main text-code-main text-on-surface placeholder:text-outline-variant focus:border-primary-container focus:outline-none focus:ring-1 focus:ring-primary-container/20 transition-all resize-none disabled:opacity-50 text-xs"
             />
 
             {/* Provider & Model Selects */}

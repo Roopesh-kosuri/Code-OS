@@ -265,16 +265,31 @@ export const DiagramGeneratorPanel: React.FC = () => {
       {/* Generate & Actions Toolbar */}
       <div className="px-4 py-2 flex items-center justify-between border-b border-white/10 bg-slate-900/30">
         <button
-          onClick={() => void generateDiagram(activeType)}
-          disabled={isRendering}
+          onClick={async () => {
+            if (!analysisResults) {
+              // Auto-analyze first if no results yet
+              await analyzeCodebase(currentWorkspace?.path);
+            } else {
+              void generateDiagram(activeType);
+            }
+          }}
+          disabled={isRendering || isAnalyzing}
           className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded bg-indigo-600/30 hover:bg-indigo-600/40 text-indigo-200 border border-indigo-500/40 transition-all disabled:opacity-50"
         >
-          {isRendering ? (
+          {isRendering || isAnalyzing ? (
             <RefreshCw className="w-3.5 h-3.5 animate-spin" />
           ) : (
             <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
           )}
-          <span>{isRendering ? "Generating..." : "Generate Diagram"}</span>
+          <span>
+            {isAnalyzing
+              ? "Analyzing..."
+              : isRendering
+                ? "Generating..."
+                : analysisResults
+                  ? "Generate Diagram"
+                  : "Analyze & Generate"}
+          </span>
         </button>
 
         {/* Export & Editor Actions */}
@@ -377,13 +392,34 @@ export const DiagramGeneratorPanel: React.FC = () => {
               style={{ transform: `scale(${zoom})`, transformOrigin: "center center" }}
               dangerouslySetInnerHTML={{ __html: renderedSvg }}
             />
+          ) : error ? (
+            <div className="flex flex-col items-center gap-3 text-slate-500 max-w-xs text-center p-6">
+              <div className="p-3 rounded-full bg-red-950/40 border border-red-800/30 text-red-400">
+                <Network className="w-8 h-8 opacity-60" />
+              </div>
+              <p className="text-xs text-red-300">{error}</p>
+              <button
+                onClick={async () => {
+                  await analyzeCodebase(currentWorkspace?.path);
+                }}
+                className="px-3 py-1.5 text-xs rounded bg-cyan-600/20 hover:bg-cyan-600/30 text-cyan-300 border border-cyan-500/30"
+              >
+                Retry Analysis
+              </button>
+            </div>
           ) : (
             <div className="flex flex-col items-center gap-3 text-slate-500 max-w-xs text-center p-6">
               <div className="p-3 rounded-full bg-slate-900 border border-white/5 text-slate-400">
                 <Network className="w-8 h-8 opacity-60" />
               </div>
               <p className="text-xs">
-                Click <span className="text-cyan-400 font-medium">"Analyze Codebase"</span> to scan files, then generate high-resolution architecture diagrams.
+                Click{" "}
+                <span className="text-cyan-400 font-medium">
+                  {analysisResults ? "\"Generate Diagram\"" : "\"Analyze & Generate\""}
+                </span>{" "}
+                {analysisResults
+                  ? "above to render the architecture diagram."
+                  : "above to scan your workspace files, then auto-generate high-resolution architecture diagrams."}
               </p>
             </div>
           )}

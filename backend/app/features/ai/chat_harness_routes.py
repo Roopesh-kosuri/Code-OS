@@ -569,14 +569,29 @@ async def test_direct_provider_call(payload: DirectProviderCallRequest) -> dict:
     from .provider_health import DEFAULT_PROVIDER_MODELS, DEFAULT_PROVIDER_URLS
     
     prov = payload.provider.lower()
-    model = payload.model or DEFAULT_PROVIDER_MODELS.get(prov, "openai/gpt-oss-120b" if prov == "groq" else ("minimaxai/minimax-m3" if prov == "nvidia-nim" else "gpt-4o"))
-    base_url = DEFAULT_PROVIDER_URLS.get(prov)
+    _EXTRA_DEFAULTS = {
+        "moonshot": "kimi-latest",
+        "glm": "glm-4-plus",
+        "qwen": "qwen-plus",
+    }
+    model = payload.model or DEFAULT_PROVIDER_MODELS.get(prov) or _EXTRA_DEFAULTS.get(prov) or (
+        "openai/gpt-oss-120b" if prov == "groq" else ("minimaxai/minimax-m3" if prov == "nvidia-nim" else "gpt-4o")
+    )
+    _EXTRA_URLS = {
+        "moonshot": "https://api.moonshot.cn/v1",
+        "glm": "https://open.bigmodel.cn/api/paas/v4",
+        "qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    }
+    base_url = DEFAULT_PROVIDER_URLS.get(prov) or _EXTRA_URLS.get(prov)
     
     from .schemas import ChatMessage
     chat_msgs = [ChatMessage(role="user", content=payload.message)]
     
     req = ChatAgentRequest(
-        provider="openai-compatible" if prov in ("groq", "gemini", "nvidia-nim", "openai", "deepseek", "mistral", "openrouter") else prov,
+        provider="openai-compatible" if prov in (
+            "groq", "gemini", "nvidia-nim", "openai", "deepseek",
+            "mistral", "openrouter", "moonshot", "glm", "qwen"
+        ) else prov,
         model=model,
         base_url=base_url,
         api_key_provider=prov,

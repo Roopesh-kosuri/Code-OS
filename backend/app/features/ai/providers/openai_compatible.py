@@ -43,7 +43,10 @@ REASONING_EFFORT_MODELS = (
 
 def supports_reasoning_effort(provider_id: str, model_name: str) -> bool:
     """Return True only if the provider and model strictly accept OpenAI reasoning_effort."""
-    if provider_id in ("nvidia-nim", "nvidia", "gemini", "mistral", "anthropic", "ollama", "local"):
+    if provider_id in (
+        "nvidia-nim", "nvidia", "gemini", "mistral", "anthropic", "ollama", "local",
+        "moonshot", "glm", "qwen",
+    ):
         return False
     m = model_name.lower()
     return any(supported in m for supported in REASONING_EFFORT_MODELS)

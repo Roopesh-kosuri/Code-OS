@@ -98,21 +98,23 @@ async def gather_yesterday_activity(workspace: str, date: Optional[str] = None) 
 
     if pool is not None:
         try:
-            # 1. Query agent_jobs
+            # 1. Query agent_jobs with date range filter
             job_rows = await pool.read_query(
                 """
                 SELECT id, workflow, status, started_at, completed_at, token_usage, duration, files_modified, user_request
                 FROM agent_jobs
                 WHERE workspace = ? AND status = 'completed'
+                  AND (
+                    (completed_at IS NOT NULL AND completed_at >= ? AND completed_at <= ?)
+                    OR (completed_at IS NULL AND started_at >= ? AND started_at <= ?)
+                  )
                 ORDER BY completed_at DESC
+                LIMIT 50
                 """,
-                (workspace,)
+                (workspace, start_ts, end_ts, start_ts, end_ts)
             )
 
             for r in job_rows:
-                # Filter by completion time if available
-                comp_at = r["completed_at"] or r["started_at"]
-                # Include recent jobs
                 jobs_completed.append({
                     "id": r["id"],
                     "workflow": r["workflow"],

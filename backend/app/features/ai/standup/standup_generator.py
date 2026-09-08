@@ -83,7 +83,7 @@ async def generate_standup(raw_data: Dict[str, Any], format: str = "slack") -> s
     fmt = format.lower()
     is_slack = fmt == "slack"
 
-    # Try LLM synthesis
+    # Try LLM synthesis using auto-routing (uses the user's configured provider)
     try:
         from app.features.ai.service import provider_for
         from app.features.ai.schemas import ChatRequest, ChatMessage
@@ -108,18 +108,19 @@ async def generate_standup(raw_data: Dict[str, Any], format: str = "slack") -> s
             f"Total Cost: {raw_data.get('total_cost', '$0.00')}"
         )
 
+        # Use provider="auto" to route to the user's configured provider
         chat_req = ChatRequest(
             messages=[
                 ChatMessage(role="system", content=system_instruction),
                 ChatMessage(role="user", content=user_content),
             ],
-            model="gpt-4o-mini",
-            provider="openai",
+            model="",
+            provider="auto",
         )
 
         provider = await provider_for(chat_req)
         tokens = []
-        async for tok in provider.stream_chat(chat_req.model, chat_req.messages, temperature=0.3):
+        async for tok in provider.stream_chat(chat_req.model or "gpt-4o-mini", chat_req.messages, temperature=0.3):
             tokens.append(tok)
         res = "".join(tokens).strip()
 

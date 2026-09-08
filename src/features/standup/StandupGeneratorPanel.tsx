@@ -23,7 +23,7 @@ export function StandupGeneratorPanel() {
     d.setDate(d.getDate() - 1);
     return d.toISOString().split("T")[0];
   });
-  const [showRawActivity, setShowRawActivity] = useState(true);
+  const [showRawActivity, setShowRawActivity] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
 
@@ -122,10 +122,18 @@ export function StandupGeneratorPanel() {
         </button>
 
         {showRawActivity && (
-          <div className="px-3.5 pb-3 text-xs" data-testid="raw-activity-summary">
-            <p className="text-white/80 font-mono text-[11px] bg-black/30 p-2 rounded-lg border border-white/5">
-              {summaryText}
-            </p>
+          <div className="px-3 pb-3 grid grid-cols-2 gap-1.5" data-testid="raw-activity-summary">
+            {[
+              { label: "Jobs", value: jobsCount, color: "text-cyan-400" },
+              { label: "Files", value: filesCount, color: "text-violet-400" },
+              { label: "Commits", value: commitsCount, color: "text-emerald-400" },
+              { label: "Cost", value: costSpent, color: "text-amber-400" },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="bg-black/30 rounded-lg p-2 border border-white/5 flex flex-col">
+                <span className="text-[9px] uppercase font-bold text-white/40 tracking-wider">{label}</span>
+                <span className={`text-sm font-bold font-mono ${color}`}>{value}</span>
+              </div>
+            ))}
           </div>
         )}
       </div>

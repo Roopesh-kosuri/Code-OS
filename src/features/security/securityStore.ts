@@ -12,6 +12,7 @@ export interface Vulnerability {
   code_snippet?: string;
   patch_diff?: string;
   explanation?: string;
+  workspace?: string;
 }
 
 export interface DependencyIssue {
@@ -96,13 +97,15 @@ export const useSecurityStore = create<SecurityState>((set, get) => ({
 
     set({ activeFixId: vulnerabilityId });
     try {
+      // Fall back to workspace embedded in vuln object by the scanner
+      const effectiveWorkspace = workspace || vuln.workspace;
       const res = await api.post<{
         patch_diff: string;
         explanation: string;
       }>("/api/security/generate-fix", {
         vulnerability_id: vulnerabilityId,
-        vulnerability: vuln,
-        workspace,
+        vulnerability: { ...vuln, workspace: effectiveWorkspace },
+        workspace: effectiveWorkspace,
       });
 
       set((state) => ({

@@ -141,12 +141,31 @@ export function SemanticSearchPanel() {
       <div className="flex-1 overflow-y-auto divide-y divide-white/5 p-2 space-y-2">
         {searchResults.length === 0 ? (
           <div className="flex flex-col items-center justify-center p-8 text-center text-slate-500 space-y-2">
-            <Sparkles size={24} className="text-slate-600 mb-1" />
-            <span className="text-xs">
-              {searchQuery.trim()
-                ? "No matching code chunks found for this query."
-                : "Ask questions to search codebase semantics using local vector embeddings."}
-            </span>
+            {indexStatus.indexed_files === 0 ? (
+              <>
+                <Database size={24} className="text-slate-600 mb-1" />
+                <span className="text-xs text-slate-400 font-medium">Knowledge Base not indexed</span>
+                <span className="text-[11px] text-slate-500 max-w-[180px] leading-relaxed">
+                  Click <span className="text-primary font-semibold">Index Workspace</span> above to scan your files and enable semantic search.
+                </span>
+                <button
+                  onClick={handleIndex}
+                  disabled={isIndexing || !wsPath}
+                  className="mt-2 px-3 py-1.5 text-xs rounded-lg bg-primary/20 hover:bg-primary/30 border border-primary/40 text-primary font-semibold transition-colors disabled:opacity-40 cursor-pointer"
+                >
+                  {isIndexing ? "Indexing..." : "Index Workspace Now"}
+                </button>
+              </>
+            ) : (
+              <>
+                <Sparkles size={24} className="text-slate-600 mb-1" />
+                <span className="text-xs">
+                  {searchQuery.trim()
+                    ? "No matching code chunks found for this query."
+                    : "Ask questions to search codebase semantics using local vector embeddings."}
+                </span>
+              </>
+            )}
           </div>
         ) : (
           searchResults.map((result: RAGChunkResult, idx: number) => {

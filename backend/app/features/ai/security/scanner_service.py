@@ -209,12 +209,18 @@ def scan_python_with_bandit(workspace_path: Path) -> List[Dict[str, Any]]:
     if not valid_py_files:
         return vulnerabilities
 
-    try:
-        # Run bandit via subprocess
-        cmd = ["py", "-m", "bandit", "-r", str(workspace_path), "-f", "json", "-x", "**/venv/**,**/.venv/**,**/node_modules/**"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        output = proc.stdout
-        if output:
+    # Try bandit directly, then python -m bandit, then py -m bandit (Windows)
+    bandit_cmds = [
+        ["bandit", "-r", str(workspace_path), "-f", "json", "-x", "**/venv/**,**/.venv/**,**/node_modules/**"],
+        ["python", "-m", "bandit", "-r", str(workspace_path), "-f", "json", "-x", "**/venv/**,**/.venv/**,**/node_modules/**"],
+        ["py", "-m", "bandit", "-r", str(workspace_path), "-f", "json", "-x", "**/venv/**,**/.venv/**,**/node_modules/**"],
+    ]
+    for cmd in bandit_cmds:
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            output = proc.stdout
+            if not output:
+                continue
             data = json.loads(output)
             results = data.get("results", [])
             for res in results:
@@ -229,8 +235,6 @@ def scan_python_with_bandit(workspace_path: Path) -> List[Dict[str, Any]]:
                 test_id = str(res.get("test_id", ""))
                 if "sql" in issue_txt or test_id == "B608":
                     sev = "Critical"
-                elif sev == "High":
-                    sev = "High"
 
                 vulnerabilities.append({
                     "id": str(uuid.uuid4()),
@@ -241,9 +245,14 @@ def scan_python_with_bandit(workspace_path: Path) -> List[Dict[str, Any]]:
                     "description": res.get("issue_text", "Bandit security finding"),
                     "code_snippet": res.get("code", "").strip(),
                     "status": "open",
+                    "workspace": str(workspace_path),
                 })
-    except Exception as exc:
-        logger.debug("Bandit scan completed with note: %s", exc)
+            break  # Success — stop trying other commands
+        except FileNotFoundError:
+            continue  # Command not found, try next
+        except Exception as exc:
+            logger.debug("Bandit scan note (%s): %s", cmd[0], exc)
+            break
 
     return vulnerabilities
 
@@ -380,6 +389,8 @@ def scan_workspace(workspace: str) -> Dict[str, Any]:
                     key = (finding["file"], finding["line"])
                     if key not in seen_locations:
                         seen_locations.add(key)
+                        # Add workspace context for fix generation
+                        finding["workspace"] = str(ws_path)
                         all_vulnerabilities.append(finding)
 
     # 3. Dependency scanning
