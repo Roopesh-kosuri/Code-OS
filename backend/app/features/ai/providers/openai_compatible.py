@@ -41,14 +41,27 @@ REASONING_EFFORT_MODELS = (
 )
 
 
+# NVIDIA NIM models that explicitly support reasoning_effort
+_NIM_REASONING_MODELS = (
+    "kimi-k3",
+    "kimi-k2",
+    "deepseek-r1",
+    "deepseek-r1-distill",
+    "qwq-32b",
+    "qwq",
+    "llama-3.1-nemotron-70b-instruct",
+)
+
+
 def supports_reasoning_effort(provider_id: str, model_name: str) -> bool:
     """Return True only if the provider and model strictly accept OpenAI reasoning_effort."""
-    if provider_id in (
-        "nvidia-nim", "nvidia", "gemini", "mistral", "anthropic", "ollama", "local",
-        "moonshot", "glm", "qwen",
-    ):
-        return False
     m = model_name.lower()
+    # NVIDIA NIM: only specific reasoning models support it
+    if provider_id in ("nvidia-nim", "nvidia"):
+        return any(r in m for r in _NIM_REASONING_MODELS)
+    # These providers never support it
+    if provider_id in ("gemini", "mistral", "anthropic", "ollama", "local", "moonshot", "glm", "qwen"):
+        return False
     return any(supported in m for supported in REASONING_EFFORT_MODELS)
 
 
@@ -128,8 +141,11 @@ class OpenAICompatibleProvider(AIProvider):
 
         emitted = False
         max_attempts = 8 if self.id == "groq" else 3
-        # Per-chunk idle read timeout (35.0s) so hung/cold-starting endpoints fail-fast to recovery
-        idle_read_timeout = 35.0
+        # NIM reasoning models (kimi-k3, deepseek-r1) can take 60-90s before first token
+        _is_nim_reasoning = self.id in ("nvidia-nim", "nvidia") and any(
+            r in model.lower() for r in ("kimi-k3", "kimi-k2", "deepseek-r1", "qwq")
+        )
+        idle_read_timeout = 90.0 if _is_nim_reasoning else 35.0
 
         for attempt in range(max_attempts):
             try:

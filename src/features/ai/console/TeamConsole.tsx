@@ -21,8 +21,6 @@ import { AgentRoster } from "./AgentRoster";
 import { DAGBoard } from "./DAGBoard";
 import { TeamChatPanel } from "./TeamChatPanel";
 import { useWorkspaceStore } from "../../../stores/workspaceStore";
-import { FileUploadZone } from "../../files/FileUploadZone";
-import { FilePreviewModal } from "../../files/FilePreviewModal";
 
 export const TeamConsole: React.FC = () => {
   const currentWorkspace = useWorkspaceStore((state) => state.currentWorkspace);
@@ -400,27 +398,30 @@ export const TeamConsole: React.FC = () => {
               </div>
             </div>
 
-            {/* File Upload Zone */}
-            <FileUploadZone compact workspace={currentWorkspace?.path} />
-
             {/* Prompt Textarea + Action Row */}
-            <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-end">
-              <div className="flex-1 flex flex-col min-w-0">
-                <textarea
-                  value={instruction}
-                  onChange={(e) => setInstruction(e.target.value)}
-                  placeholder="Describe your large project or high-stakes feature (e.g. Build an authentication service with JWT and SQLite, write unit tests, verify build)..."
-                  rows={2}
-                  disabled={submitting}
-                  className="w-full bg-surface-container-lowest border border-white/10 rounded-lg p-2.5 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary-container focus:outline-none font-mono resize-none"
-                />
-              </div>
+            <div className="flex flex-col gap-2">
+              <textarea
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add("border-primary-container"); }}
+                onDragLeave={(e) => e.currentTarget.classList.remove("border-primary-container")}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.classList.remove("border-primary-container");
+                  const text = e.dataTransfer.getData("text");
+                  if (text) setInstruction((prev) => prev ? `${prev}\n${text}` : text);
+                }}
+                placeholder="Enter your task or drop a file here...\n\nDescribe your large project or high-stakes feature..."
+                rows={4}
+                disabled={submitting}
+                className="w-full bg-surface-container-lowest border border-white/10 rounded-lg p-2.5 text-xs text-on-surface placeholder:text-on-surface-variant/40 focus:border-primary-container focus:outline-none font-mono resize-none transition-colors"
+              />
               <button
                 onClick={handleLaunch}
                 disabled={submitting || !instruction.trim()}
-                className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-full text-xs font-ui-label-bold bg-primary-container hover:bg-primary-fixed text-on-primary disabled:opacity-50 transition-all cursor-pointer shadow-lg shadow-primary-container/20 hover:shadow-primary-container/30 shrink-0 h-fit"
+                className="flex items-center justify-center gap-2 w-full px-4 py-2 rounded-full text-xs font-ui-label-bold bg-primary-container hover:bg-primary-fixed text-on-primary disabled:opacity-50 transition-all cursor-pointer shadow-lg"
               >
-                <Play size={13} fill="currentColor" />
+                <Play size={12} fill="currentColor" />
                 <span>{submitting ? "Orchestrating..." : "Plan & Execute Team Job"}</span>
               </button>
             </div>
@@ -477,25 +478,24 @@ export const TeamConsole: React.FC = () => {
           </div>
         )}
 
-        {/* 3-Column Core Layout: Roster | DAGBoard | Comms Feed */}
-        <div className="flex-1 grid grid-cols-12 gap-4 min-h-0 overflow-hidden">
-          {/* Left Column: Agent Roster */}
-          <div className="col-span-3 min-w-0 h-full overflow-hidden">
+        {/* Core Layout: stacked for sidebar compatibility */}
+        <div className="flex-1 flex flex-col gap-3 min-h-0 overflow-y-auto">
+          {/* Agent Roster */}
+          <div className="shrink-0">
             <AgentRoster />
           </div>
 
-          {/* Center Column: Visual 2D DAG Graph */}
-          <div className="col-span-6 min-w-0 h-full overflow-hidden">
+          {/* Visual DAG Board */}
+          <div className="h-64 shrink-0">
             <DAGBoard />
           </div>
 
-          {/* Right Column: Team Comms Feed */}
-          <div className="col-span-3 min-w-0 h-full overflow-hidden">
+          {/* Team Comms Feed — fills remaining space */}
+          <div className="flex-1 min-h-[200px]">
             <TeamChatPanel />
           </div>
         </div>
       </div>
-      <FilePreviewModal />
     </div>
   );
 };

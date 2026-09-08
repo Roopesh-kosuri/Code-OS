@@ -22,8 +22,8 @@ export const RonyChatUploadWrapper: React.FC<RonyChatUploadWrapperProps> = ({ ch
 
     const updatePlaceholder = () => {
       if (!textareaEl) return;
-      if (textareaEl.placeholder !== "Enter your task...") {
-        textareaEl.placeholder = "Enter your task...";
+      if (textareaEl.placeholder !== "Enter your task or drop a file...") {
+        textareaEl.placeholder = "Enter your task or drop a file...";
       }
     };
 
@@ -175,21 +175,12 @@ export const RonyChatUploadWrapper: React.FC<RonyChatUploadWrapperProps> = ({ ch
       className="rony-chat-wrapper relative w-full h-full flex flex-col min-h-0 overflow-hidden"
       data-testid="rony-chat-wrapper"
     >
-      {/* Main Chat Panel Children */}
+      {/* Main Chat Panel Children — full height, no upload bar overhead */}
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
         {children}
       </div>
 
-      {/* Render Portal into AIChatPanel right above the textarea */}
-      {portalTarget ? (
-        ReactDOM.createPortal(uploadControls, portalTarget)
-      ) : (
-        <div className="border-t border-white/10 bg-surface-container-low shrink-0">
-          {uploadControls}
-        </div>
-      )}
-
-      {/* Global File Preview Modal */}
+      {/* File Preview Modal */}
       <FilePreviewModal />
     </div>
   );

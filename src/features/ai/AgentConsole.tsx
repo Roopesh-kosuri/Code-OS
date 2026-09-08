@@ -159,13 +159,15 @@ const AGENT_CONSOLE_MODEL_SUGGESTIONS: Record<string, { id: string; label: strin
     { id: "groq/compound", label: "compound" },
   ],
   "nvidia-nim": [
-    { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Recommended" },
-    { id: "minimaxai/minimax-01", label: "minimax-01", tag: "Flagship" },
+    { id: "moonshotai/kimi-k3", label: "kimi-k3", tag: "Recommended" },
+    { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Flagship" },
+    { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
+    { id: "qwen/qwq-32b-preview", label: "qwq-32b", tag: "Reasoning" },
     { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b" },
     { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
     { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
-    { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
     { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
+    { id: "minimaxai/minimax-01", label: "minimax-01" },
   ],
   moonshot: [
     { id: "kimi-latest", label: "kimi-latest", tag: "Recommended" },
