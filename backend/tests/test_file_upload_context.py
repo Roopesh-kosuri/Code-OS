@@ -283,3 +283,49 @@ def test_attached_reference_files_cannot_be_edited(tmp_path):
     assert "Cannot edit reference document" in err_upload
 
 
+def test_cv_upload_review_classified_tier0():
+    """Verify that document review queries with attachments route to Tier 0 Fast Answer without triggering Deep Think."""
+    from app.features.ai.harness.plan_parser import _classify_rules
+
+    # Simulated query with attached CV containing deep keywords ('architecture', 'system', 'portfolio')
+    cv_content = """<attached_files count="1">
+<file name="Roopesh_CV.pdf">
+Roopesh Kosuri - Full Stack Architect
+Designed high throughput distributed system architecture, fullstack portfolio, clone engines.
+</file>
+</attached_files>
+
+review my cv"""
+
+    tier, label, reason = _classify_rules(cv_content)
+    assert tier == 0
+    assert "document review" in reason.lower() or "fast path" in reason.lower()
+
+
+def test_document_review_turn_strips_ask_user_tool():
+    """Verify that is_review_turn logic removes ask_user from active tools."""
+    from app.features.ai.harness.tool_executor import get_tools_for_tier
+
+    attached_filenames = ["Roopesh_CV.pdf"]
+    user_query = "review my cv and give me honest feedback"
+
+    # Suppose a tier >= 1 provided tools
+    tier_tools = get_tools_for_tier(tier=1, provider="groq")
+    active_tools = list(tier_tools)
+
+    is_review_turn = bool(
+        attached_filenames and any(
+            kw in user_query.lower()
+            for kw in ("review", "feedback", "evaluate", "critique", "thoughts on", "how is my", "check my", "what do you think")
+        )
+    )
+    assert is_review_turn is True
+
+    if is_review_turn:
+        active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "ask_user"]
+
+    active_tool_names = [t.get("function", {}).get("name") for t in active_tools]
+    assert "ask_user" not in active_tool_names
+
+
+

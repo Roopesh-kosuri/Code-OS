@@ -518,8 +518,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     slim=context_overflow_retried,
                 )
                 active_tools = tier_tools + mcp_tool_defs
-                # Hard cap: if clarification limit reached, strip ask_user from active tools
-                if ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
+                # Strip ask_user when analyzing/reviewing documents or when clarification limit is reached
+                is_review_turn = bool(attached_filenames and any(kw in user_query.lower() for kw in ("review", "feedback", "evaluate", "critique", "thoughts on", "how is my", "check my", "what do you think")))
+                if ask_user_count >= MAX_CLARIFICATIONS_PER_TURN or is_review_turn:
                     active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "ask_user"]
             else:
                 active_tools = None
@@ -1492,8 +1493,16 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         if not isinstance(opts, list) or not opts:
                             opts = ["Yes, proceed", "No, cancel"]
 
+                        # Reject ask_user when user requested a review/evaluation of an attached document
+                        is_review_turn = bool(attached_filenames and any(kw in user_query.lower() for kw in ("review", "feedback", "evaluate", "critique", "thoughts on", "how is my", "check my", "what do you think")))
+                        if is_review_turn:
+                            logger.info("chat_harness: rejected ask_user during document review turn (%s)", q_text)
+                            review_err = "The user asked for your direct evaluation and review of their document. Do not quiz the user or ask for their thoughts; synthesize and deliver your complete review and feedback directly in conversational prose, then output [DONE]."
+                            yield _sse_status("tool_error", review_err, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=review_err)
+                            turn_all_tools_successful = False
                         # Check hard cap (max 2 clarifications per turn)
-                        if ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
+                        elif ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
                             logger.warning("chat_harness: ask_user hard cap reached (%d)", ask_user_count)
                             cap_err = "Clarification limit reached (maximum 2 per turn). Answer directly now with the available information and explicitly stated assumptions, then conclude with [DONE]."
                             yield _sse_status("tool_error", cap_err, tool="ask_user")

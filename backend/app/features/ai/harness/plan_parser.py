@@ -48,6 +48,15 @@ class DAGPlanStep:
 
 def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tuple[int, str, str]:
     """Pure rule-based task classifier (<1ms, no network or LLM calls)."""
+    # Strip any prepended attachment XML blocks so rules match the actual user prompt,
+    # not keywords (e.g. 'system', 'architecture', 'full stack') found inside uploaded CVs or documents.
+    original_q = q_lower
+    clean_prompt = re.sub(r'<attached_files[\s\S]*?</attached_files>', '', q_lower, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'<file[\s\S]*?</file>', '', clean_prompt, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'<untrusted_file_content[\s\S]*?</untrusted_file_content>', '', clean_prompt, flags=re.IGNORECASE)
+    q_lower = clean_prompt.strip() or q_lower.strip()
+    has_attachment = bool(attached_paths or len(clean_prompt) < len(original_q))
+
     # 1. Greetings and Conversational Inquiries (Tier 0 Fast Answer)
     greetings = (
         "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
@@ -58,6 +67,13 @@ def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tu
         return 0, "Fast Answer", "Fast path: greeting"
     if any(clean_q.startswith(g + " ") for g in greetings) and len(clean_q.split()) <= 4 and not any(v in clean_q for v in ("build", "create", "fix", "add", "run", "edit", "delete", "make")):
         return 0, "Fast Answer", "Fast path: conversational greeting"
+
+    # 1b. Document Review & Feedback Inquiries (Tier 0 Fast Answer - Conversational evaluation)
+    review_keywords = ("review", "critique", "feedback", "evaluate", "what do you think", "how is my", "check my", "inspect my", "thoughts on", "how does this look")
+    doc_targets = ("cv", "resume", "document", "spec", "pdf", "file", "profile", "bio", "report", "paper", "audit", "it", "this")
+    is_explicit_review = any(rk in clean_q for rk in review_keywords) and (any(dt in clean_q for dt in doc_targets) or has_attachment)
+    if is_explicit_review and not any(cw in clean_q for cw in ("rewrite", "edit", "modify", "code", "build", "create")):
+        return 0, "Fast Answer", "Fast path: document review / critique inquiry"
 
     # 2. Tier 2 Scope Checks (Deep Think)
     # Compound project creation with tests / readme / scaffolding
