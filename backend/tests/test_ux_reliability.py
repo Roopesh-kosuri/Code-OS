@@ -821,3 +821,46 @@ async def test_nim_kimi_payload_config():
     assert reasoning_events[0].content == "Thinking..."
 
 
+@pytest.mark.asyncio
+async def test_nim_deepseek_payload_config():
+    """S5 Regression: Verify deepseek-ai/deepseek-v4-pro-0813 on NIM receives temperature=1.0, top_p=0.95, seed=42, max_tokens=16384, and chat_template_kwargs={'thinking': False}."""
+    provider = OpenAICompatibleProvider("https://integrate.api.nvidia.com/v1", "mock_key", provider_id="nvidia-nim")
+
+    captured_payload = {}
+    mock_resp_200 = MagicMock()
+    mock_resp_200.status_code = 200
+    mock_resp_200.headers = {}
+    mock_resp_200.aiter_lines = MagicMock(return_value=_async_lines_helper([
+        'data: {"choices":[{"delta":{"content":"Hi", "reasoning_content":"Thinking..."}}]}\n',
+        'data: [DONE]\n',
+    ]))
+
+    def mock_stream(method, url, **kwargs):
+        nonlocal captured_payload
+        captured_payload = kwargs.get("json", {})
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_resp_200)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        return cm
+
+    with patch("httpx.AsyncClient.stream", side_effect=mock_stream):
+        events = []
+        async for event in provider.stream_agent(
+            model="deepseek-ai/deepseek-v4-pro-0813",
+            messages=[ChatMessage(role="user", content="Hello")],
+        ):
+            events.append(event)
+
+    assert captured_payload.get("model") == "deepseek-ai/deepseek-v4-pro-0813"
+    assert captured_payload.get("temperature") == 1.0
+    assert captured_payload.get("top_p") == 0.95
+    assert captured_payload.get("seed") == 42
+    assert captured_payload.get("max_tokens") == 16384
+    assert captured_payload.get("chat_template_kwargs") == {"thinking": False}
+    # Ensure reasoning event was yielded
+    reasoning_events = [e for e in events if e.type == "reasoning"]
+    assert len(reasoning_events) >= 1
+    assert reasoning_events[0].content == "Thinking..."
+
+
+

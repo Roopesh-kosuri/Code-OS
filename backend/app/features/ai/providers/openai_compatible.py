@@ -156,6 +156,16 @@ class OpenAICompatibleProvider(AIProvider):
             payload["temperature"] = 1.0
             payload["seed"] = 0
             payload["reasoning_effort"] = "max"
+        elif self.id in ("nvidia-nim", "nvidia") and "deepseek" in model.lower():
+            # NVIDIA NIM official specification for DeepSeek models (e.g. deepseek-ai/deepseek-v4-pro-0813):
+            # Requires temperature=1.0, top_p=0.95, seed=42, max_tokens=16384, and chat_template_kwargs
+            payload["temperature"] = 1.0
+            payload["top_p"] = 0.95
+            payload["seed"] = 42
+            if not max_tokens:
+                payload["max_tokens"] = 16384
+            is_thinking_on = bool(reasoning_effort and str(reasoning_effort).lower() not in ("none", "off", "false", "0"))
+            payload["chat_template_kwargs"] = {"thinking": is_thinking_on}
         elif reasoning_effort and supports_reasoning_effort(self.id, model):
             payload["reasoning_effort"] = reasoning_effort
         elif reasoning_effort and self.id in ("nvidia-nim", "nvidia") and any(r in model.lower() for r in ("kimi-k3", "kimi-k2", "deepseek-r1", "qwq")):
@@ -361,9 +371,9 @@ class OpenAICompatibleProvider(AIProvider):
                                     payload.pop("tools", None)
                                     payload.pop("tool_choice", None)
                                     stripped = True
-                                if any(k in payload for k in ("frequency_penalty", "presence_penalty", "top_p", "seed")):
-                                    if any(k in err_lower for k in ("penalty", "top_p", "seed", "extra_forbidden", "extra inputs")):
-                                        for k in ("frequency_penalty", "presence_penalty", "top_p", "seed"):
+                                if any(k in payload for k in ("frequency_penalty", "presence_penalty", "top_p", "seed", "chat_template_kwargs")):
+                                    if any(k in err_lower for k in ("penalty", "top_p", "seed", "chat_template", "extra_forbidden", "extra inputs")):
+                                        for k in ("frequency_penalty", "presence_penalty", "top_p", "seed", "chat_template_kwargs"):
                                             payload.pop(k, None)
                                         stripped = True
                                 if stripped and attempt < max_attempts - 1:
