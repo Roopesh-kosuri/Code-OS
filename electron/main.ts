@@ -11,7 +11,63 @@ import { validateExternalUrl } from "./utils/urlValidator.js";
 
 const backend = new BackendProcess();
 let mainWindow: BrowserWindow | null = null;
+let splashWin: BrowserWindow | null = null;
 const captureService = new CaptureService(() => mainWindow, 5178);
+
+function setSplashStatus(text: string): void {
+  if (!splashWin || splashWin.isDestroyed() || splashWin.webContents.isDestroyed()) {
+    return;
+  }
+  const safeText = JSON.stringify(text);
+  splashWin.webContents
+    .executeJavaScript(
+      `const el = document.getElementById('splash-status'); if (el) el.textContent = ${safeText};`
+    )
+    .catch(() => {});
+}
+
+function createSplashWindow(): void {
+  const iconPath = process.platform === "win32"
+    ? path.join(__dirname, "../build/icon.ico")
+    : path.join(__dirname, "../build/icon.png");
+
+  splashWin = new BrowserWindow({
+    width: 420,
+    height: 300,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    skipTaskbar: true,
+    alwaysOnTop: false,
+    show: false,
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  splashWin.setMenuBarVisibility(false);
+
+  const candidates = [
+    path.join(__dirname, "splash.html"),
+    path.join(__dirname, "../electron/splash.html"),
+    path.join(app.getAppPath(), "electron/splash.html"),
+    path.join(app.getAppPath(), "dist-electron/splash.html"),
+  ];
+  let splashPath = candidates[0];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      splashPath = p;
+      break;
+    }
+  }
+
+  void splashWin.loadFile(splashPath).catch((err) => {
+    console.error("[splash] Failed to load splash.html:", err);
+  });
+  splashWin.show();
+}
 
 function resolveAssetPath(fileName: string): string {
   if (isDev) {
@@ -94,6 +150,7 @@ async function createWindow(): Promise<void> {
     frame: false,
     titleBarStyle: "hidden",
     autoHideMenuBar: true,
+    show: false,
     icon: iconPath,
     backgroundColor: "#101215",
     webPreferences: {
@@ -412,7 +469,12 @@ ipcMain.handle("vision:capture", async (_event, req) => {
 
 app.whenReady().then(async () => {
   createMenu();
-  // Open window immediately so user sees instant startup UI
+
+  // B2: Create splashWin FIRST and display immediately
+  createSplashWindow();
+  setSplashStatus("Starting Local Engine…");
+
+  // Create mainWindow in background with show: false
   await createWindow();
 
   // Start backend and capture service asynchronously
@@ -425,6 +487,64 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.warn("[app] Capture service failed to start:", err);
   }
+
+  // B3: HANDOFF (the magic transition)
+  let handedOff = false;
+  const doHandoff = async () => {
+    if (handedOff) return;
+    handedOff = true;
+
+    if (splashWin && !splashWin.isDestroyed()) {
+      try {
+        await splashWin.webContents.executeJavaScript(
+          "document.body.classList.add('fade-out');"
+        ).catch(() => {});
+      } catch {}
+
+      setTimeout(() => {
+        if (splashWin && !splashWin.isDestroyed()) {
+          splashWin.close();
+          splashWin = null;
+        }
+      }, 250);
+    } else {
+      splashWin = null;
+    }
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  };
+
+  // TIMEOUT FALLBACK: if backend not healthy within 30s, close splash and show mainWindow anyway
+  const fallbackTimer = setTimeout(() => {
+    console.warn("[main] Backend startup fallback triggered after 30s; showing main window");
+    void doHandoff();
+  }, 30_000);
+
+  // Poll backend for health + captured session token
+  void (async () => {
+    const startTime = Date.now();
+    while (!handedOff && Date.now() - startTime < 30_000) {
+      const elapsed = Date.now() - startTime;
+      if (elapsed > 2000 && elapsed < 6000) {
+        setSplashStatus("Connecting to backend…");
+      } else if (elapsed >= 6000) {
+        setSplashStatus("Loading AI models…");
+      }
+
+      const healthy = await backend.isBackendHealthy();
+      const hasToken = !!backend.sessionToken;
+
+      if (healthy && hasToken) {
+        clearTimeout(fallbackTimer);
+        await doHandoff();
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  })();
 });
 
 

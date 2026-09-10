@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { api } from "../lib/api";
 
 export type BackendConnectionStatus = "connected" | "connecting" | "disconnected";
+export type BootPhase = "booting" | "ready" | "failed";
 
 export interface BackendFreshness {
   boot_timestamp: number;
@@ -14,6 +15,8 @@ export interface BackendFreshness {
 
 type BackendState = {
   status: BackendConnectionStatus;
+  bootPhase: BootPhase;
+  bootStartTime: number;
   retryCount: number;
   nextRetryInSeconds: number;
   errorMessage: string | null;
@@ -25,17 +28,22 @@ type BackendState = {
   recordFailure: (err?: unknown) => void;
   recordSuccess: () => void;
   retryNow: () => Promise<void>;
+  setBootPhase: (phase: BootPhase) => void;
 };
 
 let _retryCountdownTimer: number | null = null;
 
 export const useBackendStore = create<BackendState>((set, get) => ({
   status: "connecting",
+  bootPhase: "booting",
+  bootStartTime: Date.now(),
   retryCount: 0,
   nextRetryInSeconds: 0,
   errorMessage: null,
   lastChecked: null,
   freshness: null,
+
+  setBootPhase: (phase: BootPhase) => set({ bootPhase: phase }),
 
   recordSuccess: () => {
     if (_retryCountdownTimer) {
@@ -44,6 +52,7 @@ export const useBackendStore = create<BackendState>((set, get) => ({
     }
     set({
       status: "connected",
+      bootPhase: "ready",
       retryCount: 0,
       nextRetryInSeconds: 0,
       errorMessage: null,
@@ -61,8 +70,19 @@ export const useBackendStore = create<BackendState>((set, get) => ({
       clearInterval(_retryCountdownTimer);
     }
 
+    const elapsed = Date.now() - current.bootStartTime;
+    const isBootGraceExpired = elapsed >= 15_000;
+    const isMaxBootRetries = nextCount >= 3;
+    let nextBootPhase = current.bootPhase;
+    if (current.bootPhase === "booting") {
+      if (isBootGraceExpired || isMaxBootRetries) {
+        nextBootPhase = "failed";
+      }
+    }
+
     set({
       status: "disconnected",
+      bootPhase: nextBootPhase,
       retryCount: nextCount,
       nextRetryInSeconds: delay,
       errorMessage: err instanceof Error ? err.message : "Backend not running",

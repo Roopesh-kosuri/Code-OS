@@ -6,9 +6,34 @@ import { app, dialog } from "electron";
 
 const isDev = !app.isPackaged;
 
+export interface BackendSpawnOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  windowsHide: boolean;
+  stdio: ["ignore", "pipe", "pipe"];
+  creationFlags?: number;
+}
+
+export function buildSpawnOptions(
+  platform: string = process.platform,
+  env?: NodeJS.ProcessEnv,
+  cwd?: string
+): BackendSpawnOptions {
+  const options: BackendSpawnOptions = {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  };
+  if (cwd) options.cwd = cwd;
+  if (env) options.env = env;
+  if (platform === "win32") {
+    options.creationFlags = 0x08000000;
+  }
+  return options;
+}
+
 function getPythonVersion(cmd: string): string | null {
   try {
-    const output = execSync(`${cmd} --version`, { stdio: "pipe" }).toString().trim();
+    const output = execSync(`${cmd} --version`, { stdio: "pipe", windowsHide: true }).toString().trim();
     const match = output.match(/Python\s+([0-9\.]+)/i);
     if (match && match[1]) return match[1];
   } catch { /* not found */ }
@@ -243,8 +268,9 @@ export class BackendProcess {
   }
 
   private async _spawnProcess(cmd: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
+    const spawnOpts = buildSpawnOptions(process.platform, options.env, options.cwd);
     try {
-      this.process = spawn(cmd, args, options) as ChildProcessWithoutNullStreams;
+      this.process = spawn(cmd, args, spawnOpts as any) as ChildProcessWithoutNullStreams;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.lastError = `Failed to spawn backend process: ${msg}`;
@@ -277,14 +303,26 @@ export class BackendProcess {
     });
   }
 
-  private async isBackendHealthy(): Promise<boolean> {
+  async isBackendHealthy(): Promise<boolean> {
     try { return (await fetch("http://127.0.0.1:8000/health", { signal: AbortSignal.timeout(800) })).ok; }
     catch { return false; }
   }
 
   stop(): void {
     if (!this.process) return;
-    this.process.kill();
+    try {
+      this.process.kill("SIGTERM");
+      const proc = this.process;
+      setTimeout(() => {
+        try {
+          if (proc && !proc.killed) {
+            proc.kill("SIGKILL");
+          }
+        } catch {}
+      }, 3000);
+    } catch {
+      this.process.kill();
+    }
     this.process = null;
   }
 }

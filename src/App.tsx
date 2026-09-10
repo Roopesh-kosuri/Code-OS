@@ -9,15 +9,68 @@ import { useWorkspaceStore } from "./stores/workspaceStore";
 
 import { useBackendStore } from "./stores/backendStore";
 
+function BootOverlay() {
+  const bootPhase = useBackendStore((s) => s.bootPhase);
+  const [visible, setVisible] = useState(bootPhase === "booting");
+  const [fading, setFading] = useState(false);
+
+  useEffect(() => {
+    if (bootPhase === "ready" || bootPhase === "failed") {
+      setFading(true);
+      const timer = setTimeout(() => {
+        setVisible(false);
+      }, 300);
+      return () => clearTimeout(timer);
+    } else if (bootPhase === "booting") {
+      setVisible(true);
+      setFading(false);
+    }
+  }, [bootPhase]);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      data-testid="boot-overlay"
+      className={`fixed inset-0 z-[100000] bg-[#0a0a0f] flex flex-col items-center justify-center select-none transition-opacity duration-300 pointer-events-none ${
+        fading ? "opacity-0" : "opacity-100"
+      }`}
+    >
+      <div className="relative flex items-center justify-center mb-6">
+        <div className="absolute w-20 h-20 rounded-full border border-cyan-500/40 animate-ping opacity-75" />
+        <div className="w-16 h-16 rounded-2xl bg-cyan-950/40 border border-cyan-500/30 flex items-center justify-center shadow-[0_0_25px_rgba(6,182,212,0.25)]">
+          <svg className="w-8 h-8 text-cyan-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="4 17 10 11 4 5" />
+            <line x1="12" y1="19" x2="20" y2="19" />
+          </svg>
+        </div>
+      </div>
+      <h1 className="text-xl font-bold tracking-widest text-slate-100 font-mono mb-2">CODE OS</h1>
+      <div className="flex items-center gap-2 text-xs text-cyan-300/80 font-mono">
+        <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+        <span>Initializing workspace…</span>
+      </div>
+    </div>
+  );
+}
+
 function BackendStatusBanner() {
   const status = useBackendStore((s) => s.status);
+  const bootPhase = useBackendStore((s) => s.bootPhase);
   const nextRetryInSeconds = useBackendStore((s) => s.nextRetryInSeconds);
   const retryNow = useBackendStore((s) => s.retryNow);
 
-  if (status === "connected") return null;
+  // Red banner renders ONLY when bootPhase === 'failed' OR disconnected AFTER ready
+  const shouldShow =
+    bootPhase === "failed" || (bootPhase === "ready" && status === "disconnected");
+
+  if (!shouldShow) return null;
 
   return (
-    <div className="bg-[#1c1014] border-b border-rose-500/40 text-rose-200 px-4 py-2 text-xs flex items-center justify-between z-[9999] relative shadow-md backdrop-blur-md">
+    <div
+      data-testid="backend-offline-banner"
+      className="bg-[#1c1014] border-b border-rose-500/40 text-rose-200 px-4 py-2 text-xs flex items-center justify-between z-[9999] relative shadow-md backdrop-blur-md"
+    >
       <div className="flex items-center gap-2">
         <span className="inline-block w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
         <span className="font-semibold text-rose-300">Backend not running:</span>
@@ -276,6 +329,7 @@ export function App() {
 
   return (
     <>
+      <BootOverlay />
       <BackendStatusBanner />
       <BackendFreshnessBanner />
       <AppShell backendDown={backendDown} />

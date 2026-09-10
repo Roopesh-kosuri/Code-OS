@@ -34,7 +34,7 @@
     "build:linux": "npm run build && electron-builder --linux",
     "build:all": "npm run build && electron-builder -mwl",
     "package": "npm run build && node scripts/preflight.js && electron-builder",
-    "build:electron": "tsc -p electron/tsconfig.json && node -e \"require('fs').writeFileSync('dist-electron/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\"",
+    "build:electron": "tsc -p electron/tsconfig.json && node -e \"require('fs').copyFileSync('electron/splash.html', 'dist-electron/splash.html'); require('fs').writeFileSync('dist-electron/package.json', '{\\\"type\\\":\\\"commonjs\\\"}')\"",
     "typecheck": "tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1",
     "postinstall": "electron-builder install-app-deps",

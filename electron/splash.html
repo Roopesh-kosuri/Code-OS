@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CODE OS</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    html, body {
+      width: 420px;
+      height: 300px;
+      overflow: hidden;
+      background: #0a0a0f;
+    }
+    body {
+      background-color: #0a0a0f;
+      color: #f1f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: space-between;
+      padding: 38px 24px 22px;
+      transition: opacity 0.25s ease-out;
+      border: 1px solid rgba(6, 182, 212, 0.2);
+      border-radius: 12px;
+    }
+    body.fade-out {
+      opacity: 0;
+    }
+    .main-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+    }
+    .logo-container {
+      position: relative;
+      width: 64px;
+      height: 64px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .pulsing-ring {
+      position: absolute;
+      top: -6px;
+      left: -6px;
+      right: -6px;
+      bottom: -6px;
+      border: 2px solid #06b6d4;
+      border-radius: 50%;
+      animation: pulse-ring 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+    @keyframes pulse-ring {
+      0% {
+        transform: scale(0.85);
+        opacity: 0.8;
+      }
+      50% {
+        transform: scale(1.18);
+        opacity: 0.15;
+      }
+      100% {
+        transform: scale(0.85);
+        opacity: 0.8;
+      }
+    }
+    .icon-badge {
+      width: 56px;
+      height: 56px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, rgba(6, 182, 212, 0.18), rgba(8, 145, 178, 0.06));
+      border: 1px solid rgba(6, 182, 212, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 24px rgba(6, 182, 212, 0.25);
+    }
+    .icon-badge svg {
+      width: 28px;
+      height: 28px;
+      color: #06b6d4;
+    }
+    .wordmark {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      color: #f8fafc;
+      margin-bottom: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .status-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #94a3b8;
+      min-height: 18px;
+    }
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      background-color: #06b6d4;
+      border-radius: 50%;
+      animation: pulse-dot 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 0.4; transform: scale(0.9); }
+      50% { opacity: 1; transform: scale(1.1); }
+    }
+    #splash-status {
+      letter-spacing: 0.02em;
+    }
+    .footer {
+      font-size: 10px;
+      color: #475569;
+      letter-spacing: 0.05em;
+      text-transform: lowercase;
+    }
+  </style>
+</head>
+<body>
+  <div class="main-content">
+    <div class="logo-container">
+      <div class="pulsing-ring"></div>
+      <div class="icon-badge">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4 17 10 11 4 5"></polyline>
+          <line x1="12" y1="19" x2="20" y2="19"></line>
+        </svg>
+      </div>
+    </div>
+    <div class="wordmark">CODE OS</div>
+    <div class="status-container">
+      <div class="status-dot"></div>
+      <span id="splash-status">Starting Local Engine…</span>
+    </div>
+  </div>
+  <div class="footer">local-first · your code never leaves</div>
+</body>
+</html>
