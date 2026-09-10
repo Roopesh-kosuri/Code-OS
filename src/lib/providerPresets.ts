@@ -179,8 +179,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://integrate.api.nvidia.com/v1",
     api_key_provider: "nvidia-nim",
-    model_placeholder: "minimaxai/minimax-m3, meta/llama-3.1-70b-instruct...",
-    model_example: "minimaxai/minimax-m3",
+    model_placeholder: "meta/llama-3.2-11b-vision-instruct, meta/llama-3.2-90b-vision-instruct...",
+    model_example: "meta/llama-3.2-11b-vision-instruct",
     api_key_prefix: "nvapi-",
     note:
       "NVIDIA NIM hosts accelerated open-weight models on NVIDIA GPU infrastructure.",
@@ -203,8 +203,8 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: "openai-compatible",
     base_url: "https://api.groq.com/openai/v1",
     api_key_provider: "groq",
-    model_placeholder: "llama-3.3-70b-versatile, llama-3.1-8b-instruct...",
-    model_example: "llama-3.3-70b-versatile",
+    model_placeholder: "llama-3.1-8b-instant, openai/gpt-oss-120b...",
+    model_example: "llama-3.1-8b-instant",
     group: "api",
   },
   {

@@ -67,16 +67,16 @@ def test_route_model_fallback_on_unavailable():
     """Verify router falls back within tier or downgrades/cascades when providers are filtered."""
     reset_model_tiers_to_default()
 
-    # 1. Fallback within same tier: GLM is excluded, Anthropic should be chosen for HARD
+    # 1. Fallback within same tier: Anthropic should be chosen for HARD when available
     route1 = route_model("HARD", available_providers=["anthropic", "openai"])
     assert route1["tier"] == "HARD"
     assert route1["provider"] == "anthropic"
-    assert route1["model"] == "claude-opus-5"
+    assert route1["model"] == "claude-sonnet-4-5"
 
     # 2. Fallback to adjacent tier: None of the HARD providers available, only Google is available
     route2 = route_model("HARD", available_providers=["google"])
-    assert route2["provider"] == "google"
-    assert route2["model"] == "gemini-3.1-pro"
+    assert route2["provider"] in ("google", "gemini")
+    assert route2["model"] == "gemini-2.5-flash"
     assert route2["tier"] == "MEDIUM"
 
 

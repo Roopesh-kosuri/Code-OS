@@ -71,7 +71,7 @@ describe("Smart Model Router Frontend Tests", () => {
         "task-crypto-1": {
           difficulty: "HARD",
           confidence: 0.95,
-          assigned_model: "glm-5.2",
+          assigned_model: "claude-sonnet-4-5",
           tier: "HARD",
         },
       },
@@ -85,7 +85,7 @@ describe("Smart Model Router Frontend Tests", () => {
 
     const assignedModelEl = screen.getByTestId("task-assigned-model-task-crypto-1");
     expect(assignedModelEl).toBeDefined();
-    expect(assignedModelEl.textContent).toContain("glm-5.2");
+    expect(assignedModelEl.textContent).toContain("claude-sonnet-4-5");
   });
 
   // ── Test 3: Assigned model shows in roster card ─────────────────────────────
@@ -97,10 +97,10 @@ describe("Smart Model Router Frontend Tests", () => {
 
     render(<AgentRoster />);
 
-    // Check architect card has GLM 5.2 (HARD)
+    // Check architect card has Claude Sonnet 4.5 (HARD)
     const architectTier = screen.getByTestId("smart-router-tier-architect");
     expect(architectTier).toBeDefined();
-    expect(architectTier.textContent).toContain("GLM 5.2 (HARD)");
+    expect(architectTier.textContent).toContain("Claude Sonnet 4.5 (HARD)");
 
     // Check tester card has Groq (EASY)
     const testerTier = screen.getByTestId("smart-router-tier-tester");
@@ -112,9 +112,9 @@ describe("Smart Model Router Frontend Tests", () => {
   it("test_smart_router_settings_modal_opens: opens settings panel when Tiers button is clicked", async () => {
     (api.get as any).mockResolvedValueOnce({
       tiers: {
-        HARD: { name: "Tier 1", model: "glm-5.2", provider: "zai" },
-        MEDIUM: { name: "Tier 2", model: "claude-sonnet-4", provider: "anthropic" },
-        EASY: { name: "Tier 3", model: "llama-3.1-8b-instant", provider: "groq" },
+        HARD: { name: "Tier 1", model: "claude-sonnet-4-5", provider: "anthropic" },
+        MEDIUM: { name: "Tier 2", model: "deepseek-chat", provider: "deepseek" },
+        EASY: { name: "Tier 3", model: "openai/gpt-oss-120b", provider: "groq" },
       },
       task_counts: { HARD: 5, MEDIUM: 10, EASY: 25 },
       cost_savings: { estimated_dollars: 12.45, pct_reduction: 68 },

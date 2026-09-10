@@ -11,6 +11,7 @@ from .model_router import (
     update_model_tiers,
     reset_model_tiers_to_default,
     route_model,
+    get_last_routing_decision,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,3 +77,9 @@ async def reset_tiers() -> dict[str, Any]:
     """Reset active model tiers configuration to defaults."""
     res = reset_model_tiers_to_default()
     return {"tiers": res, "message": "Model tiers reset to default"}
+
+
+@router.get("/last-decision")
+async def get_last_decision_route() -> dict[str, Any]:
+    """Retrieve the most recent routing decision, including tier, model, skips, and reason."""
+    return get_last_routing_decision()

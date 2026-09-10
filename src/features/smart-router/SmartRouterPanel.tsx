@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X, Cpu, RotateCcw, Edit3, Check, Plus, Trash2, Sparkles, Shield, Zap, TrendingDown, DollarSign, Search } from "lucide-react";
+import { X, Cpu, RotateCcw, Edit3, Check, Plus, Trash2, Sparkles, Shield, Zap, TrendingDown, DollarSign, Search, ArrowRight } from "lucide-react";
 import { api } from "../../lib/api";
 
 export interface ModelTiersConfig {
@@ -9,9 +9,20 @@ export interface ModelTiersConfig {
 }
 
 const DEFAULT_TIERS: ModelTiersConfig = {
-  HARD: ["glm/glm-5.2", "anthropic/claude-opus-5", "openai/gpt-5.6"],
-  MEDIUM: ["anthropic/claude-sonnet-5", "openai/gpt-5", "google/gemini-3.1-pro", "deepseek/deepseek-v3"],
-  EASY: ["groq/llama-3.3-70b", "google/gemini-3.5-flash", "glm/glm-air", "ollama/local"],
+  HARD: [
+    "anthropic/claude-sonnet-4-5",
+    "openai/gpt-4o",
+    "nvidia-nim/meta/llama-3.2-11b-vision-instruct",
+  ],
+  MEDIUM: [
+    "deepseek/deepseek-chat",
+    "mistral/mistral-large-latest",
+    "gemini/gemini-2.5-flash",
+  ],
+  EASY: [
+    "groq/openai/gpt-oss-120b",
+    "gemini/gemini-2.5-flash",
+  ],
 };
 
 interface CostSavings {
@@ -25,6 +36,16 @@ interface TaskCounts {
   EASY: number;
 }
 
+interface RoutingDecision {
+  provider: string;
+  model: string;
+  tier: string;
+  requested_tier: string;
+  fallback_models?: string[];
+  skipped?: Array<{ model: string; reason: string }>;
+  reason?: string;
+}
+
 interface SmartRouterPanelProps {
   isOpen: boolean;
   onClose: () => void;
@@ -36,6 +57,7 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
   const [tierEditText, setTierEditText] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [lastDecision, setLastDecision] = useState<RoutingDecision | null>(null);
 
   // Cost Savings & Task Distribution Telemetry
   const [costSavings, setCostSavings] = useState<CostSavings>({
@@ -61,6 +83,7 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
   useEffect(() => {
     if (!isOpen) return;
     fetchTiers();
+    fetchLastDecision();
   }, [isOpen]);
 
   const fetchTiers = async () => {
@@ -86,10 +109,20 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
         if (res.task_counts) setTaskCounts(res.task_counts);
       }
     } catch {
-      // Fall back to default tiers if server endpoint unreachable
       setTiers(DEFAULT_TIERS);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchLastDecision = async () => {
+    try {
+      const res = await api.get<RoutingDecision>("/api/smart-router/last-decision");
+      if (res && res.provider) {
+        setLastDecision(res);
+      }
+    } catch {
+      // Soft ignore
     }
   };
 
@@ -149,7 +182,13 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
         setTestResult({
           difficulty: res.difficulty || "MEDIUM",
           confidence: res.confidence || 0.85,
-          assigned_model: res.suggested_route?.model || (res.difficulty === "HARD" ? "glm-5.2" : res.difficulty === "EASY" ? "groq/llama-3.1-8b" : "claude-sonnet-5"),
+          assigned_model:
+            res.suggested_route?.model ||
+            (res.difficulty === "HARD"
+              ? "claude-sonnet-4-5"
+              : res.difficulty === "EASY"
+              ? "openai/gpt-oss-120b"
+              : "deepseek-chat"),
           reasons: res.reasons || [],
         });
       }
@@ -157,13 +196,13 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
       // Local fallback classification
       const lower = testPrompt.toLowerCase();
       let diff = "MEDIUM";
-      let model = "claude-sonnet-5";
+      let model = "deepseek-chat";
       if (lower.includes("crypto") || lower.includes("auth") || lower.includes("security") || lower.includes("architect")) {
         diff = "HARD";
-        model = "glm-5.2";
+        model = "claude-sonnet-4-5";
       } else if (lower.includes("test") || lower.includes("doc") || lower.includes("readme") || lower.includes("typo")) {
         diff = "EASY";
-        model = "groq/llama-3.1-8b";
+        model = "openai/gpt-oss-120b";
       }
       setTestResult({
         difficulty: diff,
@@ -188,7 +227,7 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
       border: "border-rose-500/30",
       bg: "bg-rose-950/15",
       icon: <Shield size={14} className="text-rose-400" />,
-      desc: "For security, cryptography, complex algorithms, compilers, and architecture (GLM 5.2, Claude Opus 5, GPT-5.6)",
+      desc: "For security, cryptography, complex algorithms, and architecture (Claude Sonnet 4.5, GPT-4o, NVIDIA Llama 3.2 Vision)",
     },
     MEDIUM: {
       label: "Tier 2 — MEDIUM Tasks",
@@ -196,7 +235,7 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
       border: "border-amber-500/30",
       bg: "bg-amber-950/15",
       icon: <Cpu size={14} className="text-amber-400" />,
-      desc: "For components, APIs, database schemas, and standard full-stack features (Claude Sonnet 5, GPT-5, Gemini 3.1 Pro, DeepSeek V3)",
+      desc: "For components, APIs, database schemas, and standard features (DeepSeek V3, Mistral Large, Gemini 2.5 Flash)",
     },
     EASY: {
       label: "Tier 3 — EASY Tasks",
@@ -204,7 +243,7 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
       border: "border-emerald-500/30",
       bg: "bg-emerald-950/15",
       icon: <Zap size={14} className="text-emerald-400" />,
-      desc: "For unit tests, documentation, boilerplate, configuration, and scaffolding (Groq Llama 3.3 70B, Gemini 3.5 Flash, GLM Air, Ollama)",
+      desc: "For unit tests, documentation, boilerplate, and scaffolding (Groq GPT-OSS 120B, Gemini 2.5 Flash)",
     },
   };
 
@@ -224,11 +263,11 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
               <h2 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
                 Smart Model Router Configuration
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-primary/20 text-primary border border-primary/30">
-                  Dynamic Routing
+                  Catalog Verified
                 </span>
               </h2>
               <p className="text-[11px] text-on-surface-variant">
-                Intelligently split tasks across LLM tiers by code complexity & difficulty
+                Intelligently split tasks across verified LLM tiers by code complexity & difficulty
               </p>
             </div>
           </div>
@@ -248,6 +287,32 @@ export const SmartRouterPanel: React.FC<SmartRouterPanelProps> = ({ isOpen, onCl
             <div className="px-3 py-2 rounded-lg bg-primary/10 border border-primary/30 text-primary text-xs font-mono flex items-center gap-2">
               <Check size={14} />
               <span>{saveStatus}</span>
+            </div>
+          )}
+
+          {/* Last Routing Decision & Fallback Badge */}
+          {lastDecision && (
+            <div
+              data-testid="last-routing-decision-banner"
+              className="p-3 rounded-xl bg-surface-container-low border border-white/10 text-xs font-mono flex items-center justify-between gap-3"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-on-surface-variant text-[11px]">Last Route Decision:</span>
+                <span className="px-2 py-0.5 rounded bg-primary/20 text-primary border border-primary/30 text-[10px] font-bold">
+                  {lastDecision.requested_tier} → {lastDecision.tier}
+                </span>
+                <span className="text-white font-bold text-[11px]">
+                  {lastDecision.provider}/{lastDecision.model}
+                </span>
+              </div>
+              {lastDecision.reason && (
+                <span
+                  className="text-[10px] text-on-surface-variant/80 truncate max-w-xs"
+                  title={lastDecision.reason}
+                >
+                  {lastDecision.reason}
+                </span>
+              )}
             </div>
           )}
 

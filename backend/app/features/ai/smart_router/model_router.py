@@ -3,26 +3,25 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional
 
+from ..providers.catalog import get_verified_models
+
 logger = logging.getLogger(__name__)
 
-# Default Model Tiers as specified
+# Default Model Tiers with verified presets only
 DEFAULT_MODEL_TIERS: dict[str, list[str]] = {
     "HARD": [
-        "glm/glm-5.2",
-        "anthropic/claude-opus-5",
-        "openai/gpt-5.6",
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-4o",
+        "nvidia-nim/meta/llama-3.2-11b-vision-instruct",
     ],
     "MEDIUM": [
-        "anthropic/claude-sonnet-5",
-        "openai/gpt-5",
-        "google/gemini-3.1-pro",
-        "nvidia/llama-3.3-70b",
+        "deepseek/deepseek-chat",
+        "mistral/mistral-large-latest",
+        "gemini/gemini-2.5-flash",
     ],
     "EASY": [
-        "groq/llama-3.3-70b",
-        "google/gemini-3.5-flash",
-        "glm/glm-air",
-        "groq/llama-3.1-8b",
+        "groq/openai/gpt-oss-120b",
+        "gemini/gemini-2.5-flash",
     ],
 }
 
@@ -32,6 +31,27 @@ MODEL_TIERS: dict[str, list[str]] = {
 }
 
 TIER_ORDER = ["HARD", "MEDIUM", "EASY"]
+
+# Global store for the most recent routing decision
+LAST_ROUTING_DECISION: dict[str, Any] = {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "tier": "HARD",
+    "requested_tier": "HARD",
+    "fallback_models": [],
+    "skipped": [],
+    "reason": "Default initialized",
+}
+
+
+def _normalize_provider(prov: str) -> str:
+    """Normalize provider name across aliases."""
+    p = prov.lower().strip()
+    if p in ("google", "gemini"):
+        return "gemini"
+    if p in ("nvidia", "nvidia-nim"):
+        return "nvidia-nim"
+    return p
 
 
 def parse_model_string(model_str: str) -> tuple[str, str]:
@@ -63,26 +83,33 @@ def reset_model_tiers_to_default() -> dict[str, list[str]]:
     return get_model_tiers()
 
 
+def get_last_routing_decision() -> dict[str, Any]:
+    """Return a copy of the most recent routing decision."""
+    return dict(LAST_ROUTING_DECISION)
+
+
 def validate_model_tiers_against_catalog() -> list[dict[str, Any]]:
-    """
-    Validate active model tiers against known provider models in PROVIDER_CATALOG.
+    """Validate active model tiers against live verified models.
+
     Returns list of warnings for uncatalogued or unavailable models.
     """
-    from ..catalog import PROVIDER_CATALOG
     warnings = []
     for tier, models in MODEL_TIERS.items():
         for m_str in models:
             provider, model_id = parse_model_string(m_str)
-            catalog_models = PROVIDER_CATALOG.get(provider, [])
-            match = next((m for m in catalog_models if m.id == model_id or m.name.lower() == model_id.lower()), None)
-            if match is None:
-                msg = f"Configured model '{m_str}' in tier '{tier}' is not in provider catalog."
+            norm_p = _normalize_provider(provider)
+            verified = get_verified_models(provider) or get_verified_models(norm_p)
+            model_lower = model_id.lower()
+            match = any(
+                v.lower() == model_lower
+                or v.lower().endswith("/" + model_lower)
+                or model_lower.endswith("/" + v.lower())
+                for v in verified
+            )
+            if not match:
+                msg = f"Configured model '{m_str}' in tier '{tier}' is not currently verified on provider '{provider}'."
                 logger.warning("smart_router: %s", msg)
-                warnings.append({"tier": tier, "model": m_str, "warning": msg, "type": "missing"})
-            elif not match.available:
-                msg = f"Configured model '{m_str}' in tier '{tier}' is marked unavailable in catalog."
-                logger.warning("smart_router: %s", msg)
-                warnings.append({"tier": tier, "model": m_str, "warning": msg, "type": "unavailable"})
+                warnings.append({"tier": tier, "model": m_str, "warning": msg, "type": "unverified"})
     return warnings
 
 
@@ -90,29 +117,28 @@ def route_model(
     task_difficulty: str,
     available_providers: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Route a task of given difficulty to the optimal model and provider.
+    """Route a task of given difficulty to the optimal verified model and provider.
 
-    Fallback logic:
-    1. Look in the target difficulty tier.
-    2. If provider is unavailable or filtered, try subsequent models in the same tier.
-    3. If all models in the tier are unavailable, cascade to adjacent tiers
-       (HARD -> MEDIUM -> EASY, EASY -> MEDIUM -> HARD).
-
-    Returns:
-        {
-            "provider": str,
-            "model": str,
-            "tier": str,
-            "fallback_models": list[str]
-        }
+    Catalog-aware routing logic:
+    1. Filter each tier list against get_verified_models(provider).
+    2. Skip unverified or filtered models (recording reasons).
+    3. Cascade: HARD -> MEDIUM -> EASY (or EASY -> MEDIUM -> HARD).
+    4. If ALL tiers empty, fall back to provider default preset.
+    5. Record and return routing decision event with skipped list and reason.
     """
+    global LAST_ROUTING_DECISION
+
     diff_upper = str(task_difficulty).upper().strip()
     if diff_upper not in MODEL_TIERS:
         diff_upper = "MEDIUM"
 
     normalized_providers: Optional[set[str]] = None
     if available_providers is not None:
-        normalized_providers = {str(p).lower().strip() for p in available_providers}
+        normalized_providers = set()
+        for p in available_providers:
+            clean = str(p).lower().strip()
+            normalized_providers.add(clean)
+            normalized_providers.add(_normalize_provider(clean))
 
     # Define tier evaluation sequence based on starting tier
     if diff_upper == "HARD":
@@ -123,34 +149,75 @@ def route_model(
         tier_sequence = ["MEDIUM", "EASY", "HARD"]
 
     candidate_models: list[tuple[str, str, str]] = []  # (tier, provider, model)
+    skipped: list[dict[str, str]] = []
 
     for tier in tier_sequence:
         models_in_tier = MODEL_TIERS.get(tier, [])
         for m_str in models_in_tier:
             p, m = parse_model_string(m_str)
-            if normalized_providers is None or p in normalized_providers:
-                candidate_models.append((tier, p, m))
+            norm_p = _normalize_provider(p)
 
+            # Check if provider is available / allowed
+            if normalized_providers is not None:
+                if p not in normalized_providers and norm_p not in normalized_providers:
+                    skipped.append({
+                        "model": m_str,
+                        "reason": f"Provider '{p}' not in available providers list",
+                    })
+                    continue
+
+            # Catalog verification check
+            verified_list = get_verified_models(p)
+            if not verified_list:
+                verified_list = get_verified_models(norm_p)
+
+            m_lower = m.lower()
+            is_verified = any(
+                v.lower() == m_lower
+                or v.lower().endswith("/" + m_lower)
+                or m_lower.endswith("/" + v.lower())
+                for v in verified_list
+            )
+
+            if not is_verified:
+                reason = f"Model '{m}' unavailable or unverified on provider '{p}'"
+                logger.warning("smart_router: skipping %s: %s", m_str, reason)
+                skipped.append({"model": m_str, "reason": reason})
+                continue
+
+            candidate_models.append((tier, p, m))
+
+    # Determine selection and fallback
     if not candidate_models:
-        # Extreme fallback if all providers filtered out
-        default_model = MODEL_TIERS.get(diff_upper, ["openai/gpt-4o"])[0]
-        p, m = parse_model_string(default_model)
-        return {
-            "provider": p,
-            "model": m,
-            "tier": diff_upper,
-            "fallback_models": [],
-        }
+        # Fallback to provider default preset
+        selected_provider = "openai"
+        selected_model = "gpt-4o"
+        selected_tier = diff_upper
+        fallback_models: list[str] = []
+        reason = (
+            f"All tiers empty or unverified; fell back to default preset "
+            f"{selected_provider}/{selected_model}"
+        )
+    else:
+        selected_tier, selected_provider, selected_model = candidate_models[0]
+        fallback_models = [f"{cp}/{cm}" for _, cp, cm in candidate_models[1:]]
+        if selected_tier == diff_upper:
+            reason = f"Routed {diff_upper} task to verified model {selected_provider}/{selected_model}"
+        else:
+            reason = (
+                f"{diff_upper} tier unavailable ({len(skipped)} models skipped); "
+                f"cascaded to {selected_tier} tier: {selected_provider}/{selected_model}"
+            )
 
-    # Selected primary model is the top candidate
-    selected_tier, selected_provider, selected_model = candidate_models[0]
-
-    # Collect fallback models (remaining candidates)
-    fallback_models = [f"{p}/{m}" for _, p, m in candidate_models[1:]]
-
-    return {
+    decision = {
         "provider": selected_provider,
         "model": selected_model,
         "tier": selected_tier,
+        "requested_tier": diff_upper,
         "fallback_models": fallback_models,
+        "skipped": skipped,
+        "reason": reason,
     }
+
+    LAST_ROUTING_DECISION = dict(decision)
+    return decision

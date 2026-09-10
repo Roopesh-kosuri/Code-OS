@@ -9,15 +9,22 @@ from app.features.ai.smart_router.difficulty_classifier import classify_task_dif
 
 
 def test_model_tiers_validated_against_catalog():
-    # Calling validation returns structured warnings for any uncatalogued/unavailable models
-    warnings = validate_model_tiers_against_catalog()
-    assert isinstance(warnings, list)
-    assert len(warnings) > 0
-    # Confirm structure
-    for w in warnings:
-        assert "tier" in w
-        assert "model" in w
-        assert "warning" in w
+    # Calling validation on clean verified defaults returns a list (zero warnings for verified models)
+    reset_model_tiers_to_default()
+    clean_warnings = validate_model_tiers_against_catalog()
+    assert isinstance(clean_warnings, list)
+
+    # If an uncatalogued/fictional model is configured, structured warnings are generated
+    update_model_tiers({"HARD": ["openai/fictional-model-999"]})
+    try:
+        warnings = validate_model_tiers_against_catalog()
+        assert len(warnings) > 0
+        for w in warnings:
+            assert "tier" in w
+            assert "model" in w
+            assert "warning" in w
+    finally:
+        reset_model_tiers_to_default()
 
 
 def test_difficulty_classifier_documented_as_heuristic():
