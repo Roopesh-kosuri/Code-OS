@@ -162,6 +162,7 @@ class CoderAgent(BaseAgent):
     max_lines_per_file: int = 300,
     is_context_reference: bool = False,
     timing_recorder: Callable[[str, float], Awaitable[None]] | None = None,
+    attached_files: list[dict] | None = None,
   ) -> str:
     """Read actual file contents + repo symbols/imports from SQLite for each planned file.
 
@@ -173,6 +174,29 @@ class CoderAgent(BaseAgent):
 
     root = normalize_workspace(workspace)
     sections: List[str] = []
+
+    # Format attached files as primary reference context if present
+    active_attached_files = attached_files if attached_files is not None else getattr(self, "_current_attached_files", None)
+    attached_xml = ""
+    if active_attached_files:
+      att_blocks: List[str] = []
+      for f in active_attached_files:
+        fid = f.get("id") or f.get("file_id", "file")
+        fname = f.get("filename") or f.get("name", "attachment")
+        fmime = f.get("mime_type") or f.get("type", "text/plain")
+        fpages = f.get("page_count") or f.get("pages", 1)
+        fwords = f.get("word_count") or f.get("words", len(str(f.get("content", "")).split()))
+        content = f.get("content", "")
+        att_blocks.append(
+          f'<file id="{fid}" name="{fname}" type="{fmime}" pages="{fpages}" words="{fwords}">\n{content}\n</file>'
+        )
+      if att_blocks:
+        attached_xml = (
+          f'<attached_files count="{len(att_blocks)}">\n'
+          + "\n".join(att_blocks)
+          + "\n</attached_files>"
+        )
+        sections.append(f"### [ATTACHED USER FILES (PRIMARY REFERENCE)]\n{attached_xml}")
 
     # Optimized token budget: target file gets up to 300 lines; reference context gets 80 lines + symbol outline
     if is_context_reference:
@@ -259,12 +283,21 @@ class CoderAgent(BaseAgent):
       sections.append(section)
 
     if not sections:
+      if attached_xml:
+        return f"### [ATTACHED USER FILES (PRIMARY REFERENCE)]\n{attached_xml}"
       return "(no files to ground — plan has empty files_to_touch)"
 
     return "\n\n".join(sections)
 
-  async def execute(self, job_id: str, task_id: str, title: str, context: str, workspace: str) -> AgentOutput:
+  async def execute(self, job_id: str, task_id: str, title: str, context: Any, workspace: str) -> AgentOutput:
     logger.info("coder.agent.execute starting task_id=%s title=%s (LIVE_PATCH_V2)", task_id, title)
+    attached_files = []
+    if isinstance(context, dict):
+      attached_files = context.get("attached_files") or []
+      context_str = context.get("handoff_context", "") or str(context.get("context", ""))
+    else:
+      context_str = str(context)
+    self._current_attached_files = attached_files
     start_time = time.time()
     logs = [f"[{start_time:.2f}] CoderAgent initializing task..."]
     await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
@@ -401,9 +434,9 @@ class CoderAgent(BaseAgent):
 
                 effective_prov = (req.api_key_provider or req.provider or "groq").lower()
 
-                # 1. Automatic Intra-Provider Failover: If Groq hit 429 on gpt-oss-120b, try llama-3.3-70b-versatile or llama-3.1-8b-instant
+                # 1. Automatic Intra-Provider Failover: If Groq hit 429 on gpt-oss-120b, try openai/gpt-oss-20b
                 if is_rate_limit and effective_prov == "groq" and "120b" in (req.model or ""):
-                    alt_model = "llama-3.3-70b-versatile"
+                    alt_model = "openai/gpt-oss-20b"
                     logs.append(f"[FAILOVER] Groq model '{req.model}' hit token limit. Automatically switching to '{alt_model}'...")
                     await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
                     req.model = alt_model
@@ -475,7 +508,7 @@ class CoderAgent(BaseAgent):
                     elif action in ("switch_to_api", "change_model"):
                         auto_retries = 0  # Reset for new provider
                         new_provider = decision_res.get("provider") or "openai-compatible"
-                        new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("minimaxai/minimax-m3" if new_provider == "nvidia-nim" else "llama-3.3-70b-versatile"))
+                        new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("moonshotai/kimi-k3" if new_provider == "nvidia-nim" else "openai/gpt-oss-20b"))
                         new_key_provider = decision_res.get("api_key_provider") or new_provider
                         new_base_url = decision_res.get("base_url")
 
@@ -514,11 +547,11 @@ class CoderAgent(BaseAgent):
     logs.append(f"[{plan_start:.2f}] Phase 1: Planning phase started.")
     await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
-    quick_mode = "--quick" in title or "--quick" in context
+    quick_mode = "--quick" in title or "--quick" in context_str
     if quick_mode:
         files_to_touch = []
         # Find any word ending in standard source extensions
-        matches = re.findall(r'[a-zA-Z0-9_\-\.\/]+\.(?:py|js|ts|tsx|css|html|go|rs|json|txt|md)', f"{title} {context}")
+        matches = re.findall(r'[a-zA-Z0-9_\-\.\/]+\.(?:py|js|ts|tsx|css|html|go|rs|json|txt|md)', f"{title} {context_str}")
         for m in matches:
             if m not in files_to_touch:
                 files_to_touch.append(m)
@@ -541,7 +574,7 @@ class CoderAgent(BaseAgent):
         plan_req = self.create_chat_request(
           messages=[
             ChatMessage(role="system", content=PLANNER_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=f"Task: {title}\n\nContext:\n{context}\n\nWorkspace: {workspace}")
+            ChatMessage(role="user", content=f"Task: {title}\n\nContext:\n{context_str}\n\nWorkspace: {workspace}")
           ]
         )
 

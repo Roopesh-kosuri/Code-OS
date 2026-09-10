@@ -732,12 +732,92 @@ async def test_gemini_rate_limit_parsing_retry_delay_rpc():
 
 
 def test_default_models_groq_and_nvidia_nim():
-    """Verify Groq default is openai/gpt-oss-120b and NVIDIA NIM default is minimaxai/minimax-m3."""
+    """Verify Groq default is openai/gpt-oss-120b and NVIDIA NIM default is meta/llama-3.2-11b-vision-instruct."""
     from app.features.ai.provider_health import DEFAULT_PROVIDER_MODELS
     from app.features.ai.catalog import PROVIDER_CATALOG
 
     assert DEFAULT_PROVIDER_MODELS["groq"] == "openai/gpt-oss-120b"
-    assert DEFAULT_PROVIDER_MODELS["nvidia-nim"] == "minimaxai/minimax-m3"
+    assert DEFAULT_PROVIDER_MODELS["nvidia-nim"] == "meta/llama-3.2-11b-vision-instruct"
 
     assert PROVIDER_CATALOG["groq"][0].id == "openai/gpt-oss-120b"
-    assert PROVIDER_CATALOG["nvidia-nim"][0].id == "minimaxai/minimax-m3"
+    assert PROVIDER_CATALOG["nvidia-nim"][0].id == "meta/llama-3.2-11b-vision-instruct"
+
+
+@pytest.mark.asyncio
+async def test_413_payload_too_large_raises_context_overflow_without_retry():
+    """HTTP 413 must immediately raise ContextOverflowError without retrying or emitting rate limited banner."""
+    provider = OpenAICompatibleProvider("https://api.groq.com/openai/v1", "mock_key", provider_id="groq")
+
+    mock_resp_413 = MagicMock()
+    mock_resp_413.status_code = 413
+    mock_resp_413.headers = {}
+    mock_resp_413.aread = AsyncMock(return_value=b'{"error":{"message":"Rate limit reached for model on tokens per minute (TPM): Limit 8000, Used 2100, Requested 6500.","type":"tokens","code":"rate_limit_exceeded"}}')
+
+    call_count = 0
+    def mock_stream(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_resp_413)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        return cm
+
+    retry_callbacks = []
+    def on_retry_cb(ev_type, msg, **kwargs):
+        retry_callbacks.append((ev_type, msg))
+
+    with patch("httpx.AsyncClient.stream", side_effect=mock_stream):
+        with pytest.raises(ContextOverflowError) as exc_info:
+            async for _ in provider.stream_chat(
+                model="openai/gpt-oss-120b",
+                messages=[ChatMessage(role="user", content="Big prompt with tools")],
+                on_retry=on_retry_cb,
+            ):
+                pass
+
+    # Must fail immediately on attempt 1 without 8 retries!
+    assert call_count == 1
+    assert len(retry_callbacks) == 0
+    assert "token/TPM limits" in str(exc_info.value) or "413" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_nim_kimi_payload_config():
+    """Verify moonshotai/kimi-k3 preserves model name and receives temperature=1, seed=0, reasoning_effort=max."""
+    provider = OpenAICompatibleProvider("https://integrate.api.nvidia.com/v1", "mock_key", provider_id="nvidia-nim")
+
+    captured_payload = {}
+    mock_resp_200 = MagicMock()
+    mock_resp_200.status_code = 200
+    mock_resp_200.headers = {}
+    mock_resp_200.aiter_lines = MagicMock(return_value=_async_lines_helper([
+        'data: {"choices":[{"delta":{"content":"Hi", "reasoning_content":"Thinking..."}}]}\n',
+        'data: [DONE]\n',
+    ]))
+
+    def mock_stream(method, url, **kwargs):
+        nonlocal captured_payload
+        captured_payload = kwargs.get("json", {})
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=mock_resp_200)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        return cm
+
+    with patch("httpx.AsyncClient.stream", side_effect=mock_stream):
+        events = []
+        async for event in provider.stream_agent(
+            model="kimi-k3",
+            messages=[ChatMessage(role="user", content="Hello")],
+        ):
+            events.append(event)
+
+    assert captured_payload.get("model") == "moonshotai/kimi-k3"
+    assert captured_payload.get("temperature") == 1.0
+    assert captured_payload.get("seed") == 0
+    assert captured_payload.get("reasoning_effort") == "max"
+    # Ensure reasoning event was yielded
+    reasoning_events = [e for e in events if e.type == "reasoning"]
+    assert len(reasoning_events) >= 1
+    assert reasoning_events[0].content == "Thinking..."
+
+

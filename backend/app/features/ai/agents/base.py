@@ -87,9 +87,9 @@ class BaseAgent(NewBaseAgent):
                     is_daily_limit = "tpd" in str(exc).lower() or "tokens per day" in str(exc).lower() or "daily" in str(exc).lower()
                     effective_prov = (chat_req.api_key_provider or chat_req.provider or "groq").lower()
 
-                    # 1. Automatic Intra-Provider Failover: Groq 120b -> llama-3.3-70b-versatile
+                    # 1. Automatic Intra-Provider Failover: Groq 120b -> openai/gpt-oss-20b
                     if is_rate_limit and effective_prov == "groq" and "120b" in (chat_req.model or ""):
-                        alt_model = "llama-3.3-70b-versatile"
+                        alt_model = "openai/gpt-oss-20b"
                         logs.append(f"[FAILOVER] Groq model '{chat_req.model}' hit token limit. Automatically switching to '{alt_model}'...")
                         await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
                         chat_req.model = alt_model

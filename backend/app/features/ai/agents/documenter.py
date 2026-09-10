@@ -77,7 +77,7 @@ class DocumenterAgent(BaseAgent):
                         effective_prov = (chat_req.api_key_provider or chat_req.provider or "groq").lower()
 
                         if is_rate_limit and effective_prov == "groq" and "120b" in (chat_req.model or ""):
-                            alt_model = "llama-3.3-70b-versatile"
+                            alt_model = "openai/gpt-oss-20b"
                             logs.append(f"[FAILOVER] Groq model '{chat_req.model}' hit token limit. Automatically switching to '{alt_model}'...")
                             await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
                             chat_req.model = alt_model
@@ -119,7 +119,7 @@ class DocumenterAgent(BaseAgent):
                             continue
                         elif action == "switch_to_api":
                             chat_req.provider = "groq"
-                            chat_req.model = "llama-3.3-70b-versatile"
+                            chat_req.model = "openai/gpt-oss-20b"
                             continue
                         else:
                             raise exc

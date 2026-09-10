@@ -1,5 +1,7 @@
 import json
 import logging
+from typing import Any
+from .agent_interface import BaseAgent, AgentOutput
 from ..service import provider_for
 from ..schemas import ChatRequest, ChatMessage
 # D2: hoisted from function-level to avoid repeated inline imports (no circular import risk)
@@ -16,6 +18,12 @@ Available Agent Roles:
 - Documentation Agent: Updates module summaries, API lists, and README.md.
 
 CRITICAL: Assign tasks ONLY to the 4 Available Agent Roles listed above. For security analysis or performance profiling, assign to 'Coding Agent' or 'Review Agent' with specialized instructions in the task title.
+
+## ATTACHED SPECIFICATION PRIORITY:
+If an <attached_files> block is present in the prompt, you MUST:
+1. Decompose the task based primarily on the attached specification or document.
+2. Structure the tasks to implement the features, requirements, or architecture specified in the attachment.
+3. Reference the source attachment filename in relevant task titles or descriptions.
 
 
 Format your output EXACTLY as a JSON object matching this structure:
@@ -47,11 +55,39 @@ Format your output EXACTLY as a JSON object matching this structure:
 Return ONLY raw JSON, with no markdown wrapping or additional text.
 """
 
-class PlannerAgent:
+class PlannerAgent(BaseAgent):
     def __init__(self, provider_config: dict | None = None) -> None:
-        self.provider_config = provider_config
+        super().__init__(role="architect", provider_config=provider_config)
 
-    async def plan_task(self, user_request: str, workspace_context: str = "") -> list[dict]:
+    def get_system_prompt(self) -> str:
+        return PLANNER_SYSTEM_PROMPT
+
+    async def execute(self, job_id: str, task_id: str, title: str, context: Any, workspace: str) -> AgentOutput:
+        attached_files: list[dict] = []
+        context_str = ""
+        if isinstance(context, dict):
+            attached_files = context.get("attached_files") or []
+            context_str = context.get("handoff_context", "") or str(context.get("context", ""))
+        elif isinstance(context, str):
+            context_str = context
+
+        tasks = await self.plan_task(user_request=title, workspace_context=context_str, attached_files=attached_files)
+        return AgentOutput(
+            agent_role=self.role,
+            task_id=task_id,
+            status="completed",
+            confidence=0.9,
+            reasoning_summary=f"Decomposed specification into {len(tasks)} subtask(s).",
+            structured_data={"tasks": tasks},
+            logs=[f"PlannerAgent completed planning with {len(tasks)} tasks."],
+        )
+
+    async def plan_task(
+        self,
+        user_request: str,
+        workspace_context: str = "",
+        attached_files: list[dict] | None = None,
+    ) -> list[dict]:
         if "--quick" in user_request.lower() or "--quick" in workspace_context.lower():
             import re, uuid
             clean_title = re.sub(r'(?i)--quick', '', user_request).strip()
@@ -67,7 +103,31 @@ class PlannerAgent:
                 }
             ]
 
-        prompt = f"User Request: {user_request}\n\nWorkspace Context:\n{workspace_context}"
+        # Format attached files if provided and not already present in prompt
+        attached_xml = ""
+        if attached_files:
+            file_blocks = []
+            for f in attached_files:
+                fid = f.get("id") or f.get("file_id", "file")
+                fname = f.get("filename") or f.get("name", "attachment")
+                fmime = f.get("mime_type") or f.get("type", "text/plain")
+                fpages = f.get("page_count") or f.get("pages", 1)
+                fwords = f.get("word_count") or f.get("words", len(str(f.get("content", "")).split()))
+                content = f.get("content", "")
+                file_blocks.append(
+                    f'<file id="{fid}" name="{fname}" type="{fmime}" pages="{fpages}" words="{fwords}">\n{content}\n</file>'
+                )
+            if file_blocks:
+                attached_xml = (
+                    f'<attached_files count="{len(file_blocks)}">\n'
+                    + "\n".join(file_blocks)
+                    + "\n</attached_files>"
+                )
+
+        if attached_xml and "<attached_files" not in user_request and "<attached_files" not in workspace_context:
+            prompt = f"{attached_xml}\n\nUser Request: {user_request}\n\nWorkspace Context:\n{workspace_context}"
+        else:
+            prompt = f"User Request: {user_request}\n\nWorkspace Context:\n{workspace_context}"
         
         raw_provider = (self.provider_config or {}).get("provider") or (self.provider_config or {}).get("preset", "auto")
         provider_name = _PRESET_TO_PROVIDER.get(raw_provider, raw_provider)
@@ -117,7 +177,7 @@ class PlannerAgent:
                 effective_prov = (chat_req.api_key_provider or chat_req.provider or "groq").lower()
 
                 if is_rate_limit and attempt == 0 and effective_prov == "groq" and "120b" in (chat_req.model or ""):
-                    chat_req.model = "llama-3.3-70b-versatile"
+                    chat_req.model = "openai/gpt-oss-20b"
                     continue
 
                 if is_rate_limit and attempt == 0:
