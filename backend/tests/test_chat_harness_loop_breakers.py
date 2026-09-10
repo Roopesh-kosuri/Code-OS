@@ -309,3 +309,41 @@ async def test_ask_user_repetition_loop_breaker(tmp_path):
     tool_results = [e for e in events if "has already been asked in this turn" in e or "Do not re-ask" in e]
     assert len(tool_results) > 0
 
+
+@pytest.mark.asyncio
+async def test_autonomous_git_mutation_rejected(tmp_path):
+    """Verify that autonomous git mutations (git add/commit/push) are rejected if unrequested."""
+    from app.features.ai.chat_harness import (
+        run_chat_agent,
+        ChatAgentRequest,
+    )
+
+    ws = str(tmp_path)
+    mock_provider = MagicMock()
+
+    async def mock_stream(*args, **kwargs):
+        # Model emits an unrequested git commit command
+        yield '[TOOL_CALL: run_command]\n{"command": "git add file.txt && git commit -m \\"auto commit\\""}\n[/TOOL_CALL]'
+
+    mock_provider.stream_chat = mock_stream
+
+    req = ChatAgentRequest(
+        provider="openai-compatible",
+        model="llama-3.1-nemotron-70b-instruct",
+        workspace=ws,
+        messages=[{"role": "user", "content": "review my cv"}],
+        is_agent_mode=True,
+    )
+
+    with patch("app.features.ai.chat_harness.provider_for", AsyncMock(return_value=mock_provider)):
+        events = []
+        async for event in run_chat_agent(req):
+            events.append(event)
+
+    # Verify that git mutation was intercepted and skipped, never showing an approval card
+    skipped_events = [e for e in events if "Git mutation commands" in e and "disabled unless explicitly requested" in e]
+    assert len(skipped_events) > 0
+    approval_events = [e for e in events if "event: approval_request" in e]
+    assert len(approval_events) == 0
+
+

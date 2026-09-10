@@ -1862,8 +1862,30 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             is_command_trusted=is_cmd_trusted,
                         )
 
+                        # Reject autonomous git mutations unless explicitly requested by the user
+                        cmd_clean = cmd.strip().lower()
+                        is_git_mutation = any(
+                            cmd_clean.startswith(pfx) or f" {pfx}" in cmd_clean
+                            for pfx in ("git add", "git commit", "git push", "git checkout", "git reset", "git revert", "git stash", "git merge", "git rebase")
+                        )
+                        user_requested_git = any(
+                            kw in user_query.lower()
+                            for kw in ("git commit", "commit my", "git push", "push to", "git add", "create a commit", "commit the", "commit this")
+                        )
+                        if is_git_mutation and not user_requested_git:
+                            git_err = f"Git mutation commands ('{cmd}') are disabled unless explicitly requested by the user. Do not commit or push files automatically."
+                            logger.info("chat_harness: rejected autonomous git mutation command: %s", cmd)
+                            yield _sse_status("tool_skipped", git_err, tool="run_command", command=cmd)
+                            result = ToolResult(
+                                tool_name="run_command",
+                                success=False,
+                                output="",
+                                error=git_err,
+                                failure_reason="unrequested_git_mutation",
+                                failure_detail=git_err,
+                            )
                         # Step 1: Pre-Execution Semantic Policy Filter (Prompt Injection Defense)
-                        if _is_command_malicious(cmd):
+                        elif _is_command_malicious(cmd):
                             policy_err = "Command blocked by security policy: potential code injection detected."
                             logger.warning("chat_harness: Malicious command rejected by security policy: %s", cmd)
                             yield _sse_status("tool_skipped", policy_err, tool="run_command", command=cmd)
