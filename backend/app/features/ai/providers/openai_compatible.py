@@ -158,13 +158,19 @@ class OpenAICompatibleProvider(AIProvider):
             payload["reasoning_effort"] = "max"
         elif self.id in ("nvidia-nim", "nvidia") and "deepseek" in model.lower():
             # NVIDIA NIM official specification for DeepSeek models (e.g. deepseek-ai/deepseek-v4-pro-0813):
-            # Requires temperature=1.0, top_p=0.95, seed=42, max_tokens=16384, and chat_template_kwargs
+            # Requires temperature=1.0, top_p=0.95, seed=42, max_tokens=16384, and chat_template_kwargs.
+            # S9 FIX: thinking=True causes NIM to start a 200s+ extended reasoning pass before emitting
+            # the first token. idle_read_timeout is 120s — any value above "low" guarantee a stall.
+            # Only enable thinking for explicitly high/max effort; default to False to prevent stalls.
             payload["temperature"] = 1.0
             payload["top_p"] = 0.95
             payload["seed"] = 42
             if not max_tokens:
                 payload["max_tokens"] = 16384
-            is_thinking_on = bool(reasoning_effort and str(reasoning_effort).lower() not in ("none", "off", "false", "0"))
+            is_thinking_on = bool(
+                reasoning_effort
+                and str(reasoning_effort).lower() in ("high", "max")
+            )
             payload["chat_template_kwargs"] = {"thinking": is_thinking_on}
         elif reasoning_effort and supports_reasoning_effort(self.id, model):
             payload["reasoning_effort"] = reasoning_effort

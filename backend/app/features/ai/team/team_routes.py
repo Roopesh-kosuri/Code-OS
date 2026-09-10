@@ -158,7 +158,6 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
 
     # Fetch attached files for Architect DAG planning and task grounding
     attached_files_data: list[dict[str, Any]] = []
-    attached_file_xml_blocks: list[str] = []
     if payload.file_ids:
         from ..file_ingestion.service import get_uploaded_file
         for fid in payload.file_ids:
@@ -178,17 +177,11 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
                     "word_count": fwords,
                     "metadata": fdata.get("metadata", {}),
                 })
-                attached_file_xml_blocks.append(
-                    f'<file id="{fid}" name="{fname}" type="{fmime}" pages="{fpages}" words="{fwords}">\n{fcontent}\n</file>'
-                )
 
     attached_context_xml = ""
-    if attached_file_xml_blocks:
-        attached_context_xml = (
-            f'<attached_files count="{len(attached_file_xml_blocks)}">\n'
-            + "\n".join(attached_file_xml_blocks)
-            + "\n</attached_files>"
-        )
+    if attached_files_data:
+        from ..file_ingestion.service import format_attached_files_xml
+        attached_context_xml = format_attached_files_xml(attached_files_data)
 
     effective_user_request = (
         f"{attached_context_xml}\n\n{payload.user_request}"
