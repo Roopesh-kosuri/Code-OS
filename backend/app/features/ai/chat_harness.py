@@ -168,6 +168,44 @@ class ChatAgentRequest:
 
 
 
+_QUESTION_STOP_WORDS = {
+    "is", "the", "this", "that", "these", "those", "a", "an", "for", "to",
+    "of", "in", "on", "at", "by", "with", "about", "as", "into", "like",
+    "through", "after", "over", "between", "out", "against", "during", "without",
+    "before", "under", "around", "among", "do", "does", "did", "should", "could",
+    "would", "shall", "will", "can", "may", "might", "must", "we", "you", "i",
+    "they", "it", "our", "your", "my", "their", "its", "what", "which", "who",
+    "how", "when", "where", "why", "now", "please",
+}
+
+
+def _is_similar_question(q1: str, q2: str) -> bool:
+    """Detect repeated or near-identical clarification questions to prevent loops."""
+    q1_clean = re.sub(r"[^\w\s]", "", q1.lower()).strip()
+    q2_clean = re.sub(r"[^\w\s]", "", q2.lower()).strip()
+    if not q1_clean or not q2_clean:
+        return False
+    if q1_clean == q2_clean or q1_clean in q2_clean or q2_clean in q1_clean:
+        return True
+    words1 = set(q1_clean.split())
+    words2 = set(q2_clean.split())
+    if not words1 or not words2:
+        return False
+    jaccard = len(words1 & words2) / len(words1 | words2)
+    if jaccard >= 0.5:
+        return True
+    # Stop-word filtered comparison for content words
+    content1 = {w for w in words1 if w not in _QUESTION_STOP_WORDS}
+    content2 = {w for w in words2 if w not in _QUESTION_STOP_WORDS}
+    if content1 and content2:
+        content_jaccard = len(content1 & content2) / len(content1 | content2)
+        if content_jaccard >= 0.5:
+            return True
+        if (content1.issubset(content2) or content2.issubset(content1)) and len(content1 & content2) >= 2:
+            return True
+    return False
+
+
 def _finalization_succeeded(event: str) -> bool | None:
     """Read the finalizer's explicit outcome without trusting status prose."""
     if "event: finalization" not in event:
@@ -394,6 +432,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         self_repair_nudges = 0
         audit_retried = False
         read_dedup_cache: dict[tuple[str, int, int], tuple[float, int, int]] = {}
+        ask_user_count: int = 0
+        asked_questions: list[str] = []
+        MAX_CLARIFICATIONS_PER_TURN = 2
 
         iteration = 0
         while iteration < max_iterations:
@@ -447,6 +488,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 except Exception:
                     pass
                 active_tools = OPENAI_HARNESS_TOOLS + mcp_tool_defs
+                # Hard cap: if clarification limit reached, strip ask_user from active tools
+                if ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
+                    active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "ask_user"]
             else:
                 active_tools = None
 
@@ -938,6 +982,38 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 iteration += 1
                 continue
 
+            # Substantive Answer Completion Gate (S6):
+            # If the model produced substantive answer prose after a prior clarification,
+            # and the only emitted tool call is another ask_user, finalize and complete.
+            clean_prose = _clean_response_text(response_text)
+            is_only_ask_user = bool(tool_calls and all(tc.name == "ask_user" for tc in tool_calls))
+            if is_only_ask_user and len(clean_prose) >= 50 and ask_user_count >= 1:
+                logger.info("chat_harness: response contains substantive answer after clarification; completing turn instead of re-prompting ask_user")
+                finalization_ok = not staged_changes
+                async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                    yield event
+                    outcome = _finalization_succeeded(event)
+                    if outcome is not None:
+                        finalization_ok = outcome
+                if not finalization_ok:
+                    yield _sse_error("Task changes were not verified/applied; refusing a successful completion.")
+                    yield _sse_done(False, "Task stopped: staged changes failed final verification or approval.")
+                    return
+                duration_ms = (time.time() - start_time) * 1000.0
+                tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+                _clear_interrupted_state(workspace)
+                _append_activity_log(workspace, {
+                    "action_type": "session_done",
+                    "target": user_query[:100],
+                    "outcome": "success",
+                    "tier": tier,
+                    "token_count": tokens_used,
+                    "details": f"Completed after clarification with substantive answer prose ({len(clean_prose)} chars)",
+                })
+                yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+                yield _sse_done(True, "All tasks completed and verified successfully.")
+                return
+
             if tool_calls:
                 tools_executed_this_turn = 0
                 tool_results_list: list[str] = []
@@ -1332,24 +1408,47 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 finally:
                                     _pending_approvals.pop(action_id, None)
                     elif tc.name == "ask_user":
-                        q_text = str(tc.arguments.get("question") or "Please select an option:")
+                        q_text = str(tc.arguments.get("question") or "Please select an option:").strip()
                         opts = tc.arguments.get("options")
                         if not isinstance(opts, list) or not opts:
                             opts = ["Yes, proceed", "No, cancel"]
-                        action_id = str(uuid.uuid4())
-                        pending_u = PendingUserResponse(action_id=action_id, question=q_text, options=[str(o) for o in opts])
-                        _pending_user_responses[action_id] = pending_u
-                        yield _sse_ask_user(action_id, q_text, [str(o) for o in opts])
-                        yield _sse_status("ask_user", f"Waiting for user input: {q_text}", action_id=action_id)
-                        try:
-                            await asyncio.wait_for(pending_u.event.wait(), timeout=APPROVAL_TIMEOUT_SECONDS)
-                            user_ans = pending_u.selected_option or opts[0]
-                            yield _sse_status("tool", f"User selected: '{user_ans}'", tool="ask_user")
-                            result = ToolResult(tool_name="ask_user", success=True, output=f"User selected: {user_ans}", error="")
-                        except asyncio.TimeoutError:
-                            result = ToolResult(tool_name="ask_user", success=False, output="", error="User clarifying question timed out after 120s.")
-                        finally:
-                            _pending_user_responses.pop(action_id, None)
+
+                        # Check hard cap (max 2 clarifications per turn)
+                        if ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
+                            logger.warning("chat_harness: ask_user hard cap reached (%d)", ask_user_count)
+                            cap_err = "Clarification limit reached (maximum 2 per turn). Answer directly now with the available information and explicitly stated assumptions, then conclude with [DONE]."
+                            yield _sse_status("tool_error", cap_err, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=cap_err)
+                            turn_all_tools_successful = False
+                        # Check semantic question repetition loop
+                        elif any(_is_similar_question(q_text, past_q) for past_q in asked_questions):
+                            logger.warning("chat_harness: ask_user repeated question loop detected: %s", q_text)
+                            repeat_err = f"Clarification question '{q_text[:60]}' has already been asked in this turn. Do not re-ask. Synthesize the answer directly using the user's prior choice and conclude with [DONE]."
+                            yield _sse_status("tool_error", repeat_err, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=repeat_err)
+                            turn_all_tools_successful = False
+                        else:
+                            ask_user_count += 1
+                            asked_questions.append(q_text)
+                            action_id = str(uuid.uuid4())
+                            pending_u = PendingUserResponse(action_id=action_id, question=q_text, options=[str(o) for o in opts])
+                            _pending_user_responses[action_id] = pending_u
+                            yield _sse_ask_user(action_id, q_text, [str(o) for o in opts])
+                            yield _sse_status("ask_user", f"Waiting for user input: {q_text}", action_id=action_id)
+                            try:
+                                await asyncio.wait_for(pending_u.event.wait(), timeout=APPROVAL_TIMEOUT_SECONDS)
+                                user_ans = pending_u.selected_option or opts[0]
+                                yield _sse_status("tool", f"User selected: '{user_ans}'", tool="ask_user")
+                                result = ToolResult(
+                                    tool_name="ask_user",
+                                    success=True,
+                                    output=f"Clarification Q&A:\nQuestion: {q_text}\nUser Selected Answer: {user_ans}",
+                                    error="",
+                                )
+                            except asyncio.TimeoutError:
+                                result = ToolResult(tool_name="ask_user", success=False, output="", error="User clarifying question timed out after 120s.")
+                            finally:
+                                _pending_user_responses.pop(action_id, None)
                     elif tc.name == "edit_file":
                         valid, err, change = _validate_smart_edit(workspace, tc.arguments)
                         if valid and change:
