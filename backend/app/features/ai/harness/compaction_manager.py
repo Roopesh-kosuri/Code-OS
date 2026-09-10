@@ -28,10 +28,23 @@ def _is_response_truncated(text: str) -> bool:
     return False
 
 
+_INCOMPLETE_TOOL_RE = re.compile(
+    r"\[TOOL_CALL:\s*[a-zA-Z0-9_\-]+[\s\S]*?(?:\[/TOOL_CALL\]|$)",
+    re.IGNORECASE,
+)
+_INCOMPLETE_CODEBLOCK_TOOL_RE = re.compile(
+    r"```(?:tool_call|json)?\s*\n?\{\s*\"(?:tool|name|action)\"\s*:\s*\"[a-zA-Z0-9_\-]+[\s\S]*?(?:```|$)",
+    re.IGNORECASE,
+)
+
+
 def _clean_response_text(text: str) -> str:
     """Remove tool call markers, plan blocks, error tags, and control tags for display prose."""
     cleaned = _EXTENDED_TOOL_RE.sub("", text)
     cleaned = _CODEBLOCK_TOOL_RE.sub("", cleaned)
+    # Clean up incomplete or unclosed tool call blocks (e.g. cut off or truncated)
+    cleaned = _INCOMPLETE_TOOL_RE.sub("", cleaned)
+    cleaned = _INCOMPLETE_CODEBLOCK_TOOL_RE.sub("", cleaned)
     cleaned = _PLAN_RE.sub("", cleaned)
     cleaned = re.sub(r"\[TRUNCATED[^\]]*\]", "", cleaned)
     cleaned = re.sub(r"\[Error:[^\]]*\]", "", cleaned)

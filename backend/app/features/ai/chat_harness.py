@@ -133,6 +133,8 @@ from .harness import (
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
+    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, get_tools_for_tier,
+    govern_payload, _truncate_attachment_in_text, estimate_request_tokens,
     PROJECT_MEMORY_MAX_CHARS,
     _build_system_prompt, _gather_budgeted_rag_context, _discover_and_run_test_snapshot,
     _evaluate_edit_critique, _CHAT_AGENT_SYSTEM_PROMPT, _DEEP_TASK_SYSTEM_PROMPT,
@@ -165,6 +167,8 @@ class ChatAgentRequest:
     vision_provider: str | None = None
     vision_base_url: str | None = None
     file_ids: list[str] = field(default_factory=list)
+    enable_browser: bool = False
+    enable_computer: bool = False
 
 
 
@@ -435,18 +439,24 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         ask_user_count: int = 0
         asked_questions: list[str] = []
         MAX_CLARIFICATIONS_PER_TURN = 2
+        last_raw_tool_call: str | None = None
 
         iteration = 0
         while iteration < max_iterations:
             # ── Mid-Task Auto-Escalation Check ───────────────────────────────
-            if tier == 1 and consecutive_failures >= 2:
-                logger.info("chat_harness: auto-escalating from Tier 1 to Tier 2 (tools=%d, failures=%d)", total_tools_executed, consecutive_failures)
+            if (
+                tier == 1
+                and (
+                    staged_changes
+                    or tools_executed_last_turn >= 2
+                    or _is_deep_query(user_query)
+                )
+                and iteration >= 1
+            ):
                 tier = 2
                 max_iterations = MAX_AGENT_ITERATIONS
-                tier_label = "Deep think"
-                tier_reason = "Escalated to deep task: execution exceeded quick limits or encountered errors"
-                yield _sse_tier_routing(2, tier_label, reason=tier_reason)
-                yield _sse_status("tier_routing", "Escalated to deep task", tier=2, label=tier_label)
+                tier_label = "Deep Task"
+                yield _sse_tier_routing(2, tier_label, reason="Escalated: task involves code edits/multi-step tool orchestration")
                 yield _sse_status("thinking", "Escalated to deep task — loading full DAG planning and grounding...")
                 if not project_memory:
                     project_memory = _load_project_memory(workspace)
@@ -487,12 +497,32 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         })
                 except Exception:
                     pass
-                active_tools = OPENAI_HARNESS_TOOLS + mcp_tool_defs
+                tier_tools = get_tools_for_tier(
+                    tier=tier,
+                    provider=effective_prov_key,
+                    enable_browser=getattr(request, "enable_browser", False) if not context_overflow_retried else False,
+                    enable_computer=getattr(request, "enable_computer", False) if not context_overflow_retried else False,
+                    slim=context_overflow_retried,
+                )
+                active_tools = tier_tools + mcp_tool_defs
                 # Hard cap: if clarification limit reached, strip ask_user from active tools
                 if ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
                     active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "ask_user"]
             else:
                 active_tools = None
+
+            # Pre-flight payload governance (protect against Groq 8.8k TPM limits, etc.)
+            effective_messages, active_tools, was_governed, gov_reason = govern_payload(
+                effective_messages,
+                active_tools,
+                provider=effective_prov_key,
+                model=chat_request.model,
+            )
+            if was_governed:
+                logger.info(
+                    "chat_harness: Pre-flight payload governed for provider=%s model=%s: %s",
+                    effective_prov_key, chat_request.model, gov_reason
+                )
 
             # Calculate tier-aware reasoning effort (Groq uses 'low' to conserve TPM and keep turn latency ~1s)
             reasoning_effort_val = "low" if (tier == 1 or effective_prov_key == "groq") else ("medium" if tier >= 2 else None)
@@ -639,9 +669,19 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             except ContextOverflowError as ctx_err:
                 if not context_overflow_retried:
                     context_overflow_retried = True
-                    logger.warning("chat_harness: Context overflow on %s (iteration %d): %s. Compacting conversation and retrying once.", effective_prov_key, iteration, ctx_err)
-                    yield _sse_status("retry", "Context too large — compacting and retrying once")
+                    logger.warning("chat_harness: Context overflow on %s (iteration %d): %s. Compacting conversation, truncating attachments, reducing tools, and retrying once.", effective_prov_key, iteration, ctx_err)
+                    yield _sse_status("retry", "Context too large — reducing payload size and retrying once")
                     messages = _compact_conversation_history(messages, keep_recent_turns=1)
+                    # Aggressively truncate any attachment XML in messages to 4,000 characters
+                    shrunk_msgs: list[ChatMessage] = []
+                    for m in messages:
+                        c = getattr(m, "content", "")
+                        if any(t in c for t in ("<file ", "<attachment ", "<untrusted_file_content ")):
+                            new_c, _ = _truncate_attachment_in_text(c, max_chars=4000)
+                            shrunk_msgs.append(ChatMessage(role=m.role, content=new_c))
+                        else:
+                            shrunk_msgs.append(m)
+                    messages = shrunk_msgs
                     effective_messages = messages
                     full_response.clear()
                     continue
@@ -902,6 +942,32 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 ))
                 iteration += 1
                 continue
+
+            # ── Raw Tool Call Loop Breaker (S7) ──────────────────────────────
+            raw_tc_match = re.search(
+                r"\[TOOL_CALL:\s*([a-zA-Z0-9_\-]+)[\s\S]*?(?:\[/TOOL_CALL\]|$)",
+                response_text,
+                re.IGNORECASE,
+            ) or re.search(
+                r"```(?:tool_call|json)?\s*\{\s*\"(?:tool|name|action)\"\s*:\s*\"([a-zA-Z0-9_\-]+)\"[\s\S]*?(?:```|$)",
+                response_text,
+                re.IGNORECASE,
+            )
+            if not has_tools and raw_tc_match:
+                raw_snippet = raw_tc_match.group(0).strip()
+                raw_tool_name = raw_tc_match.group(1).strip()
+                if last_raw_tool_call and (
+                    last_raw_tool_call == raw_snippet
+                    or last_raw_tool_call.startswith(raw_snippet[:60])
+                    or difflib.SequenceMatcher(None, last_raw_tool_call, raw_snippet).ratio() > 0.8
+                ):
+                    logger.warning("chat_harness: detected repeated raw tool call loop for tool '%s'", raw_tool_name)
+                    yield _sse_error(f"Execution stopped: Model repeatedly emitted invalid or unexecutable tool call '{raw_tool_name}'.")
+                    yield _sse_done(False, f"Task stopped: Detected repeated unexecutable tool call '{raw_tool_name}'.")
+                    return
+                last_raw_tool_call = raw_snippet
+            elif has_tools:
+                last_raw_tool_call = None
 
             if prev_response_prefix and tools_executed_last_turn == 0 and not has_tools and not _response_is_done(response_text):
                 is_exact_prefix = (len(curr_prefix) >= 30 and curr_prefix[:80] == prev_response_prefix[:80])

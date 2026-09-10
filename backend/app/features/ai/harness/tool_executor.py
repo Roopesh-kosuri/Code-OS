@@ -299,7 +299,7 @@ HARNESS_TOOLS = {
     },
 }
 
-OPENAI_HARNESS_TOOLS = [
+CORE_CODING_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -574,6 +574,18 @@ OPENAI_HARNESS_TOOLS = [
             },
         },
     },
+]
+
+# Slim coding tools for strict TPM budgets (e.g. Groq on_demand)
+SLIM_CODING_TOOLS = [
+    t for t in CORE_CODING_TOOLS
+    if t["function"]["name"] in (
+        "edit_file", "read_file", "list_directory", "search_code",
+        "run_command", "run_test", "ask_user", "git_diff"
+    )
+]
+
+BROWSER_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -722,6 +734,9 @@ OPENAI_HARNESS_TOOLS = [
             },
         },
     },
+]
+
+COMPUTER_TOOLS = [
     {
         "type": "function",
         "function": {
@@ -768,14 +783,14 @@ OPENAI_HARNESS_TOOLS = [
         "type": "function",
         "function": {
             "name": "hotkey",
-            "description": "Press desktop keyboard shortcut combination (opt-in, requires explicit approval).",
+            "description": "Send keyboard shortcut sequence to active desktop window (opt-in, requires explicit approval).",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "keys": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of key names to press together.",
+                        "description": "List of key names to press together (e.g. ['ctrl', 'c'], ['alt', 'tab']).",
                     },
                 },
                 "required": ["keys"],
@@ -786,13 +801,13 @@ OPENAI_HARNESS_TOOLS = [
         "type": "function",
         "function": {
             "name": "open_app",
-            "description": "Launch desktop application by name or path (opt-in, requires explicit approval).",
+            "description": "Launch desktop application by name or executable path (opt-in, requires explicit approval).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "Application name or path."},
+                    "app_name": {"type": "string", "description": "Application name or path (e.g. 'notepad', 'calc')."},
                 },
-                "required": ["name"],
+                "required": ["app_name"],
             },
         },
     },
@@ -822,6 +837,38 @@ OPENAI_HARNESS_TOOLS = [
         },
     },
 ]
+
+# Combined backwards-compatible tools list
+OPENAI_HARNESS_TOOLS = CORE_CODING_TOOLS + BROWSER_TOOLS + COMPUTER_TOOLS
+
+
+def get_tools_for_tier(
+    tier: int,
+    provider: str = "",
+    enable_browser: bool = False,
+    enable_computer: bool = False,
+    slim: bool = False,
+) -> list[dict[str, Any]]:
+    """Return filtered tool definitions appropriate for the effort tier and provider budget.
+
+    Chat tier excludes browser and desktop computer tools by default to save ~1,450 tokens
+    and prevent weak models from hallucinating desktop/browser interactions on document tasks.
+    """
+    if tier == 0:
+        return []
+
+    is_groq = str(provider).lower() == "groq"
+    if slim or is_groq:
+        tools = list(SLIM_CODING_TOOLS)
+    else:
+        tools = list(CORE_CODING_TOOLS)
+
+    if enable_browser:
+        tools.extend(BROWSER_TOOLS)
+    if enable_computer:
+        tools.extend(COMPUTER_TOOLS)
+
+    return tools
 
 def _is_command_malicious(command: str) -> bool:
     """Detect injection / remote code execution payloads in terminal commands."""

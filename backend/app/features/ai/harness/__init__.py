@@ -41,6 +41,7 @@ from .tool_executor import (
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
+    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, get_tools_for_tier,
     PROJECT_MEMORY_MAX_CHARS,
 )
 from .prompt_builder import (
@@ -50,6 +51,9 @@ from .prompt_builder import (
 )
 from .stage_finalizer import _finalize_staged_changes
 from .duo_escalator import _escalate_to_duo
+from .payload_governor import (
+    govern_payload, estimate_request_tokens, _truncate_attachment_in_text,
+)
 
 __all__ = [
     "MAX_AGENT_ITERATIONS",

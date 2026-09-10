@@ -418,14 +418,17 @@ def format_attached_files_xml(
             continue
 
         # Single-file budget check (head + tail)
+        is_truncated = False
         if len(fcontent) > max_chars_per_file:
+            is_truncated = True
             omitted = len(fcontent) - max_chars_per_file
-            half = max_chars_per_file // 2
-            head = fcontent[:half]
-            tail = fcontent[-half:]
+            head_len = int(max_chars_per_file * 0.6)
+            tail_len = int(max_chars_per_file * 0.4)
+            head = fcontent[:head_len]
+            tail = fcontent[-tail_len:]
             fcontent = (
                 f"{head}\n\n"
-                f"[... {omitted} characters omitted to stay within model context / TPM limits. Full content available in preview. ...]\n\n"
+                f"[... middle truncated — {omitted} characters omitted to stay within model context / TPM limits. Full content available in preview. ...]\n\n"
                 f"{tail}"
             )
 
@@ -433,12 +436,14 @@ def format_attached_files_xml(
         if current_total_chars + len(fcontent) > max_total_chars:
             avail = max(1000, max_total_chars - current_total_chars)
             if len(fcontent) > avail:
+                is_truncated = True
                 omitted = len(fcontent) - avail
                 fcontent = f"{fcontent[:avail]}\n\n[... {omitted} characters omitted for multi-attachment context budget ...]"
 
         current_total_chars += len(fcontent)
+        trunc_attr = ' truncated="true"' if is_truncated else ""
         file_elements.append(
-            f'<file id="{fid}" name="{fname}" type="{mtype}" pages="{pcount}" words="{wcount}">\n{fcontent}\n</file>'
+            f'<file id="{fid}" name="{fname}" type="{mtype}" pages="{pcount}" words="{wcount}"{trunc_attr}>\n{fcontent}\n</file>'
         )
 
     if not file_elements:

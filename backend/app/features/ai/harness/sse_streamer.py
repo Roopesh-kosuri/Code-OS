@@ -158,8 +158,8 @@ def _sse_error(message: str, **kwargs: Any) -> str:
 
 
 class StreamReasoningFilter:
-    """Stream filter that intercepts reasoning tags, retry signals, and channel tokens.
-    Routes reasoning text to thinking events with periodic token counts and clean user text to token events.
+    """Stream filter that intercepts reasoning tags, machine tool-call blocks, and channel tokens.
+    Routes reasoning text to thinking events, suppresses machine tool calls from user prose, and emits clean user text to token events.
     """
 
     def __init__(self) -> None:
@@ -168,6 +168,8 @@ class StreamReasoningFilter:
         self.thought_tag_close = ""
         self.accumulated_thought = ""
         self.last_reported_thought_tokens = 0
+        self.in_tool_call = False
+        self.tool_tag_close = ""
 
     def feed(self, token: str) -> list[tuple[str, Any]]:
         events: list[tuple[str, Any]] = []
@@ -182,9 +184,13 @@ class StreamReasoningFilter:
                 self.buffer = self.buffer[:m_retry.start()] + self.buffer[m_retry.end():]
 
         while self.buffer:
-            if not self.in_thought:
+            if not self.in_thought and not self.in_tool_call:
+                # 1. Check for reasoning tag openers
                 m_open = re.search(r"(<think>|<thought>|<reasoning>|<\|start\|>thought|commentary\s+to=|<\|start\|>to=)", self.buffer, re.IGNORECASE)
-                if m_open:
+                # 2. Check for tool-call openers to suppress from chat bubble
+                m_tool = re.search(r"(\[TOOL_CALL:\s*[a-zA-Z0-9_\-]+|```(?:tool_call|json)?\s*\n?\s*\{\s*\"(?:tool|name|action)\"\s*:)", self.buffer, re.IGNORECASE)
+
+                if m_open and (not m_tool or m_open.start() < m_tool.start()):
                     prefix = self.buffer[:m_open.start()]
                     matched_str = m_open.group(0)
                     if prefix:
@@ -202,8 +208,18 @@ class StreamReasoningFilter:
                     elif "commentary" in matched_lower:
                         self.thought_tag_close = "\n"
                     self.buffer = self.buffer[m_open.end():]
+                elif m_tool:
+                    prefix = self.buffer[:m_tool.start()]
+                    if prefix:
+                        events.append(("token", prefix))
+                    self.in_tool_call = True
+                    if "[tool_call:" in m_tool.group(0).lower():
+                        self.tool_tag_close = "[/TOOL_CALL]"
+                    else:
+                        self.tool_tag_close = "```"
+                    self.buffer = self.buffer[m_tool.end():]
                 else:
-                    m_part = re.search(r"(<[^\n]{0,20}|commentary[^\n]{0,5})$", self.buffer, re.IGNORECASE)
+                    m_part = re.search(r"(<[^\n]{0,20}|commentary[^\n]{0,5}|\[[^\n]{0,15}|```[^\n]{0,10})$", self.buffer, re.IGNORECASE)
                     if m_part:
                         safe_len = m_part.start()
                         if safe_len > 0:
@@ -214,7 +230,22 @@ class StreamReasoningFilter:
                         events.append(("token", self.buffer))
                         self.buffer = ""
                         break
+            elif self.in_tool_call:
+                # Suppress tool call contents from token stream
+                if self.tool_tag_close:
+                    idx = self.buffer.find(self.tool_tag_close)
+                    if idx != -1:
+                        self.buffer = self.buffer[idx + len(self.tool_tag_close):]
+                        self.in_tool_call = False
+                        self.tool_tag_close = ""
+                    else:
+                        self.buffer = ""
+                        break
+                else:
+                    self.buffer = ""
+                    break
             else:
+                # Inside thinking block
                 if self.thought_tag_close:
                     idx = self.buffer.find(self.thought_tag_close)
                     if idx != -1:
@@ -249,15 +280,17 @@ class StreamReasoningFilter:
     def flush(self) -> list[tuple[str, Any]]:
         events: list[tuple[str, Any]] = []
         if self.buffer:
-            if not self.in_thought:
+            if not self.in_thought and not self.in_tool_call:
                 events.append(("token", self.buffer))
-            else:
+            elif self.in_thought:
                 clean_thought = (self.accumulated_thought + self.buffer).strip()
                 if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
                     token_estimate = max(1, len(clean_thought) // 4)
                     events.append(("thinking", clean_thought))
                     events.append(("thinking_tokens", token_estimate))
             self.buffer = ""
+            self.in_tool_call = False
+            self.tool_tag_close = ""
         elif self.in_thought and self.accumulated_thought:
             clean_thought = self.accumulated_thought.strip()
             if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
