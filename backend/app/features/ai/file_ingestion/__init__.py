@@ -5,6 +5,7 @@ from .service import (
     get_uploaded_file,
     list_uploaded_files,
     delete_uploaded_file,
+    format_attached_files_xml,
 )
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "get_uploaded_file",
     "list_uploaded_files",
     "delete_uploaded_file",
+    "format_attached_files_xml",
 ]

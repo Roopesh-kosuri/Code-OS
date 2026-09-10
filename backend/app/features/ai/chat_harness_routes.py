@@ -133,29 +133,28 @@ async def chat_agent_stream(payload: ChatAgentStreamRequest) -> StreamingRespons
     """
     from .chat_harness import run_chat_agent, ChatAgentRequest
     
-    # Context injection for uploaded files
+    # Context injection for uploaded files with deterministic budget truncation (S4)
     effective_messages = [dict(m) for m in payload.messages]
     if payload.file_ids:
-        from .file_ingestion.service import get_uploaded_file
-        file_blocks = []
+        from .file_ingestion.service import get_uploaded_file, format_attached_files_xml
+        raw_attached = []
         for fid in payload.file_ids:
             fdata = get_uploaded_file(fid, payload.workspace)
             if fdata and fdata.get("content"):
-                fname = fdata.get("filename", "file")
-                fcontent = fdata.get("content", "")
-                file_blocks.append(f"[{fname}]:\n{fcontent}")
-        if file_blocks:
-            injected_header = "Attached files:\n\n" + "\n\n".join(file_blocks)
-            if effective_messages:
-                last_msg = dict(effective_messages[-1])
-                if last_msg.get("role") == "user":
-                    existing = last_msg.get("content", "")
-                    last_msg["content"] = f"{injected_header}\n\n{existing}" if existing else injected_header
-                    effective_messages[-1] = last_msg
+                raw_attached.append(fdata)
+        if raw_attached:
+            attached_block = format_attached_files_xml(raw_attached)
+            if attached_block:
+                if effective_messages:
+                    last_msg = dict(effective_messages[-1])
+                    if last_msg.get("role") == "user":
+                        existing = last_msg.get("content", "")
+                        last_msg["content"] = f"{attached_block}\n\n{existing}" if existing else attached_block
+                        effective_messages[-1] = last_msg
+                    else:
+                        effective_messages.append({"role": "user", "content": attached_block})
                 else:
-                    effective_messages.append({"role": "user", "content": injected_header})
-            else:
-                effective_messages.append({"role": "user", "content": injected_header})
+                    effective_messages.append({"role": "user", "content": attached_block})
 
     agent_request = ChatAgentRequest(
         provider=payload.provider,
@@ -171,6 +170,7 @@ async def chat_agent_stream(payload: ChatAgentStreamRequest) -> StreamingRespons
         vision_model=payload.vision_model,
         vision_provider=payload.vision_provider,
         vision_base_url=payload.vision_base_url,
+        file_ids=payload.file_ids or [],
     )
     
     return StreamingResponse(
@@ -589,7 +589,7 @@ async def test_direct_provider_call(payload: DirectProviderCallRequest) -> dict:
     
     req = ChatAgentRequest(
         provider="openai-compatible" if prov in (
-            "groq", "gemini", "nvidia-nim", "openai", "deepseek",
+            "groq", "gemini", "nvidia-nim", "nvidia", "openai", "deepseek",
             "mistral", "openrouter", "moonshot", "glm", "qwen"
         ) else prov,
         model=model,

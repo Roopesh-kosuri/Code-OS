@@ -106,23 +106,8 @@ class PlannerAgent(BaseAgent):
         # Format attached files if provided and not already present in prompt
         attached_xml = ""
         if attached_files:
-            file_blocks = []
-            for f in attached_files:
-                fid = f.get("id") or f.get("file_id", "file")
-                fname = f.get("filename") or f.get("name", "attachment")
-                fmime = f.get("mime_type") or f.get("type", "text/plain")
-                fpages = f.get("page_count") or f.get("pages", 1)
-                fwords = f.get("word_count") or f.get("words", len(str(f.get("content", "")).split()))
-                content = f.get("content", "")
-                file_blocks.append(
-                    f'<file id="{fid}" name="{fname}" type="{fmime}" pages="{fpages}" words="{fwords}">\n{content}\n</file>'
-                )
-            if file_blocks:
-                attached_xml = (
-                    f'<attached_files count="{len(file_blocks)}">\n'
-                    + "\n".join(file_blocks)
-                    + "\n</attached_files>"
-                )
+            from ..file_ingestion.service import format_attached_files_xml
+            attached_xml = format_attached_files_xml(attached_files)
 
         if attached_xml and "<attached_files" not in user_request and "<attached_files" not in workspace_context:
             prompt = f"{attached_xml}\n\nUser Request: {user_request}\n\nWorkspace Context:\n{workspace_context}"

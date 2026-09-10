@@ -353,22 +353,98 @@ def save_uploaded_file(
     # Persist metadata sidecar
     meta_file_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
 
+    # Invalidate / update in-memory cache
+    _FILE_RECORD_CACHE[file_id] = record
+    if workspace:
+        _FILE_RECORD_CACHE[f"{file_id}:{workspace}"] = record
+
     return record
 
 
+_FILE_RECORD_CACHE: dict[str, dict[str, Any]] = {}
+
+
 def get_uploaded_file(file_id: str, workspace: str = "") -> Optional[dict[str, Any]]:
-    """Retrieve full uploaded file content and metadata by UUID from any valid candidate root."""
+    """Retrieve full uploaded file content and metadata by UUID from any valid candidate root, with in-memory caching."""
+    cache_key = f"{file_id}:{workspace}" if workspace else file_id
+    if cache_key in _FILE_RECORD_CACHE:
+        return _FILE_RECORD_CACHE[cache_key]
+    if file_id in _FILE_RECORD_CACHE:
+        return _FILE_RECORD_CACHE[file_id]
+
     for uploads_dir in get_candidate_upload_dirs(workspace):
         if not uploads_dir.exists():
             continue
         meta_file = uploads_dir / f"{file_id}_meta.json"
         if meta_file.exists():
             try:
-                return json.loads(meta_file.read_text(encoding="utf-8"))
+                data = json.loads(meta_file.read_text(encoding="utf-8"))
+                _FILE_RECORD_CACHE[cache_key] = data
+                _FILE_RECORD_CACHE[file_id] = data
+                return data
             except Exception as exc:
                 logger.error("Failed to read meta file %s: %s", meta_file, exc)
 
     return None
+
+
+def format_attached_files_xml(
+    attached_files: list[dict[str, Any]],
+    max_chars_per_file: int = 12000,
+    max_total_chars: int = 24000,
+) -> str:
+    """Format attached files as an XML block with deterministic head+tail truncation.
+
+    Prevents oversized prompts from blowing provider TPM limits (e.g. Groq 8,000 TPM limit)
+    or triggering HTTP 413 Context Overflow errors, while preserving document headers,
+    structure, and conclusions.
+    """
+    if not attached_files:
+        return ""
+
+    file_elements: list[str] = []
+    current_total_chars = 0
+
+    for f in attached_files:
+        fid = f.get("id") or f.get("file_id", "file")
+        fname = f.get("filename") or f.get("name", "attachment")
+        fmeta = f.get("metadata") or {}
+        mtype = f.get("mime_type") or f.get("type") or fmeta.get("mime_type", "text/plain")
+        pcount = f.get("page_count") or f.get("pages") or fmeta.get("page_count", "")
+        wcount = f.get("word_count") or f.get("words") or fmeta.get("word_count", "")
+        fcontent = str(f.get("content", ""))
+
+        if not fcontent.strip():
+            continue
+
+        # Single-file budget check (head + tail)
+        if len(fcontent) > max_chars_per_file:
+            omitted = len(fcontent) - max_chars_per_file
+            half = max_chars_per_file // 2
+            head = fcontent[:half]
+            tail = fcontent[-half:]
+            fcontent = (
+                f"{head}\n\n"
+                f"[... {omitted} characters omitted to stay within model context / TPM limits. Full content available in preview. ...]\n\n"
+                f"{tail}"
+            )
+
+        # Multi-file budget check
+        if current_total_chars + len(fcontent) > max_total_chars:
+            avail = max(1000, max_total_chars - current_total_chars)
+            if len(fcontent) > avail:
+                omitted = len(fcontent) - avail
+                fcontent = f"{fcontent[:avail]}\n\n[... {omitted} characters omitted for multi-attachment context budget ...]"
+
+        current_total_chars += len(fcontent)
+        file_elements.append(
+            f'<file id="{fid}" name="{fname}" type="{mtype}" pages="{pcount}" words="{wcount}">\n{fcontent}\n</file>'
+        )
+
+    if not file_elements:
+        return ""
+
+    return f'<attached_files count="{len(file_elements)}">\n' + "\n".join(file_elements) + "\n</attached_files>"
 
 
 def list_uploaded_files(workspace: str) -> list[dict[str, Any]]:
@@ -424,5 +500,10 @@ def delete_uploaded_file(file_id: str, workspace: str = "") -> bool:
         for f in uploads_dir.glob(f"{file_id}_*"):
             f.unlink(missing_ok=True)
             deleted_any = True
+
+    # Evict from in-memory cache
+    _FILE_RECORD_CACHE.pop(file_id, None)
+    if workspace:
+        _FILE_RECORD_CACHE.pop(f"{file_id}:{workspace}", None)
 
     return deleted_any

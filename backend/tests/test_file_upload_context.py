@@ -199,3 +199,70 @@ async def test_coder_grounds_from_attached_files(tmp_path: Path):
     attach_pos = grounding.index("### [ATTACHED USER FILES (PRIMARY REFERENCE)]")
     target_pos = grounding.index("TARGET FILE TO EDIT")
     assert attach_pos < target_pos
+
+
+def test_format_attached_files_xml_truncation_budget():
+    """S4 Regression: Oversized attachment is cleanly truncated with head+tail and omission marker."""
+    from app.features.ai.file_ingestion.service import format_attached_files_xml
+
+    # Construct a large 25,000 char document
+    head_marker = "START_OF_FORENSIC_AUDIT_REPORT_CHAPTER_1"
+    tail_marker = "FINAL_RECOMMENDATIONS_AND_CONCLUSION_OF_AUDIT"
+    body = "Security audit detailed findings line.\n" * 600
+    huge_content = f"{head_marker}\n{body}\n{tail_marker}"
+    assert len(huge_content) > 20000
+
+    attached = [{
+        "id": "audit_doc_huge",
+        "filename": "huge_audit.pdf",
+        "mime_type": "application/pdf",
+        "page_count": 15,
+        "content": huge_content,
+    }]
+
+    xml = format_attached_files_xml(attached, max_chars_per_file=12000)
+    assert '<attached_files count="1">' in xml
+    assert head_marker in xml
+    assert tail_marker in xml
+    assert "[... " in xml
+    assert "characters omitted to stay within model context / TPM limits" in xml
+    # Total characters of the file block must be capped
+    assert len(xml) < 13500
+
+
+def test_get_uploaded_file_in_memory_cache(tmp_path):
+    """S4 Regression: get_uploaded_file returns cached dict without disk re-reads."""
+    from app.features.ai.file_ingestion.service import (
+        save_uploaded_file,
+        get_uploaded_file,
+        delete_uploaded_file,
+        _FILE_RECORD_CACHE,
+    )
+
+    ws = str(tmp_path / "ws_cache")
+    record = save_uploaded_file(
+        workspace=ws,
+        file_bytes=b"%PDF-1.4 test bytes",
+        filename="cached_report.pdf",
+        mime_type="application/pdf",
+    )
+    fid = record["file_id"]
+
+    # Must be in cache immediately
+    assert fid in _FILE_RECORD_CACHE
+
+    # First lookup hits cache
+    fetched1 = get_uploaded_file(fid, ws)
+    assert fetched1 is not None
+    assert fetched1["filename"] == "cached_report.pdf"
+
+    # Modify in-memory record to prove it uses the cache
+    fetched1["_probe_cached_marker"] = True
+    fetched2 = get_uploaded_file(fid, ws)
+    assert fetched2 is not None
+    assert fetched2.get("_probe_cached_marker") is True
+
+    # Delete clears the cache
+    delete_uploaded_file(fid, ws)
+    assert fid not in _FILE_RECORD_CACHE
+
