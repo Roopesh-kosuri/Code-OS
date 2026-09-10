@@ -389,6 +389,10 @@ export function AIChatPanel() {
         };
         reader.readAsDataURL(file);
       } else if (!imageOnly) {
+        const uploadFn = (window as any).__fileUploadStore?.getState?.()?.uploadFile;
+        if (uploadFn) {
+          void uploadFn(file);
+        }
         setAttachedPaths((prev) => Array.from(new Set([...prev, file.name])));
       }
     });
@@ -439,6 +443,10 @@ export function AIChatPanel() {
         };
         reader.readAsDataURL(file);
       } else {
+        const uploadFn = (window as any).__fileUploadStore?.getState?.()?.uploadFile;
+        if (uploadFn) {
+          void uploadFn(file);
+        }
         setAttachedPaths((prev) => Array.from(new Set([...prev, file.name])));
       }
     });
@@ -880,6 +888,45 @@ export function AIChatPanel() {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+              {/* Persistent Attached Files Chips */}
+              {((message.attached_files && message.attached_files.length > 0) || (message.file_ids && message.file_ids.length > 0)) && (
+                <div
+                  data-testid="message-attached-files-chips"
+                  className="flex flex-wrap gap-1.5 justify-end max-w-[88%]"
+                >
+                  {(message.attached_files || message.file_ids?.map(fid => ({ file_id: fid, filename: fid, size: 0, mime_type: "text/plain" })) || []).map((file: any, fIdx: number) => {
+                    const fname = file.filename || file.name || "Attachment";
+                    const fsize = file.size ? ` (${(file.size / 1024).toFixed(1)} KB)` : "";
+                    return (
+                      <button
+                        key={file.file_id || fIdx}
+                        type="button"
+                        data-testid={`message-file-chip-${file.file_id || fIdx}`}
+                        onClick={() => {
+                          const openPrev = (window as any).__fileUploadStore?.getState?.()?.openPreview;
+                          if (openPrev) {
+                            void openPrev({
+                              file_id: file.file_id || file.id,
+                              filename: fname,
+                              mime_type: file.mime_type || "text/plain",
+                              size: file.size || 0,
+                              content_preview: file.content_preview || (file.content ? file.content.slice(0, 100) : ""),
+                              content: file.content,
+                            });
+                          }
+                        }}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-surface-container-high/90 hover:bg-surface-variant border border-primary/30 hover:border-primary/60 text-on-surface text-[11px] font-medium transition-all cursor-pointer shadow-sm group"
+                        title={`Click to preview ${fname}`}
+                      >
+                        <Paperclip size={12} className="text-primary shrink-0 group-hover:scale-110 transition-transform" />
+                        <span className="truncate max-w-[180px] text-white font-mono text-[10.5px]">{fname}</span>
+                        {fsize && <span className="text-[9.5px] text-on-surface-variant font-mono">{fsize}</span>}
+                        <Eye size={11} className="text-primary/70 opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-0.5" />
+                      </button>
+                    );
+                  })}
                 </div>
               )}
               {cleanText && (

@@ -258,9 +258,54 @@ def ingest_file(
     }
 
 
+def get_candidate_upload_dirs(workspace: str = "") -> list[Path]:
+    """Return all candidate directories where uploaded files and metadata might exist."""
+    candidates: list[Path] = []
+
+    # 1. Explicit workspace path
+    if workspace:
+        try:
+            candidates.append(Path(workspace).resolve() / ".code_os" / "uploads")
+        except Exception:
+            pass
+
+    # 2. Current working directory
+    candidates.append(Path(".").resolve() / ".code_os" / "uploads")
+
+    # 3. Parent directory (critical when backend process runs with CWD='backend')
+    candidates.append(Path("..").resolve() / ".code_os" / "uploads")
+
+    # 4. Global application roaming directory (near code-os.sqlite3)
+    try:
+        from app.core.config import get_settings
+        settings = get_settings()
+        if hasattr(settings, "database_path") and settings.database_path:
+            candidates.append(Path(settings.database_path).resolve().parent / "uploads")
+            candidates.append(Path(settings.database_path).resolve().parent / ".code_os" / "uploads")
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for c in candidates:
+        norm = str(c.resolve()) if c.is_absolute() else str(c)
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(c)
+
+    return deduped
+
+
 def get_uploads_dir(workspace: str) -> Path:
-    """Return the absolute path to <workspace>/.code_os/uploads."""
-    ws = Path(workspace).resolve() if workspace else Path(".").resolve()
+    """Return the primary absolute path to <workspace>/.code_os/uploads."""
+    if workspace:
+        ws = Path(workspace).resolve()
+    else:
+        # Detect if running from 'backend/' subdirectory of project root
+        if (Path("..") / "package.json").exists() or (Path("..") / ".code_os").exists():
+            ws = Path("..").resolve()
+        else:
+            ws = Path(".").resolve()
     uploads_dir = ws / ".code_os" / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     return uploads_dir
@@ -312,10 +357,10 @@ def save_uploaded_file(
 
 
 def get_uploaded_file(file_id: str, workspace: str = "") -> Optional[dict[str, Any]]:
-    """Retrieve full uploaded file content and metadata by UUID."""
-    # 1. Direct workspace check
-    if workspace:
-        uploads_dir = get_uploads_dir(workspace)
+    """Retrieve full uploaded file content and metadata by UUID from any valid candidate root."""
+    for uploads_dir in get_candidate_upload_dirs(workspace):
+        if not uploads_dir.exists():
+            continue
         meta_file = uploads_dir / f"{file_id}_meta.json"
         if meta_file.exists():
             try:
@@ -323,53 +368,42 @@ def get_uploaded_file(file_id: str, workspace: str = "") -> Optional[dict[str, A
             except Exception as exc:
                 logger.error("Failed to read meta file %s: %s", meta_file, exc)
 
-    # 2. Search local directories / current directory
-    cur_uploads = Path(".code_os") / "uploads"
-    if cur_uploads.exists():
-        meta_file = cur_uploads / f"{file_id}_meta.json"
-        if meta_file.exists():
-            try:
-                return json.loads(meta_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-
     return None
 
 
 def list_uploaded_files(workspace: str) -> list[dict[str, Any]]:
-    """List all uploaded files in <workspace>/.code_os/uploads/."""
-    uploads_dir = get_uploads_dir(workspace)
+    """List all uploaded files in candidate upload directories."""
     results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
 
-    if not uploads_dir.exists():
-        return results
+    for uploads_dir in get_candidate_upload_dirs(workspace):
+        if not uploads_dir.exists():
+            continue
 
-    for meta_file in sorted(uploads_dir.glob("*_meta.json"), key=os.path.getmtime, reverse=True):
-        try:
-            data = json.loads(meta_file.read_text(encoding="utf-8"))
-            results.append({
-                "file_id": data.get("file_id"),
-                "filename": data.get("filename"),
-                "content_preview": data.get("content_preview", ""),
-                "metadata": data.get("metadata", {}),
-                "error": data.get("error"),
-            })
-        except Exception as exc:
-            logger.debug("Failed reading upload meta %s: %s", meta_file, exc)
+        for meta_file in sorted(uploads_dir.glob("*_meta.json"), key=os.path.getmtime, reverse=True):
+            try:
+                data = json.loads(meta_file.read_text(encoding="utf-8"))
+                fid = data.get("file_id")
+                if fid and fid not in seen_ids:
+                    seen_ids.add(fid)
+                    results.append({
+                        "file_id": fid,
+                        "filename": data.get("filename"),
+                        "content_preview": data.get("content_preview", ""),
+                        "metadata": data.get("metadata", {}),
+                        "error": data.get("error"),
+                    })
+            except Exception as exc:
+                logger.debug("Failed reading upload meta %s: %s", meta_file, exc)
 
     return results
 
 
 def delete_uploaded_file(file_id: str, workspace: str = "") -> bool:
-    """Delete uploaded raw file and metadata sidecar from disk."""
+    """Delete uploaded raw file and metadata sidecar from all candidate disks."""
     deleted_any = False
-    candidates: list[Path] = []
 
-    if workspace:
-        candidates.append(get_uploads_dir(workspace))
-    candidates.append(Path(".code_os") / "uploads")
-
-    for uploads_dir in candidates:
+    for uploads_dir in get_candidate_upload_dirs(workspace):
         if not uploads_dir.exists():
             continue
         meta_file = uploads_dir / f"{file_id}_meta.json"

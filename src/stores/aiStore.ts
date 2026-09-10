@@ -199,6 +199,8 @@ export interface ExtendedChatMessage extends ChatMessage {
   model?: string;
   attached_paths?: string[];
   attached_images?: AttachedImage[];
+  file_ids?: string[];
+  attached_files?: any[];
   created_at?: string;
   agentStatus?: AgentStatus | null;
   agentPlan?: AgentPlan | null;
@@ -1143,13 +1145,23 @@ export const useAIStore = create<AIState>((set, get) => ({
       void get().renameThread(threadId, cleanTitle);
     }
 
+    const uploadStore = (window as any).__fileUploadStore?.getState?.();
+    const uploadedFiles = uploadStore?.uploadedFiles || [];
+    const file_ids: string[] = uploadedFiles.map((f: any) => f.file_id);
+
     const userMessage: ExtendedChatMessage = {
       role: "user",
       content,
       attached_paths: attachedPaths,
       attached_images: attachedImages,
+      file_ids: file_ids.length > 0 ? file_ids : undefined,
+      attached_files: uploadedFiles.length > 0 ? [...uploadedFiles] : undefined,
       created_at: new Date().toISOString(),
     };
+
+    if (uploadStore?.clearFiles) {
+      uploadStore.clearFiles();
+    }
     const assistantMessage: ExtendedChatMessage = {
       role: "assistant",
       content: "",
@@ -1212,6 +1224,7 @@ export const useAIStore = create<AIState>((set, get) => ({
           messages: requestMessages,
           attached_paths: combinedAttachedPaths,
           attached_images: attachedImages,
+          file_ids: file_ids.length > 0 ? file_ids : undefined,
           workspace,
           agent_mode: get().agentMode,
           vision_model: get().visionModel,
