@@ -125,6 +125,7 @@ from .harness import (
     _generate_diff_summary,
     DAGPlanStep, _parse_plan, _parse_plan_dag, _replan_on_failure,
     _classify_rules, _classify_task_effort, _is_deep_query, _is_quick_task_query,
+    KNOWN_TECH_NAMES,
     _has_escalate_marker, _response_is_done, _declares_tool_intent,
     _extract_heuristic_tool_calls, _parse_tool_calls_extended, _has_tool_calls_extended,
     step_matches_work,
@@ -149,6 +150,30 @@ server_session_manager = ServerSessionManager()
 code_intelligence = CodeIntelligence()
 
 logger = logging.getLogger(__name__)
+
+
+def _is_document_review_turn(user_query: str, attached_filenames: set[str], attached_paths: list[str] | None = None) -> bool:
+    """Determine whether the turn is a document review, summary, analysis, or critique inquiry."""
+    has_attached = bool(attached_filenames or attached_paths)
+    if not has_attached:
+        has_attached = bool(re.search(r'<(?:attached_files|file|untrusted_file_content)\b', user_query, re.IGNORECASE))
+    if not has_attached:
+        return False
+
+    clean_q = re.sub(r'<(?:attached_files|file|untrusted_file_content|untrusted_web_content)[\s\S]*?</(?:attached_files|file|untrusted_file_content|untrusted_web_content)>', '', user_query, flags=re.IGNORECASE)
+    clean_q = re.sub(r'\[web content context\]:[\s\S]*', '', clean_q, flags=re.IGNORECASE)
+    clean_q = re.sub(r'\[attached image visual findings\][\s\S]*?\[end attached image visual findings\]', '', clean_q, flags=re.IGNORECASE).lower().strip()
+
+    review_kws = (
+        "review", "feedback", "evaluate", "critique", "thoughts on", "how is my",
+        "check my", "what do you think", "summarize", "summarise", "summary", "read",
+        "read this", "go through", "analyze", "analyse", "overview", "tell me about",
+        "what does this say", "explain my", "look at my", "break down"
+    )
+    doc_targets = ("cv", "resume", "document", "spec", "pdf", "file", "profile", "bio", "report", "paper", "audit", "it", "this")
+    is_review = any(kw in clean_q for kw in review_kws) and (any(dt in clean_q for dt in doc_targets) or bool(attached_filenames or attached_paths))
+    explicit_code_action = any(cw in clean_q for cw in ("rewrite", "modify file", "edit file", "create file", "write code", "fix code", "implement", "build"))
+    return is_review and not explicit_code_action
 
 @dataclass
 class ChatAgentRequest:
@@ -244,7 +269,12 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             settings_dict = await list_settings()
             allow_links = settings_dict.get("ai.allow_link_fetch", "true").lower() != "false"
             if allow_links and user_query:
-                user_urls = extract_user_urls(user_query)
+                clean_for_links = re.sub(r'<attached_files[\s\S]*?</attached_files>', '', user_query, flags=re.IGNORECASE)
+                clean_for_links = re.sub(r'<file[\s\S]*?</file>', '', clean_for_links, flags=re.IGNORECASE)
+                clean_for_links = re.sub(r'<untrusted_file_content[\s\S]*?</untrusted_file_content>', '', clean_for_links, flags=re.IGNORECASE)
+                clean_for_links = re.sub(r'<untrusted_web_content[\s\S]*?</untrusted_web_content>', '', clean_for_links, flags=re.IGNORECASE)
+                clean_for_links = re.sub(r'\[web content context\]:[\s\S]*', '', clean_for_links, flags=re.IGNORECASE)
+                user_urls = extract_user_urls(clean_for_links)
         except Exception as e:
             logger.warning("Failed to check link fetch settings: %s", e)
 
@@ -518,9 +548,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     slim=context_overflow_retried,
                 )
                 active_tools = tier_tools + mcp_tool_defs
-                # Strip ask_user when analyzing/reviewing documents or when clarification limit is reached
-                is_review_turn = bool(attached_filenames and any(kw in user_query.lower() for kw in ("review", "feedback", "evaluate", "critique", "thoughts on", "how is my", "check my", "what do you think")))
-                if ask_user_count >= MAX_CLARIFICATIONS_PER_TURN or is_review_turn:
+                is_review_turn = _is_document_review_turn(user_query, attached_filenames, request.attached_paths)
+                if is_review_turn or ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
                     active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "ask_user"]
             else:
                 active_tools = None
@@ -1494,7 +1523,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             opts = ["Yes, proceed", "No, cancel"]
 
                         # Reject ask_user when user requested a review/evaluation of an attached document
-                        is_review_turn = bool(attached_filenames and any(kw in user_query.lower() for kw in ("review", "feedback", "evaluate", "critique", "thoughts on", "how is my", "check my", "what do you think")))
+                        is_review_turn = _is_document_review_turn(user_query, attached_filenames, request.attached_paths)
                         if is_review_turn:
                             logger.info("chat_harness: rejected ask_user during document review turn (%s)", q_text)
                             review_err = "The user asked for your direct evaluation and review of their document. Do not quiz the user or ask for their thoughts; synthesize and deliver your complete review and feedback directly in conversational prose, then output [DONE]."
@@ -1546,7 +1575,25 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             for af in attached_filenames
                         )
                         explicit_edit_command = any(kw in user_query.lower() for kw in ("edit", "modify", "update", "rewrite", "replace", "fix", "overwrite", "change"))
-                        if is_attached_ref and not explicit_edit_command:
+                        is_tech_name = target_base in KNOWN_TECH_NAMES
+                        if is_tech_name and not explicit_edit_command:
+                            tech_err = (
+                                f"'{raw_target}' is a recognized technology or library name, not a valid project file to edit. "
+                                "Do not create empty files for technology names. Continue your analysis in prose or output [DONE]."
+                            )
+                            yield _sse_status("tool_error", tech_err, tool=tc.name)
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=tech_err)
+                            turn_all_tools_successful = False
+                        elif is_review_turn and not explicit_edit_command:
+                            review_edit_err = (
+                                f"Cannot stage edits for '{raw_target}' during a document review turn. "
+                                "Document review turns are read-only. Deliver your feedback, evaluation, or summary "
+                                "directly in conversational prose instead of staging file edits."
+                            )
+                            yield _sse_status("tool_error", review_edit_err, tool=tc.name)
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=review_edit_err)
+                            turn_all_tools_successful = False
+                        elif is_attached_ref and not explicit_edit_command:
                             ref_err = (
                                 f"Cannot edit attached reference document '{raw_target}'. "
                                 "Attached files are strictly read-only data. Provide your analysis, summary, review, "
@@ -2202,7 +2249,16 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 )
 
                 staged_names = {Path(c.path).name.lower() for c in staged_changes}
-                query_targets = re.findall(r"\b[\w-]+\.(?:py|java|c|cpp|h|hpp|ts|tsx|js|jsx|html|css|go|rs|rb|php|cs|json|md)\b", user_query.lower())
+                clean_q_for_targets = re.sub(r'<(?:attached_files|file|untrusted_file_content|untrusted_web_content)[\s\S]*?</(?:attached_files|file|untrusted_file_content|untrusted_web_content)>', '', user_query, flags=re.IGNORECASE)
+                clean_q_for_targets = re.sub(r'\[web content context\]:[\s\S]*', '', clean_q_for_targets, flags=re.IGNORECASE)
+
+                raw_query_targets = re.findall(r"\b[\w-]+\.(?:py|java|c|cpp|h|hpp|ts|tsx|js|jsx|html|css|go|rs|rb|php|cs|json|md)\b", clean_q_for_targets.lower())
+                query_targets = [t for t in raw_query_targets if t.lower() not in KNOWN_TECH_NAMES]
+
+                is_review_turn = _is_document_review_turn(user_query, attached_filenames, request.attached_paths)
+                if is_review_turn or not any(v in clean_q_for_targets.lower() for v in ("create", "add", "write", "make", "implement", "scaffold", "setup")):
+                    query_targets = []
+
                 remaining_targets = [t for t in query_targets if t.lower() not in staged_names]
 
                 staged_summary = ""
@@ -2260,8 +2316,13 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     else:
                         yield _sse_status("audit", "✓ Post-generation structural audit passed cleanly.")
 
+                # Discard any accidental staging during document review turns
+                if is_review_turn and staged_changes:
+                    logger.warning("chat_harness: discarding %d unrequested staged changes during document review turn: %s", len(staged_changes), [c.path for c in staged_changes])
+                    staged_changes.clear()
+
                 # Honest completion guard: In agent mode (Tier >= 1), require executed tools or staged proposals
-                if tier >= 1 and not staged_changes and total_tools_executed == 0:
+                if tier >= 1 and not staged_changes and total_tools_executed == 0 and not is_review_turn:
                     if zero_tools_retries < 1:
                         zero_tools_retries += 1
                         yield _sse_status("thinking", "Agent described actions without emitting tool calls — injecting self-repair nudge...")
@@ -2308,7 +2369,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
             if not has_tools:
                 tools_executed_last_turn = 0
-                if tier >= 1 and not staged_changes and total_tools_executed == 0:
+                if is_review_turn and staged_changes:
+                    logger.warning("chat_harness: discarding %d unrequested staged changes during document review turn: %s", len(staged_changes), [c.path for c in staged_changes])
+                    staged_changes.clear()
+
+                if tier >= 1 and not staged_changes and total_tools_executed == 0 and not is_review_turn:
                     if zero_tools_retries < 1:
                         zero_tools_retries += 1
                         yield _sse_status("thinking", "Agent described actions without emitting tool calls — injecting self-repair nudge...")

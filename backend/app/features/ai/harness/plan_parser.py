@@ -46,6 +46,15 @@ class DAGPlanStep:
         }
 
 
+KNOWN_TECH_NAMES = frozenset({
+    "node.js", "three.js", "vue.js", "react.js", "next.js", "nuxt.js", "express.js",
+    "d3.js", "chart.js", "socket.io", "electron.js", "nest.js", "ember.js",
+    "backbone.js", "angular.js", "p5.js", "pixi.js", "anime.js", "babylon.js",
+    "alpine.js", "day.js", "moment.js", "highlight.js", "require.js", "hammer.js",
+    "pdf.js", "math.js", "modernizr.js", "video.js",
+})
+
+
 def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tuple[int, str, str]:
     """Pure rule-based task classifier (<1ms, no network or LLM calls)."""
     # Strip any prepended attachment XML blocks so rules match the actual user prompt,
@@ -54,6 +63,9 @@ def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tu
     clean_prompt = re.sub(r'<attached_files[\s\S]*?</attached_files>', '', q_lower, flags=re.IGNORECASE)
     clean_prompt = re.sub(r'<file[\s\S]*?</file>', '', clean_prompt, flags=re.IGNORECASE)
     clean_prompt = re.sub(r'<untrusted_file_content[\s\S]*?</untrusted_file_content>', '', clean_prompt, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'<untrusted_web_content[\s\S]*?</untrusted_web_content>', '', clean_prompt, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'\[web content context\]:[\s\S]*', '', clean_prompt, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'\[attached image visual findings\][\s\S]*?\[end attached image visual findings\]', '', clean_prompt, flags=re.IGNORECASE)
     q_lower = clean_prompt.strip() or q_lower.strip()
     has_attachment = bool(attached_paths or len(clean_prompt) < len(original_q))
 
@@ -69,9 +81,18 @@ def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tu
         return 0, "Fast Answer", "Fast path: conversational greeting"
 
     # 1b. Document Review & Feedback Inquiries (Tier 0 Fast Answer - Conversational evaluation)
-    review_keywords = ("review", "critique", "feedback", "evaluate", "what do you think", "how is my", "check my", "inspect my", "thoughts on", "how does this look")
-    doc_targets = ("cv", "resume", "document", "spec", "pdf", "file", "profile", "bio", "report", "paper", "audit", "it", "this")
-    is_explicit_review = any(rk in clean_q for rk in review_keywords) and (any(dt in clean_q for dt in doc_targets) or has_attachment)
+    review_keywords = (
+        "review", "critique", "feedback", "evaluate", "what do you think", "how is my",
+        "check my", "inspect my", "thoughts on", "how does this look", "summarize",
+        "summarise", "summary", "read this", "go through", "overview", "tell me about",
+        "what does this say", "explain my", "look at my", "break down",
+    )
+    if has_attachment:
+        is_explicit_review = any(rk in clean_q for rk in review_keywords) and not any(wsk in clean_q for wsk in ("workspace", "codebase", "repo", "repository", "files in"))
+    else:
+        doc_targets = ("cv", "resume", "document", "spec", "pdf", "profile", "bio", "paper", "my cv", "my resume")
+        is_explicit_review = any(rk in clean_q for rk in review_keywords) and any(dt in clean_q for dt in doc_targets) and not any(wsk in clean_q for wsk in ("workspace", "codebase", "repo", "repository", "files in"))
+
     if is_explicit_review and not any(cw in clean_q for cw in ("rewrite", "edit", "modify", "code", "build", "create")):
         return 0, "Fast Answer", "Fast path: document review / critique inquiry"
 
@@ -125,7 +146,8 @@ def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tu
                 return 2, "Deep think", f"Deep think: multi-file generation '{verb}' detected"
 
     # Multi-file or multi-language generation scope
-    file_targets = re.findall(r"\b[\w-]+\.(?:py|java|c|cpp|h|hpp|ts|tsx|js|jsx|html|css|go|rs|rb|php|cs|json|md)\b", q_lower)
+    raw_file_targets = re.findall(r"\b[\w-]+\.(?:py|java|c|cpp|h|hpp|ts|tsx|js|jsx|html|css|go|rs|rb|php|cs|json|md)\b", q_lower)
+    file_targets = [f for f in raw_file_targets if f.lower() not in KNOWN_TECH_NAMES]
     if len(file_targets) >= 2:
         return 2, "Deep think", f"Deep think: multi-file generation ({len(file_targets)} target files) detected"
 
@@ -158,10 +180,11 @@ def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tu
             if re.search(rf"\b{re.escape(verb)}\b", q_lower):
                 return 1, "Quick Task", f"Quick task: single-target action '{verb}'"
 
-        if re.search(r"\b[\w-]+\.(py|ts|tsx|js|jsx|json|md|html|css|rs|go|c|cpp|h|java|sql)\b", q_lower):
+        file_match = re.search(r"\b[\w-]+\.(py|ts|tsx|js|jsx|json|md|html|css|rs|go|c|cpp|h|java|sql)\b", q_lower)
+        if file_match and file_match.group(0).lower() not in KNOWN_TECH_NAMES:
             return 1, "Quick Task", "Quick task: specific target file detected"
 
-    # 4. Tier 0 (Fast Answer) â€” Questions, explanations, small snippets
+    # 4. Tier 0 (Fast Answer) — Questions, explanations, small snippets
     if is_question:
         return 0, "Fast Answer", "Fast path: conceptual inquiry / question"
 

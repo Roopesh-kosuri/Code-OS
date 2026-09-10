@@ -328,4 +328,74 @@ def test_document_review_turn_strips_ask_user_tool():
     assert "ask_user" not in active_tool_names
 
 
+def test_cv_with_tech_names_routes_tier0_and_filters_targets():
+    """Verify that a CV mentioning Node.js and Three.js does NOT route to Deep Think or stage dummy files."""
+    from app.features.ai.harness.plan_parser import _classify_rules, KNOWN_TECH_NAMES
+    from app.features.ai.chat_harness import _is_document_review_turn
+
+    cv_text = """<attached_files count="1">
+<file name="Roopesh_CV.pdf">
+Roopesh Ram Varma Kosuri
+Skills: Python, TypeScript, Node.js, Three.js, React.js, FastAPI.
+Projects: CODE OS - Agentic AI IDE with tests and readme.
+</file>
+</attached_files>
+
+Can you summarize the CV of Roopesh Ram Varma Kosuri?"""
+
+    tier, label, reason = _classify_rules(cv_text)
+    assert tier == 0, f"Expected Tier 0, got Tier {tier} ({label}): {reason}"
+    assert "document review" in reason.lower() or "fast path" in reason.lower()
+
+    # Verify that KNOWN_TECH_NAMES includes common JS libraries
+    assert "node.js" in KNOWN_TECH_NAMES
+    assert "three.js" in KNOWN_TECH_NAMES
+
+    # Verify review turn detector
+    is_review = _is_document_review_turn(cv_text, {"roopesh_cv.pdf"})
+    assert is_review is True
+
+
+@pytest.mark.asyncio
+async def test_document_review_turn_rejects_tech_edits(tmp_path):
+    """Verify that running chat agent on a document review rejects unrequested tech file creation."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.features.ai.chat_harness import run_chat_agent, ChatAgentRequest
+
+    ws = str(tmp_path)
+    mock_provider = MagicMock()
+
+    async def mock_stream(*args, **kwargs):
+        # Model tries to edit node.js and three.js
+        yield '[TOOL_CALL: edit_file]\n{"path": "node.js", "original": "", "updated": ""}\n[/TOOL_CALL]'
+        yield "Review of CV completed. [DONE]"
+
+    mock_provider.stream_chat = mock_stream
+
+    req = ChatAgentRequest(
+        provider="openai-compatible",
+        model="llama-3.1-nemotron-70b-instruct",
+        workspace=ws,
+        messages=[{
+            "role": "user",
+            "content": '<attached_files count="1"><file name="cv.pdf">Skills: Node.js</file></attached_files>\nCan you summarize the CV?'
+        }],
+        is_agent_mode=True,
+    )
+
+    with patch("app.features.ai.chat_harness.provider_for", AsyncMock(return_value=mock_provider)):
+        events = []
+        async for event in run_chat_agent(req):
+            events.append(event)
+
+    # Verify that edit_file for node.js was rejected as a tech name / review turn edit
+    tool_errors = [e for e in events if "recognized technology" in e or "during a document review" in e]
+    assert len(tool_errors) > 0
+
+    # Verify no approval card was shown for node.js
+    approval_events = [e for e in events if "event: approval_request" in e]
+    assert len(approval_events) == 0
+
+
+
 

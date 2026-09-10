@@ -31,6 +31,7 @@ from .plan_parser import (
     _classify_rules, _classify_task_effort, _is_deep_query, _is_quick_task_query,
     _has_escalate_marker, _response_is_done, _declares_tool_intent,
     _extract_heuristic_tool_calls, _parse_tool_calls_extended, _has_tool_calls_extended, step_matches_work,
+    KNOWN_TECH_NAMES,
 )
 from .tool_executor import (
     MAX_AGENT_ITERATIONS, MAX_HUGE_TASK_ITERATIONS, MAX_QUICK_TASK_ITERATIONS, MAX_TOOL_CALLS_PER_ITERATION,
