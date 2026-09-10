@@ -369,7 +369,7 @@ async def provider_for(request: ChatRequest):
                 "deepseek": "deepseek-chat",
                 "mistral": "mistral-large-latest",
                 "openrouter": "openai/gpt-4o",
-                "nvidia-nim": "minimaxai/minimax-m3",
+                "nvidia-nim": "meta/llama-3.2-11b-vision-instruct",
                 "moonshot": "kimi-latest",
                 "glm": "glm-4-plus",
                 "qwen": "qwen-plus",
@@ -392,7 +392,7 @@ async def provider_for(request: ChatRequest):
         "deepseek": "deepseek-chat",
         "mistral": "mistral-large-latest",
         "openrouter": "openai/gpt-4o",
-        "nvidia-nim": "minimaxai/minimax-m3",
+        "nvidia-nim": "meta/llama-3.2-11b-vision-instruct",
         "moonshot": "kimi-latest",
         "glm": "glm-4-plus",
         "qwen": "qwen-plus",
@@ -423,9 +423,9 @@ async def provider_for(request: ChatRequest):
 
     if request.provider == "openai-compatible" or request.provider in (
         "groq", "openai", "gemini", "deepseek", "mistral", "openrouter",
-        "nvidia-nim", "moonshot", "glm", "qwen"
+        "nvidia-nim", "nvidia", "moonshot", "glm", "qwen"
     ):
-        key_id = request.api_key_provider or ("nvidia-nim" if request.provider == "nvidia-nim" else request.provider)
+        key_id = request.api_key_provider or ("nvidia-nim" if request.provider in ("nvidia-nim", "nvidia") else request.provider)
         if key_id == "openai-compatible" and request.provider in _DEFAULT_URLS:
             key_id = request.provider
 
@@ -436,7 +436,7 @@ async def provider_for(request: ChatRequest):
             base_url = settings.get(f"{key_id}.baseUrl") or _DEFAULT_URLS.get(key_id) or _DEFAULT_URLS.get(request.provider, "https://api.openai.com/v1")
 
         if not request.model or request.model in ("auto", "default"):
-            request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "openai/gpt-oss-120b" if key_id == "groq" else ("minimaxai/minimax-m3" if key_id == "nvidia-nim" else "gpt-4o"))
+            request.model = settings.get(f"{key_id}.model") or settings.get("openai-compatible.model") or _DEFAULT_MODELS.get(key_id, "openai/gpt-oss-120b" if key_id == "groq" else ("meta/llama-3.2-11b-vision-instruct" if key_id in ("nvidia-nim", "nvidia") else "gpt-4o"))
         elif key_id == "groq" and request.model in ("llama3", "llama-3", "llama-3-70b", "llama3-70b-8192", "llama3-8b-8192"):
             request.model = "llama-3.3-70b-versatile"
         timeout, retries = _provider_resilience(settings, key_id)

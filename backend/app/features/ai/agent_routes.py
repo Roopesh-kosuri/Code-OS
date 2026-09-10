@@ -39,19 +39,24 @@ async def generate_plan(payload: PlanRequest) -> dict:
     if context.get("readme"):
         context_str += f"README Summary:\n{context['readme']}\n"
     
+    attached_files = []
     if payload.file_ids:
         from .file_ingestion.service import get_uploaded_file
         file_blocks = []
         for fid in payload.file_ids:
             fdata = get_uploaded_file(fid, payload.workspace)
             if fdata and fdata.get("content"):
+                attached_files.append(fdata)
                 file_blocks.append(f"[{fdata.get('filename', 'file')}]:\n{fdata.get('content', '')}")
         if file_blocks:
             context_str += "\nAttached files:\n\n" + "\n\n".join(file_blocks) + "\n"
 
     # 2. Run PlannerAgent
     planner = PlannerAgent(provider_config=payload.provider_config)
-    tasks = await planner.plan_task(payload.user_request, context_str)
+    try:
+        tasks = await planner.plan_task(payload.user_request, context_str, attached_files=attached_files)
+    except TypeError:
+        tasks = await planner.plan_task(payload.user_request, context_str)
     return {"tasks": tasks}
 
 @router.post("/jobs")

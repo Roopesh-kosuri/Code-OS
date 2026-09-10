@@ -49,7 +49,7 @@ class TeamConfig(BaseModel):
     coder_provider: str = "anthropic"
     reviewer_model: str = "gpt-4o"
     reviewer_provider: str = "openai"
-    tester_model: str = "llama-3.3-70b-versatile"
+    tester_model: str = "openai/gpt-oss-120b"
     tester_provider: str = "groq"
     devops_model: str = "llama-3.1-8b-instant"
     devops_provider: str = "groq"
@@ -146,7 +146,7 @@ def resolve_auto_model(
     elif role_lower in ("tester",):
         if is_high:
             return {"provider": "openai", "model": "gpt-4o"}
-        return {"provider": "groq", "model": "llama-3.3-70b-versatile"}
+        return {"provider": "groq", "model": "openai/gpt-oss-120b"}
     elif role_lower in ("devops",):
         return {"provider": "groq", "model": "llama-3.1-8b-instant"}
 

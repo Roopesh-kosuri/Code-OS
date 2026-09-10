@@ -286,21 +286,22 @@ export const PROVIDER_GROUPS: ProviderGroup[] = [
   },
   {
     groupName: "NVIDIA NIM",
-    providerId: "nvidia",
+    providerId: "nvidia-nim",
     models: [
-      // MiniMax Series
-      { label: "MiniMax M3 (Long-Context Reasoning Agent)", model: "minimax/minimax-m3", provider: "nvidia", series: "MiniMax Series", badge: "M3 Reasoning", description: "State-of-the-art agentic reasoning and tool execution" },
-      { label: "MiniMax M2 (High-Speed Execution)", model: "minimax/minimax-m2", provider: "nvidia", series: "MiniMax Series", badge: "M2 Fast", description: "High-throughput code generation and test execution" },
-      { label: "MiniMax Text-01 (4M Token Context)", model: "minimax/minimax-text-01", provider: "nvidia", series: "MiniMax Series", badge: "4M Context", description: "Massive multi-repo context ingestion on NVIDIA NIM" },
+      // Flagship Vision & Reasoning on NIM
+      { label: "Llama 3.2 11B Vision Instruct", model: "meta/llama-3.2-11b-vision-instruct", provider: "nvidia-nim", series: "Meta Llama on NIM", badge: "Flagship Vision", description: "High-speed multimodal vision and agentic coding model on NVIDIA NIM" },
+      { label: "Muse Glimmer 30B (Creative Agent)", model: "meta/muse-glimmer-30b", provider: "nvidia-nim", series: "Meta Llama on NIM", badge: "30B NIM", description: "Creative agentic foundation model on NVIDIA NIM" },
+      { label: "Nemotron 3 Nano Omni 30B (Reasoning)", model: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", provider: "nvidia-nim", series: "Nemotron & DeepSeek", badge: "Nano Omni", description: "Compact reasoning and analysis model on NVIDIA NIM" },
+      { label: "DeepSeek R1 (NVIDIA NIM Hosted)", model: "deepseek-ai/deepseek-r1", provider: "nvidia-nim", series: "Nemotron & DeepSeek", badge: "R1 NIM", description: "DeepSeek R1 with TensorRT-LLM hardware acceleration" },
+      { label: "Kimi K3 (2.8T MoE Thinking Agent)", model: "moonshotai/kimi-k3", provider: "nvidia-nim", series: "Moonshot Kimi", badge: "K3 MoE", description: "2.8T-parameter multimodal MoE on NVIDIA NIM" },
 
-      // Nemotron & DeepSeek on NIM
-      { label: "DeepSeek R1 (NVIDIA NIM Hosted)", model: "deepseek-ai/deepseek-r1", provider: "nvidia", series: "Nemotron & DeepSeek", badge: "R1 NIM", description: "DeepSeek R1 with TensorRT-LLM hardware acceleration" },
-      { label: "Llama 3.1 Nemotron 70B (Reward-Aligned)", model: "nvidia/llama-3.1-nemotron-70b-instruct", provider: "nvidia", series: "Nemotron & DeepSeek", badge: "Aligned", description: "High accuracy RLHF alignment for instruction following" },
-      { label: "Nemotron-4 340B (Supercomputer Scale)", model: "nvidia/nemotron-4-340b-instruct", provider: "nvidia", series: "Nemotron & DeepSeek", badge: "340B", description: "NVIDIA enterprise flagship for synthetic data & coding" },
+      // Nemotron on NIM
+      { label: "Llama 3.1 Nemotron 70B (Reward-Aligned)", model: "nvidia/llama-3.1-nemotron-70b-instruct", provider: "nvidia-nim", series: "Nemotron & DeepSeek", badge: "Aligned", description: "High accuracy RLHF alignment for instruction following" },
+      { label: "Nemotron-4 340B (Supercomputer Scale)", model: "nvidia/nemotron-4-340b-instruct", provider: "nvidia-nim", series: "Nemotron & DeepSeek", badge: "340B", description: "NVIDIA enterprise flagship for synthetic data & coding" },
 
       // Meta Llama on NIM
-      { label: "Llama 3.3 70B Instruct (NIM Throughput)", model: "meta/llama-3.3-70b-instruct", provider: "nvidia", series: "Meta Llama on NIM", badge: "70B NIM", description: "Fast TensorRT-optimized 70B model" },
-      { label: "Llama 3.1 405B Instruct (Frontier NIM)", model: "meta/llama-3.1-405b-instruct", provider: "nvidia", series: "Meta Llama on NIM", badge: "405B NIM", description: "Largest open-weights foundation model on NIM cluster" },
+      { label: "Llama 3.3 70B Instruct (NIM Throughput)", model: "meta/llama-3.3-70b-instruct", provider: "nvidia-nim", series: "Meta Llama on NIM", badge: "70B NIM", description: "Fast TensorRT-optimized 70B model" },
+      { label: "Llama 3.1 405B Instruct (Frontier NIM)", model: "meta/llama-3.1-405b-instruct", provider: "nvidia-nim", series: "Meta Llama on NIM", badge: "405B NIM", description: "Largest open-weights foundation model on NIM cluster" },
     ],
   },
   {
@@ -1288,9 +1289,9 @@ export const AgentRoster: React.FC = () => {
             : roleTasks.map((t) => taskDifficultyMap[t.id]).filter(Boolean).pop();
 
           const roleDefaultLabels: Record<string, string> = {
-            architect: "GLM 5.2 (HARD)",
-            coder: "Claude Sonnet 5 (MEDIUM)",
-            reviewer: "GLM 5.2 (HARD)",
+            architect: "Claude Sonnet 4.5 (HARD)",
+            coder: "DeepSeek V3 (MEDIUM)",
+            reviewer: "Claude Sonnet 4.5 (HARD)",
             tester: "Groq (EASY)",
             devops: "Groq (EASY)",
           };

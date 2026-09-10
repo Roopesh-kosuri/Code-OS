@@ -227,6 +227,18 @@ class TeamOrchestrator:
 
             # Dispatch runnable tasks concurrently
             for task in runnable:
+                # Propagate attached_files from completed dependencies or prior tasks if not set
+                if task.context is None:
+                    task.context = {}
+                if not task.context.get("attached_files"):
+                    for dep in task.dependencies:
+                        dep_task = tasks_by_id.get(dep)
+                        if dep_task and dep_task.context and dep_task.context.get("attached_files"):
+                            task.context["attached_files"] = dep_task.context["attached_files"]
+                            task.context["attached_files_xml"] = dep_task.context.get("attached_files_xml", "")
+                            task.context["file_ids"] = dep_task.context.get("file_ids", [])
+                            break
+
                 # Gather prior handoffs from completed dependencies
                 prior_handoffs = [
                     self.task_handoffs[dep]
@@ -609,8 +621,10 @@ class TeamOrchestrator:
 
         elif role == TeamRole.ARCHITECT or role_val == "architect":
             files_list = [result.get("reasoning", "")]
-            if task.context and "attached_files" in task.context:
-                files_list.append(task.context["attached_files"])
+            if task.context and task.context.get("attached_files_xml"):
+                files_list.append(task.context["attached_files_xml"])
+            elif task.context and task.context.get("attached_files"):
+                files_list.append(str(task.context["attached_files"]))
             return create_files_handoff(
                 from_role=TeamRole.ARCHITECT,
                 to_role=TeamRole.CODER,

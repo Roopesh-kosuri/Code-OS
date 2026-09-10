@@ -156,19 +156,45 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
     config.custom_roles = custom_roles
     await save_team_config(config.model_dump())
 
-    # Fetch attached files for Architect DAG planning
-    attached_context_str = ""
+    # Fetch attached files for Architect DAG planning and task grounding
+    attached_files_data: list[dict[str, Any]] = []
+    attached_file_xml_blocks: list[str] = []
     if payload.file_ids:
         from ..file_ingestion.service import get_uploaded_file
-        file_blocks = []
         for fid in payload.file_ids:
             fdata = get_uploaded_file(fid, payload.workspace)
             if fdata and fdata.get("content"):
-                file_blocks.append(f"[{fdata.get('filename', 'file')}]:\n{fdata.get('content', '')}")
-        if file_blocks:
-            attached_context_str = "Attached files:\n\n" + "\n\n".join(file_blocks)
+                fcontent = fdata.get("content", "")
+                fname = fdata.get("filename", "file")
+                fmime = fdata.get("mime_type", "text/plain")
+                fpages = fdata.get("page_count", 1)
+                fwords = fdata.get("word_count", len(fcontent.split()))
+                attached_files_data.append({
+                    "id": fid,
+                    "filename": fname,
+                    "content": fcontent,
+                    "mime_type": fmime,
+                    "page_count": fpages,
+                    "word_count": fwords,
+                    "metadata": fdata.get("metadata", {}),
+                })
+                attached_file_xml_blocks.append(
+                    f'<file id="{fid}" name="{fname}" type="{fmime}" pages="{fpages}" words="{fwords}">\n{fcontent}\n</file>'
+                )
 
-    effective_user_request = f"{attached_context_str}\n\n{payload.user_request}" if attached_context_str else payload.user_request
+    attached_context_xml = ""
+    if attached_file_xml_blocks:
+        attached_context_xml = (
+            f'<attached_files count="{len(attached_file_xml_blocks)}">\n'
+            + "\n".join(attached_file_xml_blocks)
+            + "\n</attached_files>"
+        )
+
+    effective_user_request = (
+        f"{attached_context_xml}\n\n{payload.user_request}"
+        if attached_context_xml
+        else payload.user_request
+    )
 
     await create_job(job_id, payload.workspace, "team_mode", user_request=effective_user_request)
     await save_job_custom_roles_snapshot(job_id, custom_roles)
@@ -186,8 +212,9 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
                 role = clean_role
 
             task_ctx = dict(t.get("context", {}))
-            if attached_context_str and idx == 0:
-                task_ctx["attached_files"] = attached_context_str
+            if attached_files_data:
+                task_ctx["attached_files"] = attached_files_data
+                task_ctx["attached_files_xml"] = attached_context_xml
                 task_ctx["file_ids"] = payload.file_ids
 
             task = TeamTask(
@@ -204,12 +231,17 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
     else:
         # Default Team Pipeline: Architect -> Coder -> Tester -> Reviewer
         arch_ctx: dict[str, Any] = {}
-        if attached_context_str:
-            arch_ctx["attached_files"] = attached_context_str
+        coder_ctx: dict[str, Any] = {}
+        if attached_files_data:
+            arch_ctx["attached_files"] = attached_files_data
+            arch_ctx["attached_files_xml"] = attached_context_xml
             arch_ctx["file_ids"] = payload.file_ids
+            coder_ctx["attached_files"] = attached_files_data
+            coder_ctx["attached_files_xml"] = attached_context_xml
+            coder_ctx["file_ids"] = payload.file_ids
 
         t1 = TeamTask(task_id=f"{job_id}_arch", job_id=job_id, title="Decompose Specification", role=TeamRole.ARCHITECT, dependencies=[], context=arch_ctx)
-        t2 = TeamTask(task_id=f"{job_id}_code", job_id=job_id, title="Implement Solution", role=TeamRole.CODER, dependencies=[t1.task_id])
+        t2 = TeamTask(task_id=f"{job_id}_code", job_id=job_id, title="Implement Solution", role=TeamRole.CODER, dependencies=[t1.task_id], context=coder_ctx)
         t3 = TeamTask(task_id=f"{job_id}_test", job_id=job_id, title="Run Test Suite & Verify", role=TeamRole.TESTER, dependencies=[t2.task_id])
         t4 = TeamTask(task_id=f"{job_id}_rev", job_id=job_id, title="Code Review Audit", role=TeamRole.REVIEWER, dependencies=[t3.task_id])
         tasks = [t1, t2, t3, t4]

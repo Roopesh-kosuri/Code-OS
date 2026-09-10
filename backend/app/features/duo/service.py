@@ -118,7 +118,7 @@ async def _call_model(cfg: ModelConfig, messages: list[ChatMessage], timeout_sec
     except Exception as exc:
         if cfg.provider == "ollama":
             from ..ai.service import get_api_key
-            for kid, default_model in [("groq", "openai/gpt-oss-120b"), ("nvidia-nim", "minimaxai/minimax-m3"), ("openai", "gpt-4o"), ("gemini", "gemini-2.5-flash")]:
+            for kid, default_model in [("groq", "openai/gpt-oss-120b"), ("nvidia-nim", "meta/llama-3.2-11b-vision-instruct"), ("openai", "gpt-4o"), ("gemini", "gemini-2.5-flash")]:
                 key = await get_api_key(kid)
                 if key:
                     logger.info("duo.loop.auto_fallback from ollama to %s (%s)", kid, default_model)
@@ -562,7 +562,7 @@ async def _run_loop(session_id: str, req: DuoSessionRequest) -> None:
                         elif action in ("switch_to_api", "change_model"):
                             auto_retries = 0
                             new_provider = decision_res.get("provider") or "groq"
-                            new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("minimaxai/minimax-m3" if new_provider == "nvidia-nim" else "gpt-4o"))
+                            new_model = decision_res.get("model") or ("openai/gpt-oss-120b" if new_provider == "groq" else ("meta/llama-3.2-11b-vision-instruct" if new_provider == "nvidia-nim" else "gpt-4o"))
                             new_key_provider = decision_res.get("api_key_provider") or new_provider
                             req.critic.provider = new_provider
                             req.critic.model = new_model
@@ -664,7 +664,7 @@ async def _resolve_model_config(cfg: ModelConfig) -> None:
             "deepseek": "deepseek-chat",
             "mistral": "mistral-large-latest",
             "openrouter": "openai/gpt-4o",
-            "nvidia-nim": "minimaxai/minimax-m3",
+            "nvidia-nim": "meta/llama-3.2-11b-vision-instruct",
             "custom": "gpt-4o"
         }
         provider_id = cfg.api_key_provider or "openai"

@@ -220,10 +220,18 @@ export const api = {
     if (sessionToken) {
       headers["Authorization"] = `Bearer ${sessionToken}`;
     }
+    const effectiveBody = typeof body === "object" && body !== null ? { ...(body as Record<string, any>) } : body;
+    if (path.includes("/chat-agent/stream") && typeof effectiveBody === "object" && effectiveBody !== null) {
+      const uploadStore = (window as any).__fileUploadStore?.getState?.();
+      if (uploadStore?.uploadedFiles?.length && !(effectiveBody as any).file_ids) {
+        (effectiveBody as any).file_ids = uploadStore.uploadedFiles.map((f: any) => f.file_id);
+      }
+    }
+
     const response = await fetch(url(path), {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify(effectiveBody),
       signal,
     });
     if (!response.ok || !response.body) {

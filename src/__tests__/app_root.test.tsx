@@ -69,6 +69,7 @@ describe("Frontend App Root & Error Boundary Suite", () => {
     it("renders backend warning banner when disconnected", () => {
       useBackendStore.setState({
         status: "disconnected",
+        bootPhase: "failed",
         nextRetryInSeconds: 5,
       });
 
@@ -81,6 +82,7 @@ describe("Frontend App Root & Error Boundary Suite", () => {
     it("renders connected workspace shell when backend is online", () => {
       useBackendStore.setState({
         status: "connected",
+        bootPhase: "ready",
         nextRetryInSeconds: 0,
       });
 

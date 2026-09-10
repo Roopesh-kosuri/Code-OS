@@ -34,14 +34,30 @@ async def store_api_key(provider_id: str, api_key: str) -> None:
         """,
         (provider_id, encrypt_secret(api_key)),
     )
+    if provider_id in ("nvidia-nim", "nvidia"):
+        alt_id = "nvidia" if provider_id == "nvidia-nim" else "nvidia-nim"
+        await db.execute(
+            """
+            INSERT INTO api_keys(provider_id, encrypted_key, updated_at)
+            VALUES(?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(provider_id) DO UPDATE SET encrypted_key = excluded.encrypted_key, updated_at = CURRENT_TIMESTAMP
+            """,
+            (alt_id, encrypt_secret(api_key)),
+        )
     await db.commit()
 
 
 async def get_api_key(provider_id: str) -> str | None:
     db = await get_db()
-    cursor = await db.execute("SELECT encrypted_key FROM api_keys WHERE provider_id = ?", (provider_id,))
-    row = await cursor.fetchone()
-    return decrypt_secret(row["encrypted_key"]) if row else None
+    aliases = [provider_id]
+    if provider_id in ("nvidia-nim", "nvidia"):
+        aliases = ["nvidia-nim", "nvidia"]
+    for alias in aliases:
+        cursor = await db.execute("SELECT encrypted_key FROM api_keys WHERE provider_id = ?", (alias,))
+        row = await cursor.fetchone()
+        if row and row["encrypted_key"]:
+            return decrypt_secret(row["encrypted_key"])
+    return None
 
 
 async def list_api_key_status() -> list[dict[str, object]]:

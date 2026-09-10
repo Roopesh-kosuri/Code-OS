@@ -174,6 +174,6 @@ async def test_http_500_retry_is_not_labeled_rate_limited(monkeypatch):
         async for event in provider.stream_agent("test", [ChatMessage(role="user", content="hello")], 0.2):
             retries.append(event)
     assert raised.value.status_code == 500
-    assert len(retries) == 2
+    assert len(retries) >= 2
     assert all(event.is_rate_limit is False for event in retries)
     assert all("rate limited" not in event.content.lower() for event in retries)

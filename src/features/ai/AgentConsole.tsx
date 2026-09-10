@@ -129,7 +129,7 @@ const PROVIDER_OPTIONS: CustomSelectOption[] = [
     iconColor: "text-green-400",
     badge: "GPU Cloud",
     badgeColor: "bg-green-500/15 text-green-300 border border-green-500/30",
-    description: "Llama 3.1, MiniMax, DeepSeek",
+    description: "Llama 3.2 11B Vision, Nemotron, DeepSeek",
   },
   {
     value: "moonshot",
@@ -159,15 +159,11 @@ const AGENT_CONSOLE_MODEL_SUGGESTIONS: Record<string, { id: string; label: strin
     { id: "groq/compound", label: "compound" },
   ],
   "nvidia-nim": [
-    { id: "moonshotai/kimi-k3", label: "kimi-k3", tag: "Recommended" },
-    { id: "minimaxai/minimax-m3", label: "minimax-m3", tag: "Flagship" },
+    { id: "meta/llama-3.2-11b-vision-instruct", label: "llama-3.2-11b", tag: "Recommended" },
+    { id: "meta/muse-glimmer-30b", label: "muse-glimmer-30b", tag: "Creative" },
+    { id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", label: "nemotron-3-nano", tag: "Reasoning" },
+    { id: "moonshotai/kimi-k3", label: "kimi-k3", tag: "Kimi MoE" },
     { id: "deepseek-ai/deepseek-r1", label: "deepseek-r1", tag: "Reasoning" },
-    { id: "qwen/qwq-32b-preview", label: "qwq-32b", tag: "Reasoning" },
-    { id: "meta/llama-3.1-70b-instruct", label: "llama-3.1-70b" },
-    { id: "meta/llama-3.1-8b-instruct", label: "llama-3.1-8b", tag: "Fast" },
-    { id: "meta/llama-3.3-70b-instruct", label: "llama-3.3-70b" },
-    { id: "mistralai/mistral-large-2-instruct", label: "mistral-large-2" },
-    { id: "minimaxai/minimax-01", label: "minimax-01" },
   ],
   moonshot: [
     { id: "kimi-latest", label: "kimi-latest", tag: "Recommended" },

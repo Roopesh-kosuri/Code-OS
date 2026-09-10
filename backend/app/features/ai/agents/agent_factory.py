@@ -26,6 +26,9 @@ class AgentFactory:
             return TesterAgent(provider_config=provider_config)
         elif "documentation" in role_lower or "documenter" in role_lower:
             return DocumenterAgent(provider_config=provider_config)
+        elif "architect" in role_lower or "planner" in role_lower:
+            from .planner import PlannerAgent
+            return PlannerAgent(provider_config=provider_config)
         else:
             # Fall back to CoderAgent for unrecognized roles
             import logging

@@ -616,6 +616,25 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (11, 'agent_memories_table')")
         await db.commit()
 
+    # Migration 12: Live Model Catalog Cache table
+    if 12 not in applied:
+        try:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS model_catalog_cache (
+                    provider TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    last_seen_ok INTEGER NOT NULL DEFAULT 1,
+                    last_probed REAL NOT NULL,
+                    PRIMARY KEY (provider, model_id)
+                );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_model_catalog_cache_provider ON model_catalog_cache(provider);")
+        except Exception as exc:
+            logger.debug("Migration 12 model_catalog_cache: %s", exc)
+
+        await db.execute("INSERT OR IGNORE INTO _schema_migrations (version, name) VALUES (12, 'model_catalog_cache_table')")
+        await db.commit()
+
 
 async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
     """Initialize connection pool and tables if they do not exist."""
@@ -768,6 +787,15 @@ async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
         CREATE INDEX IF NOT EXISTS idx_task_steps_task ON task_steps(task_id);
         CREATE INDEX IF NOT EXISTS idx_task_steps_status ON task_steps(status);
         CREATE INDEX IF NOT EXISTS idx_task_steps_task_hash ON task_steps(task_id, payload_hash);
+
+        CREATE TABLE IF NOT EXISTS model_catalog_cache (
+            provider TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            last_seen_ok INTEGER NOT NULL DEFAULT 1,
+            last_probed REAL NOT NULL,
+            PRIMARY KEY (provider, model_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_model_catalog_cache_provider ON model_catalog_cache(provider);
 
         CREATE TABLE IF NOT EXISTS repo_architecture (
             workspace TEXT PRIMARY KEY,

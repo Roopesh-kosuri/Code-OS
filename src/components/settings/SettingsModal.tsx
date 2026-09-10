@@ -148,7 +148,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [sessionLimitInput, setSessionLimitInput] = useState<string>("2.00");
   const [autoDowngradeInput, setAutoDowngradeInput] = useState<number>(90);
   const [hardStopInput, setHardStopInput] = useState<number>(100);
-  const [downgradeModelInput, setDowngradeModelInput] = useState<string>("groq/llama-3.3-70b");
+  const [downgradeModelInput, setDowngradeModelInput] = useState<string>("groq/openai/gpt-oss-120b");
   const [dailyLimitEnabled, setDailyLimitEnabled] = useState<boolean>(false);
   const [sessionLimitEnabled, setSessionLimitEnabled] = useState<boolean>(false);
   const [isResettingSpend, setIsResettingSpend] = useState<boolean>(false);
@@ -1117,7 +1117,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                         }}
                         className="w-full bg-[#131318] border border-surface-container-high rounded-lg p-2.5 text-xs text-on-surface font-mono focus:border-primary-container focus:outline-none cursor-pointer"
                       >
-                        <option value="groq/llama-3.3-70b">groq/llama-3.3-70b (Fast &amp; Cost-Effective)</option>
+                        <option value="groq/openai/gpt-oss-120b">groq/openai/gpt-oss-120b (Fast &amp; Cost-Effective Flagship)</option>
                         <option value="groq/llama-3.1-8b-instant">groq/llama-3.1-8b-instant (Ultra Low Cost)</option>
                         <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Low Cost Cloud)</option>
                         <option value="openai/gpt-4o-mini">openai/gpt-4o-mini (Lightweight Frontier)</option>

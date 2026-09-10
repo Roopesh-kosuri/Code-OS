@@ -24,6 +24,8 @@ export type OpenFile = {
 export type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
+  file_ids?: string[];
+  attached_files?: any[];
 };
 
 export type ModelDto = {

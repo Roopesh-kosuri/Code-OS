@@ -180,6 +180,9 @@ export const RonyChatUploadWrapper: React.FC<RonyChatUploadWrapperProps> = ({ ch
         {children}
       </div>
 
+      {/* Upload Controls Portal or Fallback */}
+      {portalTarget ? ReactDOM.createPortal(uploadControls, portalTarget) : uploadControls}
+
       {/* File Preview Modal */}
       <FilePreviewModal />
     </div>

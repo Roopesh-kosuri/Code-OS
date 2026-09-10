@@ -179,3 +179,18 @@ async def _build_semantic_context(query: str, workspace: str, top_k: int = 5) ->
     except Exception as exc:
         logger.warning("context_assembler: semantic search context failed: %s", exc)
         return ""
+
+
+# Re-export for convenience and unified context assembly access
+from app.features.ai.harness.prompt_builder import _gather_budgeted_rag_context
+
+__all__ = [
+    "split_file_into_chunks",
+    "rank_chunks",
+    "assemble_context_with_budget",
+    "_get_attachment_context_text",
+    "_build_context_from_files",
+    "_build_semantic_context",
+    "_gather_budgeted_rag_context",
+]
+

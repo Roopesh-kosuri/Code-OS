@@ -117,6 +117,12 @@ async def _deferred_startup_tasks() -> None:
         logger.warning("Deferred startup MCP servers: %s", exc)
         _system_readiness["mcp"] = "error"
 
+    try:
+        from app.features.ai.providers.catalog import start_catalog_background_refresher
+        start_catalog_background_refresher()
+    except Exception as exc:
+        logger.warning("Deferred startup catalog refresher: %s", exc)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("backend starting up")
@@ -430,6 +436,31 @@ async def system_readiness() -> ReadinessStatus:
 @app.get("/api/auth/token")
 async def get_session_token():
     return {"token": get_token()}
+
+
+@app.post("/api/providers/refresh-models")
+@app.post("/api/ai/providers/refresh-models")
+async def refresh_models_route(provider: str | None = None) -> dict:
+    from app.features.ai.providers.catalog import refresh_all_providers, refresh_provider_models
+    if provider:
+        models = await refresh_provider_models(provider)
+        return {"status": "ok", "provider": provider, "count": len(models), "models": models}
+    results = await refresh_all_providers()
+    return {"status": "ok", "providers": results}
+
+
+@app.get("/api/providers/models")
+@app.get("/api/ai/providers/models")
+async def get_provider_models_route(provider: str | None = None) -> dict:
+    from app.features.ai.providers.catalog import VERIFIED_PRESET_MODELS, get_verified_models
+    if provider:
+        models = get_verified_models(provider)
+        return {"provider": provider, "models": models, "count": len(models)}
+    all_models: dict[str, list[str]] = {}
+    for prov in VERIFIED_PRESET_MODELS.keys():
+        all_models[prov] = get_verified_models(prov)
+    return {"providers": all_models}
+
 
 
 # ── Monitoring & Performance Routes ──────────────────────────────────────────

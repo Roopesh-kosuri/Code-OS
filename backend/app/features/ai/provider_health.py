@@ -64,7 +64,7 @@ DEFAULT_FALLBACK_ORDER = [
 DEFAULT_PROVIDER_MODELS = {
     "groq": "openai/gpt-oss-120b",
     "gemini": "gemini-2.5-flash",
-    "nvidia-nim": "minimaxai/minimax-m3",
+    "nvidia-nim": "meta/llama-3.2-11b-vision-instruct",
     "openai": "gpt-4o",
     "anthropic": "claude-3-5-sonnet-latest",
     "deepseek": "deepseek-chat",
@@ -75,7 +75,7 @@ DEFAULT_PROVIDER_MODELS = {
     "mistral": "mistral-large-latest",
     "cohere": "command-a-03-2025",
     "openrouter": "deepseek/deepseek-chat",
-    "llama": "llama-3.3-70b-versatile",
+    "llama": "llama-3.1-8b-instant",
     "ollama": "llama3",
 }
 
