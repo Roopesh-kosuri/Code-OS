@@ -267,6 +267,19 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             if user_messages:
                 user_messages[-1]["content"] = user_query
 
+        # Collect attached file names to prevent accidental mutation proposals on user uploads
+        attached_filenames: set[str] = set()
+        if getattr(request, "file_ids", None):
+            for fid in request.file_ids:
+                attached_filenames.add(str(fid).lower())
+        for m in request.messages:
+            c = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
+            if isinstance(c, str):
+                for fn in re.findall(r'<file[^>]+name="([^"]+)"', c):
+                    attached_filenames.add(fn.lower())
+                for fn in re.findall(r'<untrusted_file_content[^>]+path="([^"]+)"', c):
+                    attached_filenames.add(fn.lower())
+
         # ── Step 1: Adaptive Effort Routing Classifier ───────────────────────
         tier, tier_label, tier_reason = _classify_task_effort(
             user_query,
@@ -661,7 +674,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     "suggested_models": [
                         {"provider": "groq", "model": "openai/gpt-oss-120b", "name": "Groq GPT-OSS 120B"},
                         {"provider": "gemini", "model": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
-                        {"provider": "nvidia-nim", "model": "minimaxai/minimax-m3", "name": "NVIDIA MiniMax M3"},
+                        {"provider": "nvidia-nim", "model": "meta/llama-3.2-11b-vision-instruct", "name": "NVIDIA Llama 3.2 11B Vision"},
                     ]
                 }
                 yield _sse_done(False, "Task stopped: provider stalled", recovery=recovery_payload)
@@ -697,7 +710,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         "suggested_models": [
                             {"provider": "groq", "model": "openai/gpt-oss-120b", "name": "Groq GPT-OSS 120B"},
                             {"provider": "gemini", "model": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"},
-                            {"provider": "nvidia-nim", "model": "minimaxai/minimax-m3", "name": "NVIDIA MiniMax M3"},
+                            {"provider": "nvidia-nim", "model": "meta/llama-3.2-11b-vision-instruct", "name": "NVIDIA Llama 3.2 11B Vision"},
                         ]
                     }
                     yield _sse_done(False, f"Task stopped: Context window exceeded on '{effective_prov_key}'.", recovery=recovery_payload)
@@ -1515,38 +1528,56 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 result = ToolResult(tool_name="ask_user", success=False, output="", error="User clarifying question timed out after 120s.")
                             finally:
                                 _pending_user_responses.pop(action_id, None)
-                    elif tc.name == "edit_file":
-                        valid, err, change = _validate_smart_edit(workspace, tc.arguments)
-                        if valid and change:
-                            existing_idx = next((i for i, c in enumerate(staged_changes) if c.path == change.path), None)
-                            if existing_idx is not None:
-                                staged_changes[existing_idx] = change
+                    elif tc.name in ("edit_file", "append_file"):
+                        raw_target = str(tc.arguments.get("path", "") or "")
+                        target_clean = _clean_rel_path(raw_target).lower()
+                        target_base = Path(target_clean).name.lower()
+                        is_attached_ref = any(
+                            target_clean == af or target_base == af or af in target_clean
+                            for af in attached_filenames
+                        )
+                        explicit_edit_command = any(kw in user_query.lower() for kw in ("edit", "modify", "update", "rewrite", "replace", "fix", "overwrite", "change"))
+                        if is_attached_ref and not explicit_edit_command:
+                            ref_err = (
+                                f"Cannot edit attached reference document '{raw_target}'. "
+                                "Attached files are strictly read-only data. Provide your analysis, summary, review, "
+                                "or evaluation directly in chat prose instead of staging file edits."
+                            )
+                            yield _sse_status("tool_error", ref_err, tool=tc.name)
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=ref_err)
+                            turn_all_tools_successful = False
+                        elif tc.name == "edit_file":
+                            valid, err, change = _validate_smart_edit(workspace, tc.arguments)
+                            if valid and change:
+                                existing_idx = next((i for i, c in enumerate(staged_changes) if c.path == change.path), None)
+                                if existing_idx is not None:
+                                    staged_changes[existing_idx] = change
+                                else:
+                                    staged_changes.append(change)
+                                try:
+                                    parent_dir = ensure_within_workspace(workspace, str(Path(change.path).parent))
+                                    parent_dir.mkdir(parents=True, exist_ok=True)
+                                except Exception:
+                                    pass
+                                result = ToolResult(
+                                    tool_name="edit_file",
+                                    success=True,
+                                    output=f"Successfully staged '{change.path}' ({len(change.updated)} chars). Changes are held in staging and will be written to disk on task completion. Proceed to create or edit remaining files.",
+                                    error=""
+                                )
                             else:
-                                staged_changes.append(change)
-                            try:
-                                parent_dir = ensure_within_workspace(workspace, str(Path(change.path).parent))
-                                parent_dir.mkdir(parents=True, exist_ok=True)
-                            except Exception:
-                                pass
-                            result = ToolResult(
-                                tool_name="edit_file",
-                                success=True,
-                                output=f"Successfully staged '{change.path}' ({len(change.updated)} chars). Changes are held in staging and will be written to disk on task completion. Proceed to create or edit remaining files.",
-                                error=""
-                            )
-                        else:
-                            result = ToolResult(tool_name="edit_file", success=False, output="", error=err)
-                    elif tc.name == "append_file":
-                        valid, err, change = _handle_append_file(workspace, tc.arguments, staged_changes)
-                        if valid and change:
-                            result = ToolResult(
-                                tool_name="append_file",
-                                success=True,
-                                output=f"Appended chunk to '{change.path}' (total {len(change.updated.splitlines())} lines).",
-                                error=""
-                            )
-                        else:
-                            result = ToolResult(tool_name="append_file", success=False, output="", error=err)
+                                result = ToolResult(tool_name="edit_file", success=False, output="", error=err)
+                        else:  # append_file
+                            valid, err, change = _handle_append_file(workspace, tc.arguments, staged_changes)
+                            if valid and change:
+                                result = ToolResult(
+                                    tool_name="append_file",
+                                    success=True,
+                                    output=f"Appended chunk to '{change.path}' (total {len(change.updated.splitlines())} lines).",
+                                    error=""
+                                )
+                            else:
+                                result = ToolResult(tool_name="append_file", success=False, output="", error=err)
                     elif tc.name == "read_file":
                         raw_path = tc.arguments.get("path", "")
                         rel_path = _clean_rel_path(raw_path)

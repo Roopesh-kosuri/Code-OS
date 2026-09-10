@@ -266,3 +266,20 @@ def test_get_uploaded_file_in_memory_cache(tmp_path):
     delete_uploaded_file(fid, ws)
     assert fid not in _FILE_RECORD_CACHE
 
+
+def test_attached_reference_files_cannot_be_edited(tmp_path):
+    """Verify that _validate_smart_edit rejects attempts to edit uploaded reference documents."""
+    from app.features.ai.harness.tool_executor import _validate_smart_edit
+
+    ws = str(tmp_path)
+    # Attempt to edit a PDF document
+    valid_pdf, err_pdf, _ = _validate_smart_edit(ws, {"path": "audit_findings.pdf", "updated": "new content"})
+    assert valid_pdf is False
+    assert "Cannot edit reference document" in err_pdf
+
+    # Attempt to edit a file in .code_os_uploads
+    valid_upload, err_upload, _ = _validate_smart_edit(ws, {"path": ".code_os_uploads/file_123.txt", "updated": "new content"})
+    assert valid_upload is False
+    assert "Cannot edit reference document" in err_upload
+
+

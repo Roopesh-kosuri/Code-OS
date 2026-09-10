@@ -1096,6 +1096,17 @@ def _validate_smart_edit(
     except Exception as exc:
         return False, f"Invalid file path: {exc}", None
 
+    # Defense: prevent editing uploaded reference files or document formats
+    clean_lower = clean_path.lower()
+    if (
+        clean_lower.startswith(".code_os_uploads")
+        or clean_lower.startswith(".uploads")
+        or clean_lower.endswith(".pdf")
+        or clean_lower.endswith(".docx")
+        or clean_lower.endswith(".xlsx")
+    ):
+        return False, f"Cannot edit reference document '{clean_path}'. Attached and uploaded documents are strictly read-only data. Provide your analysis, review, or answer in direct conversation prose.", None
+
     if not original:
         return True, "", FileChange(path=clean_path, original="", updated=updated)
 
