@@ -164,6 +164,8 @@ class ChatAgentRequest:
     vision_model: str | None = None
     vision_provider: str | None = None
     vision_base_url: str | None = None
+    file_ids: list[str] = field(default_factory=list)
+
 
 
 def _finalization_succeeded(event: str) -> bool | None:
@@ -284,7 +286,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
             if user_query.strip():
                 try:
-                    _, rag_snippets = await _gather_budgeted_rag_context(workspace, user_query, request.attached_paths, max_chars=2000)
+                    _, rag_snippets = await _gather_budgeted_rag_context(
+                        workspace, user_query, request.attached_paths, max_chars=2000, file_ids=request.file_ids
+                    )
                 except Exception as exc:
                     _, sse_warn = log_and_flag_failure("rag_context_gathering", exc, {"workspace": workspace, "query": user_query})
                     yield sse_warn
@@ -407,7 +411,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     project_memory = _load_project_memory(workspace)
                 if not rag_snippets and user_query.strip():
                     try:
-                        _, rag_snippets = await _gather_budgeted_rag_context(workspace, user_query, request.attached_paths)
+                        _, rag_snippets = await _gather_budgeted_rag_context(
+                            workspace, user_query, request.attached_paths, file_ids=request.file_ids
+                        )
                     except Exception as exc:
                         _, sse_warn = log_and_flag_failure("rag_context_gathering", exc, {"workspace": workspace, "query": user_query})
                         yield sse_warn
@@ -498,11 +504,14 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             chat_request.temperature,
                         )
 
-                # First-byte (30.0s) and Inter-chunk stall watchdog (20.0s) with StreamReasoningFilter
+                # First-byte (120.0s for reasoning/NIM, 35.0s standard) and Inter-chunk stall watchdog (20.0s)
                 reasoning_filter = StreamReasoningFilter()
                 stream_iter = stream.__aiter__()
                 first_token_received = False
-                current_timeout = 30.0
+                _is_reasoning_first_byte = effective_prov_key in ("nvidia-nim", "nvidia") or any(
+                    k in (chat_request.model or "").lower() for k in ("kimi", "deepseek", "qwq", "reason", "r1")
+                )
+                current_timeout = 120.0 if _is_reasoning_first_byte else 35.0
                 while True:
                     try:
                         token = await asyncio.wait_for(stream_iter.__anext__(), timeout=current_timeout)
@@ -641,6 +650,19 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 can_fallback = is_transient and not is_auth_error and not is_404 and not is_429
 
                 fallback = None
+                # Specialized self-healing: if an unmapped/restricted model on NVIDIA NIM failed, switch to active flagship Llama 3.2 11B Vision
+                if effective_prov_key in ("nvidia-nim", "nvidia") and chat_request.model != "meta/llama-3.2-11b-vision-instruct":
+                    is_nim_issue = is_404 or status_code == 410 or (is_429 and any(k in chat_request.model.lower() for k in ("kimi", "moonshot", "minimax")))
+                    if is_nim_issue:
+                        logger.warning("chat_harness: NVIDIA NIM model '%s' failed (%s). Auto-routing to active Llama 3.2 11B Vision...", chat_request.model, exc)
+                        yield _sse_status("thinking", f"Model '{chat_request.model}' is unavailable on NVIDIA NIM. Automatically routing to active model 'meta/llama-3.2-11b-vision-instruct'...")
+                        chat_request.model = "meta/llama-3.2-11b-vision-instruct"
+                        try:
+                            provider = await provider_for(chat_request)
+                            continue
+                        except Exception as nim_fb_err:
+                            logger.error("NVIDIA NIM auto-heal to Llama 3.2 11B error: %s", nim_fb_err)
+
                 if can_fallback:
                     fallback = provider_health_tracker.find_fallback_provider(
                         attempted_providers,
@@ -670,7 +692,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 suggested_alternatives = []
                 for prov_id, key_val in configured_keys.items():
                     if key_val and prov_id != effective_prov_key:
-                        alt_model = "openai/gpt-oss-120b" if prov_id == "groq" else ("gemini-2.5-flash" if prov_id == "gemini" else ("minimaxai/minimax-m3" if prov_id == "nvidia-nim" else "gpt-4o"))
+                        alt_model = "openai/gpt-oss-120b" if prov_id == "groq" else ("gemini-2.5-flash" if prov_id == "gemini" else ("meta/llama-3.2-11b-vision-instruct" if prov_id == "nvidia-nim" else "gpt-4o"))
                         suggested_alternatives.append({
                             "provider": prov_id,
                             "model": alt_model,
@@ -679,7 +701,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 if not suggested_alternatives:
                     suggested_alternatives.append({"provider": "groq", "model": "openai/gpt-oss-120b", "name": "Groq GPT-OSS 120B"})
                     suggested_alternatives.append({"provider": "gemini", "model": "gemini-2.5-flash", "name": "Gemini 2.5 Flash"})
-                    suggested_alternatives.append({"provider": "nvidia-nim", "model": "minimaxai/minimax-m3", "name": "NVIDIA MiniMax M3"})
+                    suggested_alternatives.append({"provider": "nvidia-nim", "model": "meta/llama-3.2-11b-vision-instruct", "name": "NVIDIA Llama 3.2 11B Vision"})
 
                 recovery_payload = {
                     "error": str(exc),

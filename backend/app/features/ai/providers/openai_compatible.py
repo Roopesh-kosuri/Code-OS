@@ -55,13 +55,10 @@ _NIM_REASONING_MODELS = (
 
 def supports_reasoning_effort(provider_id: str, model_name: str) -> bool:
     """Return True only if the provider and model strictly accept OpenAI reasoning_effort."""
-    m = model_name.lower()
-    # NVIDIA NIM: only specific reasoning models support it
-    if provider_id in ("nvidia-nim", "nvidia"):
-        return any(r in m for r in _NIM_REASONING_MODELS)
-    # These providers never support it
-    if provider_id in ("gemini", "mistral", "anthropic", "ollama", "local", "moonshot", "glm", "qwen"):
+    # NVIDIA NIM, Gemini, and other providers should strip reasoning_effort by default to avoid 422 extra_forbidden
+    if provider_id in ("nvidia-nim", "nvidia", "gemini", "mistral", "anthropic", "ollama", "local", "moonshot", "glm", "qwen"):
         return False
+    m = model_name.lower()
     return any(supported in m for supported in REASONING_EFFORT_MODELS)
 
 
@@ -121,14 +118,51 @@ class OpenAICompatibleProvider(AIProvider):
                 category="authentication",
             )
 
+        # NVIDIA NIM model ID normalization
+        was_nim_kimi_routed = False
+        original_requested_model = model
+        if self.id in ("nvidia-nim", "nvidia"):
+            _NIM_MODEL_MAP = {
+                # Map short aliases for active NIM models to their full official catalog names
+                "kimi-k3": "moonshotai/kimi-k3",
+                "kimi": "moonshotai/kimi-k3",
+                "moonshot/kimi-k3": "moonshotai/kimi-k3",
+                "moonshotai/kimi-k3": "moonshotai/kimi-k3",
+                "deepseek-v4": "deepseek-ai/deepseek-v4-pro-0813",
+                "deepseek-v4-pro": "deepseek-ai/deepseek-v4-pro-0813",
+                "deepseek-ai/deepseek-v4-pro-0813": "deepseek-ai/deepseek-v4-pro-0813",
+                "llama-3.2-11b": "meta/llama-3.2-11b-vision-instruct",
+                "llama-3.2-11b-vision": "meta/llama-3.2-11b-vision-instruct",
+                # Deprecated / dead endpoints on NVIDIA NIM:
+                "kimi-k2.6": "moonshotai/kimi-k3",
+                "moonshotai/kimi-k2.6": "moonshotai/kimi-k3",
+                "kimi-k2": "moonshotai/kimi-k3",
+                "kimi-k2-thinking": "moonshotai/kimi-k3",
+                "kimi-latest": "moonshotai/kimi-k3",
+                "minimax-m3": "meta/llama-3.2-11b-vision-instruct",
+                "minimax/minimax-m3": "meta/llama-3.2-11b-vision-instruct",
+                "minimaxai/minimax-m3": "meta/llama-3.2-11b-vision-instruct",
+            }
+            mapped = _NIM_MODEL_MAP.get(model, model)
+            model = mapped
+
         payload: dict[str, Any] = {
             "model": model,
             "messages": [message.model_dump() for message in messages],
             "temperature": temperature,
             "stream": True,
         }
-        if reasoning_effort and supports_reasoning_effort(self.id, model):
+        if self.id in ("nvidia-nim", "nvidia") and "kimi-k3" in model.lower():
+            payload["temperature"] = 1.0
+            payload["seed"] = 0
+            payload["reasoning_effort"] = "max"
+        elif reasoning_effort and supports_reasoning_effort(self.id, model):
             payload["reasoning_effort"] = reasoning_effort
+        elif reasoning_effort and self.id in ("nvidia-nim", "nvidia") and any(r in model.lower() for r in ("kimi-k3", "kimi-k2", "deepseek-r1", "qwq")):
+            # NVIDIA NIM reasoning models accept low, high, max (normalize medium -> high)
+            norm_effort = "high" if reasoning_effort == "medium" else reasoning_effort
+            if norm_effort in ("low", "high", "max"):
+                payload["reasoning_effort"] = norm_effort
         if max_tokens:
             # Groq on-demand models enforce an 8,000 TPM limit (prompt + max_tokens reservation).
             # Reserving 512 tokens keeps total request ~1800-2000 tokens, allowing multiple
@@ -140,12 +174,12 @@ class OpenAICompatibleProvider(AIProvider):
             payload["tool_choice"] = "auto"
 
         emitted = False
-        max_attempts = 8 if self.id == "groq" else 3
-        # NIM reasoning models (kimi-k3, deepseek-r1) can take 60-90s before first token
+        max_attempts = 3
+        # NIM reasoning models (kimi-k3, deepseek) can take 60-120s before first token
         _is_nim_reasoning = self.id in ("nvidia-nim", "nvidia") and any(
-            r in model.lower() for r in ("kimi-k3", "kimi-k2", "deepseek-r1", "qwq")
+            r in model.lower() for r in ("kimi-k3", "kimi-k2", "deepseek", "qwq")
         )
-        idle_read_timeout = 90.0 if _is_nim_reasoning else 35.0
+        idle_read_timeout = 120.0 if _is_nim_reasoning else 35.0
 
         for attempt in range(max_attempts):
             try:
@@ -169,11 +203,21 @@ class OpenAICompatibleProvider(AIProvider):
                                 pass
                             logger.warning("Provider %s HTTP %d: %s", self.id, status, error_body[:300])
 
-                            # ── 1. HTTP 429 or HTTP 413 TPM Rate Limit ──
-                            is_rate_limit_resp = status == 429 or (
-                                status == 413 and any(k in error_body.lower() for k in ("rate limit", "tpm", "tokens per minute", "try again in"))
-                            )
-                            if is_rate_limit_resp:
+                            # ── 1. HTTP 413 Context / Payload / TPM Overflow (Immediate Fail-Fast) ──
+                            if status == 413:
+                                clean_err = error_body
+                                try:
+                                    parsed = json.loads(error_body)
+                                    if isinstance(parsed, dict):
+                                        clean_err = parsed.get("error", {}).get("message") or parsed.get("message") or error_body
+                                except Exception:
+                                    pass
+                                raise ContextOverflowError(
+                                    f"Request exceeds token/TPM limits (HTTP 413) on '{self.id}': {clean_err}"
+                                )
+
+                            # ── 2. HTTP 429 Rate Limit (Only true 429s) ──
+                            if status == 429:
                                 if attempt < max_attempts - 1:
                                     retry_header = response.headers.get("retry-after")
                                     header_delay = None
@@ -217,17 +261,17 @@ class OpenAICompatibleProvider(AIProvider):
                                     parsed_delay = max(delays) if delays else None
 
                                     if parsed_delay is not None:
-                                        if parsed_delay > 90.0:
-                                            # Hard quota / daily limit exceeded (e.g. 7m wait) — fail fast
+                                        if parsed_delay > 60.0:
+                                            # Hard quota / prolonged wait — fail fast rather than stall
                                             raise ProviderRequestError(
-                                                f"Rate limit / quota exceeded (HTTP {status}) on '{self.id}'. Server requested wait of {int(parsed_delay)}s.",
-                                                status_code=status, body=error_body, category="rate_limit",
+                                                f"Rate limit / quota exceeded (HTTP 429) on '{self.id}'. Server requested wait of {int(parsed_delay)}s.",
+                                                status_code=429, body=error_body, category="rate_limit",
                                             )
-                                        backoff = min(60.0, max(2.0, parsed_delay + 0.5) * (1.1 ** attempt))
-                                        logger.warning("[RETRY] Rate limited (%d on %s). Server requested wait of %.1fs. Sleeping %.1fs (attempt %d/%d)...", status, self.id, parsed_delay, backoff, attempt + 1, max_attempts)
+                                        backoff = min(30.0, max(2.0, parsed_delay + 0.5) * (1.1 ** attempt))
+                                        logger.warning("[RETRY] Rate limited (429 on %s). Server requested wait of %.1fs. Sleeping %.1fs (attempt %d/%d)...", self.id, parsed_delay, backoff, attempt + 1, max_attempts)
                                     else:
-                                        backoff = min(20.0, (2.0 ** attempt) * 2.0)
-                                        logger.warning("[RETRY] Rate limited (%d on %s). Sleeping %.1fs (attempt %d/%d)...", status, self.id, backoff, attempt + 1, max_attempts)
+                                        backoff = min(15.0, (2.0 ** attempt) * 2.0)
+                                        logger.warning("[RETRY] Rate limited (429 on %s). Sleeping %.1fs (attempt %d/%d)...", self.id, backoff, attempt + 1, max_attempts)
 
                                     msg = f"Rate limited — retrying in {int(backoff)}s (attempt {attempt + 1}/{max_attempts})"
                                     if on_retry:
@@ -264,14 +308,12 @@ class OpenAICompatibleProvider(AIProvider):
                                             clean_err = parsed.get("error", {}).get("message") or parsed.get("message") or error_body
                                     except Exception:
                                         pass
-                                    if status == 413 or (status != 429 and any(k in clean_err.lower() for k in ("context", "too large", "maximum context"))):
-                                        raise ContextOverflowError(f"Token limit / context exceeded (HTTP {status}) on '{self.id}': {clean_err}")
                                     raise ProviderRequestError(
-                                        f"Rate limit / quota exceeded (HTTP {status}) on '{self.id}'. {clean_err}",
-                                        status_code=status, body=clean_err, category="rate_limit",
+                                        f"Rate limit exceeded (HTTP 429) on '{self.id}'. {clean_err}",
+                                        status_code=429, body=clean_err, category="rate_limit",
                                     )
 
-                            # ── 2. HTTP 5xx Server Errors (500, 502, 503, 504) ──
+                            # ── 3. HTTP 5xx Server Errors (500, 502, 503, 504) ──
                             if status in (500, 502, 503, 504):
                                 if attempt < max_attempts - 1:
                                     backoff = 2.0 * (attempt + 1)
@@ -306,29 +348,67 @@ class OpenAICompatibleProvider(AIProvider):
                                         status_code=status, body=error_body, category="transient",
                                     )
 
-                            # ── 3. HTTP 400 Context Overflow vs Other Bad Request ──
-                            if status == 400:
+                            # ── 4. HTTP 400 / 422 Schema Validation Self-Healing (NVIDIA NIM, Groq, etc.) ──
+                            if status in (400, 422):
                                 err_lower = error_body.lower()
-                                if any(k in err_lower for k in ("token", "length", "context")):
-                                    raise ContextOverflowError(f"Context too large (HTTP 400): {error_body[:200]}")
-                                raise ProviderRequestError(f"{self.id.capitalize()} API Error (HTTP 400): {error_body[:200]}", status_code=400, body=error_body, category="request")
+                                stripped = False
+                                if "reasoning_effort" in payload and any(k in err_lower for k in ("reasoning_effort", "extra_forbidden", "extra inputs", "unexpected", "forbidden", "validation")):
+                                    logger.warning("[%s] Stripping unsupported 'reasoning_effort' and retrying: %s", self.id, error_body[:160])
+                                    payload.pop("reasoning_effort", None)
+                                    stripped = True
+                                if ("tools" in payload or "tool_choice" in payload) and any(k in err_lower for k in ("tool", "extra_forbidden", "extra inputs", "unexpected", "forbidden", "validation")):
+                                    logger.warning("[%s] Stripping unsupported 'tools' / 'tool_choice' and retrying: %s", self.id, error_body[:160])
+                                    payload.pop("tools", None)
+                                    payload.pop("tool_choice", None)
+                                    stripped = True
+                                if any(k in payload for k in ("frequency_penalty", "presence_penalty", "top_p", "seed")):
+                                    if any(k in err_lower for k in ("penalty", "top_p", "seed", "extra_forbidden", "extra inputs")):
+                                        for k in ("frequency_penalty", "presence_penalty", "top_p", "seed"):
+                                            payload.pop(k, None)
+                                        stripped = True
+                                if stripped and attempt < max_attempts - 1:
+                                    continue
 
-                            # ── 4. HTTP 401 / 403 Authentication Errors ──
+                                if any(k in err_lower for k in ("token", "length", "context")):
+                                    raise ContextOverflowError(f"Context too large (HTTP {status}): {error_body[:200]}")
+                                if status == 400:
+                                    raise ProviderRequestError(f"{self.id.capitalize()} API Error (HTTP 400): {error_body[:200]}", status_code=400, body=error_body, category="request")
+                                if status == 422:
+                                    raise ProviderRequestError(f"{self.id.capitalize()} Unprocessable Entity (HTTP 422): {error_body[:200]}", status_code=422, body=error_body, category="request")
+
+                            # ── 5. HTTP 401 / 403 Authentication Errors ──
                             if status in (401, 403):
                                 raise ProviderRequestError(f"{self.id.capitalize()} Authentication Error (HTTP {status}): {error_body[:200]}", status_code=status, body=error_body, category="authentication")
 
-                            # ── 5. HTTP 404 Model Not Found ──
+                            # ── 6. NVIDIA NIM Model Deprecated / Restricted Self-Healing ──
+                            if self.id in ("nvidia-nim", "nvidia") and payload.get("model") != "meta/llama-3.2-11b-vision-instruct":
+                                err_lower = error_body.lower()
+                                is_nim_restricted = (
+                                    status in (404, 410)
+                                    and any(k in err_lower for k in ("not found for account", "function", "reached its end of life", "404 page not found", "not found"))
+                                ) or (
+                                    status == 429 and "minimax" in payload.get("model", "").lower()
+                                )
+                                if is_nim_restricted:
+                                    logger.warning(
+                                        "[NVIDIA NIM] Model '%s' is restricted or deprecated (HTTP %d). Auto-healing to active flagship 'meta/llama-3.2-11b-vision-instruct'...",
+                                        payload.get("model"), status
+                                    )
+                                    heal_msg = (
+                                        f"Model '{payload.get('model')}' is restricted on NVIDIA NIM. "
+                                        "Automatically routing to active flagship Llama 3.2 11B Vision..."
+                                    )
+                                    yield ProviderStreamEvent(type="retry", content=heal_msg, is_rate_limit=False)
+                                    payload["model"] = "meta/llama-3.2-11b-vision-instruct"
+                                    payload.pop("reasoning_effort", None)
+                                    await asyncio.sleep(0.5)
+                                    continue
+
+                            # ── 7. HTTP 404 Model Not Found ──
                             if status == 404:
                                 raise ProviderRequestError(f"{self.id.capitalize()} Model Not Found (HTTP 404): {error_body[:200]}", status_code=404, body=error_body, category="not_found")
 
-                            # ── 6. HTTP 413 Context / Payload Overflow ──
-                            if status == 413:
-                                err_lower = error_body.lower()
-                                if any(k in err_lower for k in ("token", "length", "context", "tpm", "rate limit", "too large", "requested")):
-                                    raise ContextOverflowError(f"Context/payload too large (HTTP 413): {error_body[:200]}")
-                                raise ProviderRequestError(f"{self.id.capitalize()} Payload Too Large (HTTP 413): {error_body[:200]}", status_code=413, body=error_body, category="request")
-
-                            # ── 7. Other 4xx Errors (405, 422) ──
+                            # ── 8. Other 4xx Errors (405, etc.) ──
                             raise ProviderRequestError(f"{self.id.capitalize()} API Error (HTTP {status}): {error_body[:200]}", status_code=status, body=error_body, category="request")
 
                         tool_call_deltas: dict[int, dict[str, str]] = {}
@@ -370,6 +450,7 @@ class OpenAICompatibleProvider(AIProvider):
                                         tool_call_deltas[idx]["arguments"] += args_piece
 
                             if reasoning:
+                                emitted = True
                                 yield ProviderStreamEvent(type="reasoning", content=str(reasoning))
 
                             if content:
@@ -412,6 +493,20 @@ class OpenAICompatibleProvider(AIProvider):
 
                 return
             except (httpx.TimeoutException, httpx.TransportError, TimeoutError) as exc:
+                # If a model timed out on NVIDIA NIM, auto-heal to meta/llama-3.2-11b-vision-instruct
+                if (
+                    self.id in ("nvidia-nim", "nvidia")
+                    and payload.get("model") != "meta/llama-3.2-11b-vision-instruct"
+                    and any(k in payload.get("model", "").lower() for k in ("kimi", "moonshot", "minimax"))
+                ):
+                    logger.warning("[NVIDIA NIM] Model '%s' timed out. Auto-routing to active flagship meta/llama-3.2-11b-vision-instruct...", payload.get("model"))
+                    heal_msg = "Model timed out on NVIDIA NIM cluster. Automatically routing to active flagship Llama 3.2 11B Vision..."
+                    yield ProviderStreamEvent(type="retry", content=heal_msg, is_rate_limit=False)
+                    payload["model"] = "meta/llama-3.2-11b-vision-instruct"
+                    payload.pop("reasoning_effort", None)
+                    await asyncio.sleep(0.5)
+                    continue
+
                 logger.warning("Provider %s connection/timeout error on attempt %d: %s", self.id, attempt + 1, exc)
                 if emitted:
                     logger.error("OpenAICompatible stream_chat network/timeout error after partial response: %s", exc)
