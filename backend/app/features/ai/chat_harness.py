@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional
 
 from app.core.paths import ensure_within_workspace, normalize_workspace
-from app.core.rate_limiter import rate_limiter
+from app.core.rate_limiter import rate_limiter, LIMITS
 from .indexing.code_intelligence import (
     CodeIntelligence,
     _build_symbol_index,
@@ -486,6 +486,18 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
         iteration = 0
         while iteration < max_iterations:
+            # ── Rate Limiting Enforcement Gate (M2) ──────────────────────────
+            session_id = getattr(request, "session_id", None) or workspace or "default_session"
+            iter_limit_res = rate_limiter.check_agent_iteration(session_id, max_iterations=LIMITS["agent_iterations"], enforce=True)
+            if not iter_limit_res.get("allowed", True):
+                retry_after = iter_limit_res.get("retry_after", 60)
+                logger.warning("Agent iteration limit exceeded for session=%s: %s", session_id, iter_limit_res)
+                yield _sse_done(
+                    False,
+                    f"Rate limit exceeded: session reached maximum {LIMITS['agent_iterations']} agent iterations (retry after {retry_after}s)."
+                )
+                return
+
             # ── Mid-Task Auto-Escalation Check ───────────────────────────────
             if (
                 tier == 1

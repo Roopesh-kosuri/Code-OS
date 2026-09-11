@@ -85,6 +85,78 @@ class RateLimiter:
         run_key = f"agent_run:{key}"
         self.check(run_key, max_requests=max_runs, window_seconds=window_seconds)
 
+    def check_agent_iteration(
+        self,
+        session_id: str,
+        max_iterations: int = LIMITS["agent_iterations"],
+        window_seconds: float = 86400.0,
+        enforce: bool = True,
+        raise_on_exceed: bool = False,
+    ) -> dict[str, Any]:
+        """Check and enforce agent iteration cap per session."""
+        key = f"agent_iteration:{session_id}"
+        res = self.check(key, max_requests=max_iterations, window_seconds=window_seconds, enforce=enforce)
+        if raise_on_exceed and not res.get("allowed", True):
+            raise RateLimitExceeded(
+                detail=f"Agent iteration limit exceeded ({max_iterations} per session)",
+                retry_after=res.get("retry_after", 60),
+            )
+        return res
+
+    def check_tool_call(
+        self,
+        session_id: str,
+        max_calls: int = LIMITS["tool_calls"],
+        window_seconds: float = 86400.0,
+        enforce: bool = True,
+        raise_on_exceed: bool = False,
+    ) -> dict[str, Any]:
+        """Check and enforce tool call limit per session."""
+        key = f"tool_call:{session_id}"
+        res = self.check(key, max_requests=max_calls, window_seconds=window_seconds, enforce=enforce)
+        if raise_on_exceed and not res.get("allowed", True):
+            raise RateLimitExceeded(
+                detail=f"Tool call limit exceeded ({max_calls} per session)",
+                retry_after=res.get("retry_after", 60),
+            )
+        return res
+
+    def check_llm_request(
+        self,
+        key: str,
+        max_requests: int = LIMITS["llm_requests"],
+        window_seconds: float = 86400.0,
+        enforce: bool = True,
+        raise_on_exceed: bool = False,
+    ) -> dict[str, Any]:
+        """Check and enforce LLM request limit per day."""
+        limit_key = f"llm_request:{key}"
+        res = self.check(limit_key, max_requests=max_requests, window_seconds=window_seconds, enforce=enforce)
+        if raise_on_exceed and not res.get("allowed", True):
+            raise RateLimitExceeded(
+                detail=f"LLM request limit exceeded ({max_requests} per day)",
+                retry_after=res.get("retry_after", 60),
+            )
+        return res
+
+    def check_duo_round(
+        self,
+        session_id: str,
+        max_rounds: int = LIMITS["duo_rounds"],
+        window_seconds: float = 86400.0,
+        enforce: bool = True,
+        raise_on_exceed: bool = False,
+    ) -> dict[str, Any]:
+        """Check and enforce duo rounds limit per session."""
+        limit_key = f"duo_round:{session_id}"
+        res = self.check(limit_key, max_requests=max_rounds, window_seconds=window_seconds, enforce=enforce)
+        if raise_on_exceed and not res.get("allowed", True):
+            raise RateLimitExceeded(
+                detail=f"Duo round limit exceeded ({max_rounds} per session)",
+                retry_after=res.get("retry_after", 60),
+            )
+        return res
+
     def record_tokens(self, key: str, token_count: int) -> int:
         """Record token consumption against workspace/user monthly budget."""
         import datetime

@@ -42,3 +42,39 @@ def test_default_unenforced_preserves_backward_compatibility():
     for _ in range(10):
         res = limiter.check("compat_key", max_requests=2, window_seconds=60.0)
         assert res["allowed"] is True
+
+
+def test_agent_iteration_limit_enforced():
+    from app.core.rate_limiter import RateLimitExceeded
+    limiter = RateLimiter(enforce=True)
+    session = "test_session_1"
+    # Execute 3 iterations with cap of 3
+    for _ in range(3):
+        res = limiter.check_agent_iteration(session, max_iterations=3, enforce=True)
+        assert res["allowed"] is True
+
+    # 4th iteration must be blocked
+    blocked = limiter.check_agent_iteration(session, max_iterations=3, enforce=True)
+    assert blocked["allowed"] is False
+
+    # Raising mode raises 429 RateLimitExceeded
+    with pytest.raises(RateLimitExceeded) as exc:
+        limiter.check_agent_iteration(session, max_iterations=3, enforce=True, raise_on_exceed=True)
+    assert exc.value.status_code == 429
+
+
+def test_tool_call_limit_enforced():
+    from app.core.rate_limiter import RateLimitExceeded
+    limiter = RateLimiter(enforce=True)
+    session = "test_session_tools"
+    for _ in range(5):
+        res = limiter.check_tool_call(session, max_calls=5, enforce=True)
+        assert res["allowed"] is True
+
+    blocked = limiter.check_tool_call(session, max_calls=5, enforce=True)
+    assert blocked["allowed"] is False
+
+    with pytest.raises(RateLimitExceeded) as exc:
+        limiter.check_tool_call(session, max_calls=5, enforce=True, raise_on_exceed=True)
+    assert exc.value.status_code == 429
+
