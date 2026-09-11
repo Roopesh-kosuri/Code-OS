@@ -58,7 +58,7 @@ from .sandbox.executor import (
     MAX_COMMAND_MEMORY_BYTES,
 )
 from .schemas import ChatMessage, ChatRequest, EditProposalRequest, FileChange, ContextOverflowError
-from app.features.search.semantic_service import semantic_search
+from app.features.ai.rag.vector_index_service import semantic_search as rag_semantic_search, init_vector_store
 from .service import provider_for, create_proposal, apply_proposal, reject_proposal, PROPOSAL_RE
 from .sessions.server_manager import (
     ActiveServerSession,
@@ -521,6 +521,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         read_dedup_cache: dict[tuple[str, int, int], tuple[float, int, int]] = {}
         ask_user_count: int = 0
         asked_questions: list[str] = []
+        clarifications_answered_count: int = 0
+        retrieval_tools_executed_count: int = 0
         MAX_CLARIFICATIONS_PER_TURN = 2
         last_raw_tool_call: str | None = None
 
@@ -1574,13 +1576,48 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         if not isinstance(opts, list) or not opts:
                             opts = ["Yes, proceed", "No, cancel"]
 
+                        # Check semantic question repetition loop
+                        if any(_is_similar_question(q_text, past_q) for past_q in asked_questions):
+                            logger.warning("chat_harness: ask_user repeated question loop detected: %s", q_text)
+                            repeat_err = f"Clarification question '{q_text[:60]}' has already been asked in this turn. Do not re-ask. Synthesize the answer directly using the user's prior choice and conclude with [DONE]."
+                            yield _sse_status("tool_error", repeat_err, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=repeat_err)
+                            turn_all_tools_successful = False
                         # Reject ask_user when user requested a review/evaluation of an attached document
-                        is_review_turn = _is_document_review_turn(user_query, attached_filenames, request.attached_paths)
-                        if is_review_turn:
+                        elif _is_document_review_turn(user_query, attached_filenames, request.attached_paths):
                             logger.info("chat_harness: rejected ask_user during document review turn (%s)", q_text)
                             review_err = "The user asked for your direct evaluation and review of their document. Do not quiz the user or ask for their thoughts; synthesize and deliver your complete review and feedback directly in conversational prose, then output [DONE]."
                             yield _sse_status("tool_error", review_err, tool="ask_user")
                             result = ToolResult(tool_name="ask_user", success=False, output="", error=review_err)
+                            turn_all_tools_successful = False
+                        # B1 & B4: Reject ask_user when used as retrieval failure interrogation
+                        elif (
+                            any(kw in q_text.lower() for kw in (
+                                "not found", "did not find", "could not find", "provide more context", "more context about",
+                                "which file", "where is", "locate the file", "specify the file", "point me to",
+                                "unable to find", "search returned", "semantic search did not", "clarify where"
+                            ))
+                            or (
+                                (retrieval_tools_executed_count > 0 or any(t.get("name") in ("semantic_search", "search_code") for t in executed_tools_this_turn))
+                                and any(kw in q_text.lower() for kw in ("context", "file", "path", "codebase", "authentication", "implementation", "details"))
+                            )
+                        ):
+                            logger.info("chat_harness: intercepted ask_user retrieval failure quiz: %s", q_text)
+                            retrieval_fail_err = (
+                                "Retrieval failure policy: NEVER use ask_user to report retrieval failure or ask the user to do the lookup job. "
+                                "Answer honestly in plain language in one pass: state what was searched, list the closest matches with file paths, "
+                                "state what is missing, and suggest concrete next steps (e.g. point to a file or run reindex). "
+                                "Output your complete answer and conclude with [DONE]."
+                            )
+                            yield _sse_status("tool_error", retrieval_fail_err, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=retrieval_fail_err)
+                            turn_all_tools_successful = False
+                        # B2: Clarification continuation rule: once user answers a clarification, next turn must act on it.
+                        elif clarifications_answered_count >= 1:
+                            logger.info("chat_harness: blocked second clarification after user answer: %s", q_text)
+                            second_clarification_directive = "Proceed with the task using the user's answer now."
+                            yield _sse_status("tool_error", second_clarification_directive, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=second_clarification_directive)
                             turn_all_tools_successful = False
                         # Check hard cap (max 2 clarifications per turn)
                         elif ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
@@ -1588,13 +1625,6 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             cap_err = "Clarification limit reached (maximum 2 per turn). Answer directly now with the available information and explicitly stated assumptions, then conclude with [DONE]."
                             yield _sse_status("tool_error", cap_err, tool="ask_user")
                             result = ToolResult(tool_name="ask_user", success=False, output="", error=cap_err)
-                            turn_all_tools_successful = False
-                        # Check semantic question repetition loop
-                        elif any(_is_similar_question(q_text, past_q) for past_q in asked_questions):
-                            logger.warning("chat_harness: ask_user repeated question loop detected: %s", q_text)
-                            repeat_err = f"Clarification question '{q_text[:60]}' has already been asked in this turn. Do not re-ask. Synthesize the answer directly using the user's prior choice and conclude with [DONE]."
-                            yield _sse_status("tool_error", repeat_err, tool="ask_user")
-                            result = ToolResult(tool_name="ask_user", success=False, output="", error=repeat_err)
                             turn_all_tools_successful = False
                         else:
                             ask_user_count += 1
@@ -1607,6 +1637,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             try:
                                 await asyncio.wait_for(pending_u.event.wait(), timeout=APPROVAL_TIMEOUT_SECONDS)
                                 user_ans = pending_u.selected_option or opts[0]
+                                clarifications_answered_count += 1
                                 yield _sse_status("tool", f"User selected: '{user_ans}'", tool="ask_user")
                                 result = ToolResult(
                                     tool_name="ask_user",
@@ -1770,10 +1801,12 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 error=""
                             )
                     elif tc.name == "search_code":
+                        retrieval_tools_executed_count += 1
                         result = _handle_search_code(workspace, tc.arguments)
                     elif tc.name == "semantic_search":
+                        retrieval_tools_executed_count += 1
                         q = tc.arguments.get("query", "")
-                        sem_matches = await semantic_search(workspace, q, limit=5)
+                        sem_matches = await rag_semantic_search(workspace, q, top_k=5)
                         if sem_matches:
                             out_lines = []
                             for m in sem_matches:
@@ -1782,7 +1815,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 lr = m.get("line_range", "")
                                 txt = (m.get("chunk_text") or m.get("content") or "")[:200].strip().replace("\n", " ")
                                 out_lines.append(f"- {p} (lines {lr}, score: {sc:.2f}): {txt}")
-                            result = ToolResult(tool_name="semantic_search", success=True, output="Semantic matches:\n" + "\n".join(out_lines))
+                            result = ToolResult(
+                                tool_name="semantic_search",
+                                success=True,
+                                output="Semantic matches:\n" + "\n".join(out_lines) + "\n\nHint: use read_file on these paths for full content.",
+                            )
                         else:
                             result = ToolResult(tool_name="semantic_search", success=True, output="No semantic matches found.")
 

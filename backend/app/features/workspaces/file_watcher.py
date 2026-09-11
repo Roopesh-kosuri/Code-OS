@@ -18,7 +18,16 @@ class LoggingEventHandler(FileSystemEventHandler):
         self.loop = loop
 
     def on_any_event(self, event: FileSystemEvent) -> None:
-        if event.is_directory or any(part in IGNORED_DIRS for part in Path(event.src_path).parts):
+        if event.is_directory:
+            return
+        src = str(event.src_path).replace("\\", "/")
+        parts = [p.lower() for p in Path(src).parts]
+        if (
+            any(part in IGNORED_DIRS or part in (".code_os", "uploads", ".git", "node_modules", ".pytest_cache") for part in parts)
+            or ".code_os" in src
+            or "/uploads/" in src
+            or src.endswith("/uploads")
+        ):
             return
         logger.info("workspace file event: %s %s", event.event_type, event.src_path)
         if self.loop and self.loop.is_running():

@@ -261,3 +261,279 @@ async def test_rag_stats_endpoint_reports_missing_files(tmp_path, temp_db, async
     assert data["chunk_count"] >= 1
     assert "indexed_module.py" in data["indexed_files"]
     assert "unindexed_module.py" in data["missing_files_sample"]
+
+
+# ── Phase 4.3 Regression Tests: Scope/Ranking & Retrieval-Failure UX ──────────
+
+@pytest.mark.asyncio
+async def test_uploads_dir_excluded_from_codebase_rag(tmp_path):
+    """Verify that .code_os/uploads and uploads directories are excluded from indexing and stats."""
+    workspace = str(tmp_path)
+    # Create normal source file
+    src = tmp_path / "src" / "service.py"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text("def run():\n    return True\n", encoding="utf-8")
+
+    # Create upload files
+    up1 = tmp_path / ".code_os" / "uploads" / "report.md"
+    up1.parent.mkdir(parents=True, exist_ok=True)
+    up1.write_text("# Uploaded report on authentication\nLots of auth keywords\n", encoding="utf-8")
+
+    up2 = tmp_path / "uploads" / "data.md"
+    up2.parent.mkdir(parents=True, exist_ok=True)
+    up2.write_text("# Another upload with authentication\n", encoding="utf-8")
+
+    # Direct index_file on upload path returns 0
+    cnt1 = await index_file(workspace, str(up1))
+    assert cnt1 == 0
+    cnt2 = await index_file(workspace, str(up2))
+    assert cnt2 == 0
+
+    # Reindex workspace
+    status = await reindex_workspace_now(workspace)
+    assert status["files_indexed"] == 1
+
+    stats = await get_rag_stats(workspace)
+    assert any("service.py" in f for f in stats["indexed_files"])
+    assert not any("uploads" in f for f in stats["indexed_files"])
+    assert not any("uploads" in f for f in stats["missing_files_sample"])
+
+
+@pytest.mark.asyncio
+async def test_login_system_top3_for_authentication_query(tmp_path):
+    """Verify that login_system.md ranks in top 3 for 'authentication' query without literal word match."""
+    workspace = str(tmp_path)
+    login_file = tmp_path / "login_system.md"
+    login_file.write_text(
+        "# User Login System\n"
+        "Users submit credentials to /api/login and passwords are verified using salted bcrypt hashes.\n"
+        "Upon successful verification, signed RS256 JWT access tokens are minted with claims for user identity.",
+        encoding="utf-8",
+    )
+    db_file = tmp_path / "database.py"
+    db_file.write_text(
+        "import asyncpg\nasync def get_db_pool():\n    return await asyncpg.create_pool('postgresql://localhost/db')\n",
+        encoding="utf-8",
+    )
+    worker_file = tmp_path / "worker.py"
+    worker_file.write_text(
+        "import celery\napp = celery.Celery('tasks')\n@app.task\ndef background_job(x):\n    return x * 2\n",
+        encoding="utf-8",
+    )
+
+    await reconcile_workspace_index(workspace)
+
+    results = await semantic_search(workspace, "authentication", top_k=3)
+    assert len(results) > 0
+    top_paths = [r.get("relative_path") or r.get("path", "") for r in results]
+    assert any("login_system.md" in p for p in top_paths[:3])
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_tool_returns_scored_chunks(tmp_path, temp_db):
+    """Verify that invoking the semantic_search tool returns formatted scored chunks with the read_file hint."""
+    from app.features.ai.chat_harness import run_chat_agent, ChatAgentRequest
+
+    workspace = str(tmp_path)
+    auth_file = tmp_path / "login_system.md"
+    auth_file.write_text("# Login System\nUses salted bcrypt hashes and JWT tokens.\n", encoding="utf-8")
+    await index_file(workspace, str(auth_file))
+
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=workspace,
+        messages=[{"role": "user", "content": "Check auth"}],
+    )
+
+    iteration_step = 0
+    async def mock_stream(*args, **kwargs):
+        nonlocal iteration_step
+        if iteration_step == 0:
+            iteration_step += 1
+            yield '[TOOL_CALL: semantic_search]\n{"query": "authentication"}\n[/TOOL_CALL]'
+        else:
+            yield "Here is the authentication system based on the search results.\n[DONE]"
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(side_effect=[mock_stream(), mock_stream()])
+
+    events = []
+    with patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+        async for sse_chunk in run_chat_agent(req):
+            events.append(sse_chunk)
+
+    tool_results = [e for e in events if "tool_result" in e and "semantic_search" in e]
+    assert len(tool_results) >= 1
+    assert "score:" in tool_results[0]
+    assert "Hint: use read_file on these paths for full content." in tool_results[0]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_prunes_polluted_records(tmp_path):
+    """Verify that reconcile_workspace_index purges any previously-indexed uploads or ignored files."""
+    workspace = str(tmp_path)
+    col = init_vector_store(workspace, collection_name="codebase_rag")
+    col.add(
+        documents=["Forensic audit with authentication tokens"],
+        metadatas=[{"file_path": ".code_os/uploads/polluted.md", "chunk_index": 0, "line_range": "1-10"}],
+        ids=["polluted_1"],
+    )
+    col.add(
+        documents=["Valid source code"],
+        metadatas=[{"file_path": "valid_service.py", "chunk_index": 0, "line_range": "1-5"}],
+        ids=["valid_1"],
+    )
+    assert col.count() == 2
+
+    # Create the valid file on disk so reconcile sees it
+    (tmp_path / "valid_service.py").write_text("def valid(): pass\n", encoding="utf-8")
+
+    # Run reconcile
+    res = await reconcile_workspace_index(workspace)
+
+    # Check collection contents
+    data = col.get()
+    all_fps = [m.get("file_path", "") for m in data.get("metadatas", [])]
+    assert not any("uploads" in fp for fp in all_fps)
+    assert any("valid_service.py" in fp for fp in all_fps)
+
+
+@pytest.mark.asyncio
+async def test_retrieval_failure_answers_honestly_without_ask_user(tmp_path, temp_db):
+    """Verify that when retrieval yields no matches, attempting to ask_user is intercepted and rejected with retrieval failure policy."""
+    from app.features.ai.chat_harness import run_chat_agent, ChatAgentRequest
+
+    workspace = str(tmp_path)
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=workspace,
+        messages=[{"role": "user", "content": "Find authentication logic"}],
+    )
+
+    step = 0
+    async def mock_stream(*args, **kwargs):
+        nonlocal step
+        if step == 0:
+            step += 1
+            yield '[TOOL_CALL: search_code]\n{"query": "authentication"}\n[/TOOL_CALL]'
+        elif step == 1:
+            step += 1
+            yield '[TOOL_CALL: ask_user]\n{"question": "Could you provide more context on which file has authentication?", "options": ["Option A", "Option B"]}\n[/TOOL_CALL]'
+        else:
+            yield "I searched the codebase for authentication logic but could not find any references. The closest matches are...\n[DONE]"
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(side_effect=[mock_stream(), mock_stream(), mock_stream()])
+
+    events = []
+    with patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+        async for sse_chunk in run_chat_agent(req):
+            events.append(sse_chunk)
+
+    # Verify that NO interactive ask_user card was emitted to the user
+    ask_user_events = [e for e in events if "event: ask_user" in e]
+    assert len(ask_user_events) == 0
+
+    # Verify tool_error status event was emitted with the policy directive
+    tool_error_events = [e for e in events if "tool_error" in e and "Retrieval failure policy" in e]
+    assert len(tool_error_events) >= 1
+
+
+@pytest.mark.asyncio
+async def test_no_second_clarification_after_user_answer(tmp_path, temp_db):
+    """Verify that once user answers a clarification, subsequent ask_user calls in that turn are blocked with directive to proceed."""
+    from app.features.ai.chat_harness import (
+        run_chat_agent,
+        ChatAgentRequest,
+        respond_to_user_question,
+        _pending_user_responses,
+    )
+
+    workspace = str(tmp_path)
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=workspace,
+        messages=[{"role": "user", "content": "Configure auth"}],
+    )
+
+    step = 0
+    async def mock_stream(*args, **kwargs):
+        nonlocal step
+        if step == 0:
+            step += 1
+            yield '[TOOL_CALL: ask_user]\n{"question": "Do you want JWT or Session?", "options": ["JWT", "Session"]}\n[/TOOL_CALL]'
+        elif step == 1:
+            step += 1
+            yield '[TOOL_CALL: ask_user]\n{"question": "Do you prefer RS256 or HS256?", "options": ["RS256", "HS256"]}\n[/TOOL_CALL]'
+        else:
+            yield "Configuring JWT authentication now.\n[DONE]"
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = mock_stream
+
+    events = []
+    async def run_agent():
+        async for sse_chunk in run_chat_agent(req):
+            events.append(sse_chunk)
+
+    with patch("app.features.ai.chat_harness.provider_for", AsyncMock(return_value=mock_provider)):
+        task = asyncio.create_task(run_agent())
+
+        # Wait for first ask_user card to be registered
+        for _ in range(50):
+            if _pending_user_responses:
+                break
+            await asyncio.sleep(0.05)
+
+        assert len(_pending_user_responses) == 1
+        action_id = list(_pending_user_responses.keys())[0]
+        respond_to_user_question(action_id, "JWT")
+
+        await task
+
+    # Verify that only 1 event: ask_user was ever emitted
+    ask_user_cards = [e for e in events if "event: ask_user" in e]
+    assert len(ask_user_cards) == 1
+
+    # Verify the second clarification was rejected with directive
+    second_clarification_errors = [e for e in events if "Proceed with the task using the user's answer now" in e]
+    assert len(second_clarification_errors) >= 1
+
+
+def test_meta_narration_stripped_from_final_answer():
+    """Verify that tool-planning meta-narration sentences are stripped from the final answer text."""
+    from app.features.ai.harness.compaction_manager import strip_meta_narration, _clean_response_text
+
+    narrated = (
+        "To further investigate, I will use the search_code function to find the auth endpoints. "
+        "Let me inspect the codebase files to verify.\n\n"
+        "The login system uses bcrypt for password hashing and RS256 JWT tokens for sessions."
+    )
+    cleaned = strip_meta_narration(narrated)
+    assert "To further investigate" not in cleaned
+    assert "search_code" not in cleaned
+    assert "The login system uses bcrypt" in cleaned
+
+    # Also verify via _clean_response_text
+    cleaned_all = _clean_response_text(narrated)
+    assert "To further investigate" not in cleaned_all
+    assert "The login system uses bcrypt" in cleaned_all
+
+
+def test_fallback_chain_runs_before_clarification(tmp_path):
+    """Verify system prompts and rules enforce fallback chain (semantic_search -> search_code -> read_file) before answering."""
+    from app.features.ai.harness.prompt_builder import _build_system_prompt, _QUICK_TASK_SYSTEM_PROMPT, _DEEP_TASK_SYSTEM_PROMPT
+
+    workspace = str(tmp_path)
+    tier1_prompt = _build_system_prompt(workspace, tier=1, context={})
+    tier2_prompt = _build_system_prompt(workspace, tier=2, context={})
+
+    for p in (tier1_prompt, tier2_prompt, _QUICK_TASK_SYSTEM_PROMPT, _DEEP_TASK_SYSTEM_PROMPT):
+        assert "fallback chain" in p.lower()
+        assert "semantic_search" in p
+        assert "search_code" in p
+        assert "read_file" in p
+        assert "never call `ask_user`" in p.lower() or "never quiz the user" in p.lower()

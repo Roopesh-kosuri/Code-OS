@@ -38,8 +38,30 @@ _INCOMPLETE_CODEBLOCK_TOOL_RE = re.compile(
 )
 
 
+META_NARRATION_PATTERNS = [
+    re.compile(r"(?:^|[.\n])\s*(?:To further investigate,?\s*)?I will (?:use|call)\s+(?:the\s+)?\w+\s+(?:tool|function)[^.\n]*\.?", re.IGNORECASE),
+    re.compile(r"(?:^|[.\n])\s*To further investigate,?\s*I will[^.\n]*\.?", re.IGNORECASE),
+    re.compile(r"(?:^|[.\n])\s*Since the user asked[^.\n]*,?\s*I will (?:call|use)[^.\n]*\.?", re.IGNORECASE),
+    re.compile(r"(?:^|[.\n])\s*The user has chosen to provide more context[^.\n]*\.?\s*I will[^.\n]*\.?", re.IGNORECASE),
+    re.compile(r"(?:^|[.\n])\s*I will ask (?:another|a) clarifying question[^.\n]*\.?", re.IGNORECASE),
+    re.compile(r"(?:^|[.\n])\s*I will (?:now\s+)?(?:use|call|proceed to call|execute)\s+(?:the\s+)?\w+\s+(?:tool|function)?[^.\n]*\.?", re.IGNORECASE),
+    re.compile(r"(?:^|[.\n])\s*Unfortunately,?\s*(?:the\s+)?semantic search did not find any relevant information[^.\n]*\.?", re.IGNORECASE),
+]
+
+
+def strip_meta_narration(text: str) -> str:
+    """Remove internal meta-narration sentences leaked by the model into user prose."""
+    if not text:
+        return ""
+    cleaned = text
+    for pat in META_NARRATION_PATTERNS:
+        cleaned = pat.sub("", cleaned)
+    cleaned = re.sub(r"\n\s*\n\s*\n+", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 def _clean_response_text(text: str) -> str:
-    """Remove tool call markers, plan blocks, error tags, and control tags for display prose."""
+    """Remove tool call markers, plan blocks, error tags, control tags, and meta-narration for display prose."""
     cleaned = _EXTENDED_TOOL_RE.sub("", text)
     cleaned = _CODEBLOCK_TOOL_RE.sub("", cleaned)
     # Clean up incomplete or unclosed tool call blocks (e.g. cut off or truncated)
@@ -49,6 +71,7 @@ def _clean_response_text(text: str) -> str:
     cleaned = re.sub(r"\[TRUNCATED[^\]]*\]", "", cleaned)
     cleaned = re.sub(r"\[Error:[^\]]*\]", "", cleaned)
     cleaned = cleaned.replace("[DONE]", "").replace("[ESCALATE]", "").strip()
+    cleaned = strip_meta_narration(cleaned)
     return cleaned
 
 

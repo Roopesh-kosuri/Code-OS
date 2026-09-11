@@ -11,6 +11,7 @@ from .vector_index_service import (
     reindex_workspace_now,
     reconcile_workspace_index,
     get_rag_stats,
+    is_ignored_rag_path,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "reindex_workspace_now",
     "reconcile_workspace_index",
     "get_rag_stats",
+    "is_ignored_rag_path",
 ]

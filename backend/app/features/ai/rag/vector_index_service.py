@@ -33,7 +33,19 @@ CODE_EXTENSIONS = frozenset({
 IGNORED_DIRS = frozenset({
     "node_modules", ".git", ".code_os", "__pycache__", ".pytest_cache",
     ".venv", "venv", "dist", "build", ".next", ".husky", "coverage", ".turbo",
+    "uploads",
 })
+
+
+def is_ignored_rag_path(file_path: str | Path) -> bool:
+    """Check if a path belongs to an excluded or polluted directory."""
+    norm = str(file_path).replace("\\", "/").strip().lower()
+    parts = [p.lower() for p in Path(norm).parts]
+    if any(p in IGNORED_DIRS or p in (".code_os", "uploads", ".git", "node_modules", ".pytest_cache") for p in parts):
+        return True
+    if ".code_os" in norm or "/uploads/" in norm or norm.startswith("uploads/") or norm.endswith("/uploads") or norm == "uploads":
+        return True
+    return False
 
 # Language mapping by extension
 LANGUAGE_MAP = {
@@ -216,7 +228,15 @@ async def index_file(workspace: str, file_path: str) -> int:
     collection = init_vector_store(norm_ws)
     rel_path = _get_relative_path(norm_ws, file_path)
 
-    # 1. Delete existing chunks for this file
+    # 1. Exclude polluted or ignored paths (.code_os, uploads, .git, node_modules, .pytest_cache)
+    if is_ignored_rag_path(rel_path) or is_ignored_rag_path(file_path):
+        try:
+            collection.delete(where={"file_path": rel_path})
+        except Exception:
+            pass
+        return 0
+
+    # 2. Delete existing chunks for this file
     try:
         collection.delete(where={"file_path": rel_path})
     except Exception as exc:
@@ -305,10 +325,16 @@ async def index_workspace(workspace: str) -> Dict[str, Any]:
     files_to_index: List[Path] = []
     for root, dirs, files in os.walk(ws_path):
         # Exclude ignored directories
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        dirs[:] = [
+            d for d in dirs
+            if d not in IGNORED_DIRS
+            and not is_ignored_rag_path(d)
+            and not d.startswith(".")
+        ]
         for f in files:
             p = Path(root) / f
-            if p.suffix.lower() in CODE_EXTENSIONS:
+            rel_p = _get_relative_path(norm_ws, str(p))
+            if not is_ignored_rag_path(rel_p) and p.suffix.lower() in CODE_EXTENSIONS:
                 files_to_index.append(p)
 
     total_chunks = 0
@@ -564,7 +590,7 @@ async def semantic_search(
 
     # 5. Cross-encoder reranking down to target_k
     final_results = _rerank_chunks(query, merged_candidates, top_k=target_k)
-    return final_results
+    return [r for r in final_results if not is_ignored_rag_path(r.get("file_path", ""))]
 
 
 async def get_file_context(workspace: str, file_path: str) -> List[Dict[str, Any]]:
@@ -732,26 +758,48 @@ async def reconcile_workspace_index(workspace: str, loop: Optional[asyncio.Abstr
 
     collection = init_vector_store(norm_ws)
 
-    # Retrieve current collection metadata
+    # 1. Prune already-indexed polluted records (.code_os, uploads, node_modules, .git, .pytest_cache)
+    try:
+        data = collection.get(include=["metadatas"])
+        polluted_paths: set[str] = set()
+        for meta in data.get("metadatas") or []:
+            fp = meta.get("file_path")
+            if fp and is_ignored_rag_path(fp):
+                polluted_paths.add(fp)
+        for pp in polluted_paths:
+            try:
+                collection.delete(where={"file_path": pp})
+                logger.info("reconcile_workspace_index: pruned polluted record %s", pp)
+            except Exception as p_err:
+                logger.debug("reconcile_workspace_index: failed to prune polluted record %s: %s", pp, p_err)
+    except Exception as exc:
+        logger.debug("reconcile_workspace_index: failed checking polluted metadatas: %s", exc)
+
+    # 2. Retrieve current collection metadata
     existing_file_meta: Dict[str, float] = {}
     try:
         data = collection.get(include=["metadatas"])
         for meta in data.get("metadatas") or []:
             fp = meta.get("file_path")
-            if fp:
+            if fp and not is_ignored_rag_path(fp):
                 mt = float(meta.get("mtime") or 0.0)
                 existing_file_meta[fp] = max(existing_file_meta.get(fp, 0.0), mt)
     except Exception as exc:
         logger.debug("reconcile_workspace_index: failed to load existing metadatas: %s", exc)
 
-    # Scan disk files
+    # 3. Scan disk files
     disk_files: Dict[str, Path] = {}
     for root, dirs, files in os.walk(ws_path):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        dirs[:] = [
+            d for d in dirs
+            if d not in IGNORED_DIRS
+            and not is_ignored_rag_path(d)
+            and not d.startswith(".")
+        ]
         for f in files:
             p = Path(root) / f
-            if p.suffix.lower() in CODE_EXTENSIONS:
-                rel_p = _get_relative_path(norm_ws, str(p))
+            rel_p = _get_relative_path(norm_ws, str(p))
+            if not is_ignored_rag_path(rel_p) and p.suffix.lower() in CODE_EXTENSIONS:
                 disk_files[rel_p] = p
 
     missing_or_modified: List[Tuple[str, Path]] = []
@@ -846,11 +894,16 @@ async def get_rag_stats(workspace: str) -> Dict[str, Any]:
     # Disk scan for missing files sample
     missing_files: list[str] = []
     for root, dirs, files in os.walk(ws_path):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        dirs[:] = [
+            d for d in dirs
+            if d not in IGNORED_DIRS
+            and not is_ignored_rag_path(d)
+            and not d.startswith(".")
+        ]
         for f in files:
             p = Path(root) / f
-            if p.suffix.lower() in CODE_EXTENSIONS:
-                rel_p = _get_relative_path(norm_ws, str(p))
+            rel_p = _get_relative_path(norm_ws, str(p))
+            if not is_ignored_rag_path(rel_p) and p.suffix.lower() in CODE_EXTENSIONS:
                 if rel_p not in indexed_files:
                     missing_files.append(rel_p)
                     if len(missing_files) >= 10:

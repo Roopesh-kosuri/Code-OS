@@ -24,7 +24,7 @@ from .activity_logger import (
 )
 from .compaction_manager import (
     _compact_conversation_history, CompactionManager, _clean_response_text, _is_response_truncated,
-    _generate_diff_summary,
+    _generate_diff_summary, strip_meta_narration,
 )
 from .plan_parser import (
     DAGPlanStep, PlanParser, _parse_plan, _parse_plan_dag, _replan_on_failure,
@@ -113,6 +113,7 @@ __all__ = [
     "_compact_conversation_history",
     "CompactionManager",
     "_clean_response_text",
+    "strip_meta_narration",
     "_is_response_truncated",
     "_generate_diff_summary",
     "DAGPlanStep",
