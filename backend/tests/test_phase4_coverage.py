@@ -1,4 +1,4 @@
-﻿"""
+"""
 test_phase4_coverage.py - Comprehensive Test Suite for Phase 4 (P3).
 
 Explicitly verifies and asserts:
@@ -233,13 +233,13 @@ async def test_run_chat_agent_e2e_edit_and_apply(tmp_path, temp_db):
     mock_provider = MagicMock()
     mock_provider.stream_chat = MagicMock(side_effect=[mock_stream()])
 
+    done = False
     async def auto_approver():
-        for _ in range(50):
+        while not done:
             await asyncio.sleep(0.05)
             if _pending_approvals:
                 for act_id in list(_pending_approvals.keys()):
                     await approve_action(act_id)
-                return
 
     approver_task = asyncio.create_task(auto_approver())
 
@@ -248,6 +248,7 @@ async def test_run_chat_agent_e2e_edit_and_apply(tmp_path, temp_db):
         async for chunk in run_chat_agent(req):
             events.append(chunk)
 
+    done = True
     await approver_task
     full_output = "".join(events)
 
