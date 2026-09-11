@@ -123,6 +123,17 @@ export class OffscreenWindowPool {
           contextIsolation: true,
         },
       });
+      try {
+        win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+          const responseHeaders = { ...details.responseHeaders };
+          responseHeaders["Content-Security-Policy"] = [
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:;",
+          ];
+          callback({ responseHeaders });
+        });
+      } catch {
+        // Handled by default session
+      }
       this.windows.push(win);
       return win;
     }
