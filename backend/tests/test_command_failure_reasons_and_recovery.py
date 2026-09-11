@@ -103,6 +103,8 @@ async def test_parent_directory_creation_via_edit_file(tmp_path, temp_db):
 async def test_approval_timeout_reissue_and_structured_error(tmp_path, temp_db):
     """Verify that approval timeout re-issues approval once, then reports structured approval_timeout."""
     workspace = str(tmp_path)
+    from app.features.workspaces.trust_service import set_workspace_trust
+    await set_workspace_trust(workspace, True)
     cmd = "mkdir \"nigropo puzzle game\""
 
     req = ChatAgentRequest(

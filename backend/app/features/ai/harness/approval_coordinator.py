@@ -68,23 +68,92 @@ def _get_trusted_commands_path(workspace: str) -> Path:
     return os_dir / "trusted_commands.json"
 
 
+_EXPLICITLY_TRUSTED_WORKSPACES: set[str] = set()
+
+
+def _is_workspace_trusted_sync(workspace: str) -> bool:
+    """Synchronously verify whether a workspace has been explicitly trusted by the user."""
+    if not workspace:
+        return False
+    try:
+        from app.core.paths import normalize_workspace
+        normalized = normalize_workspace(workspace)
+        norm_str = str(normalized)
+        if norm_str in _EXPLICITLY_TRUSTED_WORKSPACES:
+            return True
+
+        import sqlite3
+        from app.core.config import get_settings
+        db_path = get_settings().database_path
+        if not db_path.exists():
+            return False
+
+        with sqlite3.connect(str(db_path)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT path, trusted FROM workspace_trust WHERE trusted = 1")
+            rows = cursor.fetchall()
+            for row_path_str, trusted in rows:
+                try:
+                    row_path = normalize_workspace(str(row_path_str))
+                except Exception:
+                    continue
+                try:
+                    normalized.relative_to(row_path)
+                    is_child = True
+                except ValueError:
+                    is_child = False
+                if normalized == row_path or is_child:
+                    return True
+    except Exception as exc:
+        logger.debug("Failed to check workspace trust sync for %s: %s", workspace, exc)
+    return False
+
+
 def _load_trusted_commands(workspace: str) -> list[str]:
+    # Honor <workspace>/.code_os/trusted_commands.json ONLY when workspace is trusted
+    if not _is_workspace_trusted_sync(workspace):
+        return []
     try:
         p = _get_trusted_commands_path(workspace)
         if p.is_file():
             data = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                return [str(x).strip() for x in data if str(x).strip()]
+                return [
+                    str(x).strip() for x in data
+                    if str(x).strip() and str(x).strip().strip("\"'") != "*"
+                ]
     except Exception as exc:
         logger.warning("chat_harness: failed to load trusted commands: %s", exc)
     return []
 
 
+FORBIDDEN_TRUST_OPERATORS = (";", "&&", "||", "|", "&", ">", "<", "`", "$(", "${")
+
+
 def _save_trusted_command(workspace: str, pattern: str) -> bool:
     pattern = pattern.strip()
-    if not pattern or pattern == "*" or any(op in pattern for op in (";", "&&", "||", "|", "&")):
+    if not pattern:
         return False
+    # Reject bare wildcard pattern on save
+    if pattern == "*" or pattern.strip("\"'") == "*":
+        return False
+    # Reject any shell operator
+    if any(op in pattern for op in FORBIDDEN_TRUST_OPERATORS):
+        return False
+
     try:
+        import shlex
+        tokens = shlex.split(pattern)
+        if not tokens or tokens == ["*"] or tokens[0] == "*":
+            return False
+    except Exception:
+        return False
+
+    try:
+        if workspace:
+            from app.core.paths import normalize_workspace
+            _EXPLICITLY_TRUSTED_WORKSPACES.add(str(normalize_workspace(workspace)))
+
         cmds = _load_trusted_commands(workspace)
         if pattern not in cmds:
             cmds.append(pattern)
@@ -110,6 +179,38 @@ def _remove_trusted_command(workspace: str, pattern: str) -> bool:
     return False
 
 
+def _match_command_pattern(pat_tokens: list[str], cmd_tokens: list[str]) -> bool:
+    """Match command tokens against pattern tokens structurally."""
+    if not pat_tokens or not cmd_tokens:
+        return False
+    # Bare wildcard is never allowed
+    if pat_tokens == ["*"] or pat_tokens[0] == "*":
+        return False
+
+    # Exact token match
+    if pat_tokens == cmd_tokens:
+        return True
+
+    # If pattern ends with *, e.g. ["npm", "*"] or ["git", "*"]
+    if pat_tokens[-1] == "*":
+        prefix_tokens = pat_tokens[:-1]
+        if len(cmd_tokens) >= len(prefix_tokens) and cmd_tokens[:len(prefix_tokens)] == prefix_tokens:
+            return True
+
+    # If pattern is e.g. ["pytest*"] as a single token
+    if len(pat_tokens) == 1 and pat_tokens[0].endswith("*"):
+        prefix = pat_tokens[0][:-1]
+        if cmd_tokens[0] == prefix or cmd_tokens[0].startswith(prefix):
+            return True
+
+    # Known runner prefix matching, e.g. "npm test" matches "npm test -- --watch"
+    if pat_tokens[0] in ("npm", "pytest", "python", "vitest", "jest", "cargo", "go"):
+        if len(cmd_tokens) >= len(pat_tokens) and cmd_tokens[:len(pat_tokens)] == pat_tokens:
+            return True
+
+    return False
+
+
 def _is_command_trusted(workspace: str, cmd: str) -> bool:
     """Check if command matches any workspace trusted command pattern."""
     if not workspace or not cmd:
@@ -117,33 +218,39 @@ def _is_command_trusted(workspace: str, cmd: str) -> bool:
     cmd_clean = cmd.strip()
 
     # Never trust compound commands or shell chaining
-    if any(op in cmd_clean for op in (";", "&&", "||", "|", "&")):
+    if any(op in cmd_clean for op in FORBIDDEN_TRUST_OPERATORS):
         return False
 
     trusted = _load_trusted_commands(workspace)
+    if not trusted:
+        return False
+
     try:
         import shlex
-        cmd_parts = shlex.split(cmd_clean)
-        cmd_exec = cmd_parts[0] if cmd_parts else ""
+        cmd_tokens = shlex.split(cmd_clean)
     except Exception:
-        cmd_exec = cmd_clean.split()[0] if cmd_clean.split() else ""
+        cmd_tokens = cmd_clean.split()
+
+    if not cmd_tokens:
+        return False
 
     for pattern in trusted:
         pat_clean = pattern.strip()
-        # Reject bare wildcard patterns
-        if not pat_clean or pat_clean == "*":
+        # Reject bare wildcard pattern on match
+        if not pat_clean or pat_clean == "*" or pat_clean.strip("\"'") == "*":
             continue
-        if any(op in pat_clean for op in (";", "&&", "||", "|", "&")):
+        if any(op in pat_clean for op in FORBIDDEN_TRUST_OPERATORS):
             continue
 
-        if pat_clean == cmd_clean:
+        try:
+            import shlex
+            pat_tokens = shlex.split(pat_clean)
+        except Exception:
+            pat_tokens = pat_clean.split()
+
+        if _match_command_pattern(pat_tokens, cmd_tokens):
             return True
-        if pat_clean.endswith("*"):
-            prefix = pat_clean[:-1].strip()
-            if prefix and (cmd_exec == prefix or cmd_clean.startswith(prefix + " ") or cmd_clean == prefix):
-                return True
-        if pat_clean in ("pytest", "npm test", "python -m pytest") and (cmd_clean == pat_clean or cmd_clean.startswith(pat_clean + " ")):
-            return True
+
     return False
 
 
