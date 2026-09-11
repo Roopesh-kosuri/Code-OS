@@ -55,140 +55,24 @@ KNOWN_TECH_NAMES = frozenset({
 })
 
 
+from app.features.ai.intelligence.task_classifier import classify_task
+
+
 def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tuple[int, str, str]:
-    """Pure rule-based task classifier (<1ms, no network or LLM calls)."""
-    # Strip any prepended attachment XML blocks so rules match the actual user prompt,
-    # not keywords (e.g. 'system', 'architecture', 'full stack') found inside uploaded CVs or documents.
-    original_q = q_lower
-    clean_prompt = re.sub(r'<attached_files[\s\S]*?</attached_files>', '', q_lower, flags=re.IGNORECASE)
-    clean_prompt = re.sub(r'<file[\s\S]*?</file>', '', clean_prompt, flags=re.IGNORECASE)
-    clean_prompt = re.sub(r'<untrusted_file_content[\s\S]*?</untrusted_file_content>', '', clean_prompt, flags=re.IGNORECASE)
-    clean_prompt = re.sub(r'<untrusted_web_content[\s\S]*?</untrusted_web_content>', '', clean_prompt, flags=re.IGNORECASE)
-    clean_prompt = re.sub(r'\[web content context\]:[\s\S]*', '', clean_prompt, flags=re.IGNORECASE)
-    clean_prompt = re.sub(r'\[attached image visual findings\][\s\S]*?\[end attached image visual findings\]', '', clean_prompt, flags=re.IGNORECASE)
-    q_lower = clean_prompt.strip() or q_lower.strip()
-    has_attachment = bool(attached_paths or len(clean_prompt) < len(original_q))
+    """Task effort classifier delegating to unified task_classifier engine."""
+    res = classify_task(q_lower, file_list=attached_paths, use_llm=False)
+    diff = res.get("difficulty", "MEDIUM")
+    effort = res.get("effort_tier", 1)
+    tier_name = res.get("tier", "MEDIUM")
+    reason = res.get("reasoning") or "; ".join(res.get("reasons", [])) or "Classified by unified task classifier"
 
-    # 1. Greetings and Conversational Inquiries (Tier 0 Fast Answer)
-    greetings = (
-        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
-        "greetings", "sup", "howdy", "yo", "hi there", "hello there", "hey there",
-    )
-    clean_q = re.sub(r"[^\w\s]", "", q_lower).strip()
-    if clean_q in greetings:
-        return 0, "Fast Answer", "Fast path: greeting"
-    if any(clean_q.startswith(g + " ") for g in greetings) and len(clean_q.split()) <= 4 and not any(v in clean_q for v in ("build", "create", "fix", "add", "run", "edit", "delete", "make")):
-        return 0, "Fast Answer", "Fast path: conversational greeting"
-
-    # 1b. Document Review & Feedback Inquiries (Tier 0 Fast Answer - Conversational evaluation)
-    review_keywords = (
-        "review", "critique", "feedback", "evaluate", "what do you think", "how is my",
-        "check my", "inspect my", "thoughts on", "how does this look", "summarize",
-        "summarise", "summary", "read this", "go through", "overview", "tell me about",
-        "what does this say", "explain my", "look at my", "break down",
-    )
-    if has_attachment:
-        is_explicit_review = any(rk in clean_q for rk in review_keywords) and not any(wsk in clean_q for wsk in ("workspace", "codebase", "repo", "repository", "files in"))
+    if effort == 0 or diff == "FAST":
+        return 0, "Fast Answer", reason
+    elif effort == 2 or tier_name == "HARD":
+        return 2, "Deep think", reason
     else:
-        doc_targets = ("cv", "resume", "document", "spec", "pdf", "profile", "bio", "paper", "my cv", "my resume")
-        is_explicit_review = any(rk in clean_q for rk in review_keywords) and any(dt in clean_q for dt in doc_targets) and not any(wsk in clean_q for wsk in ("workspace", "codebase", "repo", "repository", "files in"))
+        return 1, "Quick Task", reason
 
-    if is_explicit_review and not any(cw in clean_q for cw in ("rewrite", "edit", "modify", "code", "build", "create")):
-        return 0, "Fast Answer", "Fast path: document review / critique inquiry"
-
-    # 2. Tier 2 Scope Checks (Deep Think)
-    # Compound project creation with tests / readme / scaffolding
-    creation_verbs = ("build", "create", "scaffold", "implement", "setup", "make", "generate", "write")
-    compound_test_markers = (
-        "with test", "and test", "with tests", "and tests", "with unit test", "with readme",
-        "and readme", "test suite", "tests and", "tests &", "tests +", "including test",
-    )
-    if any(v in q_lower for v in creation_verbs) and any(t in q_lower for t in compound_test_markers):
-        return 2, "Deep think", "Deep think: project creation with tests/readme detected"
-
-    # Explicit size patterns: "1000 lines", "1000+ lines", "500 lines", "full stack", "fullstack"
-    if re.search(r"\b\d+\+?\s*lines?\b", q_lower) or "full stack" in q_lower or "fullstack" in q_lower:
-        return 2, "Deep think", "Deep think: explicit size / full-stack scope detected"
-
-    # Multi-feature join patterns: e.g. "with chat, contacts and media sharing", "with auth, db and api"
-    if re.search(r"\b(with|including|having)\s+[\w\s-]+,\s*[\w\s-]+(\s+(and|&)\s+[\w\s-]+)?", q_lower):
-        return 2, "Deep think", "Deep think: multi-feature architecture detected"
-    if re.search(r"\bwith\s+[\w\s-]+\s+(and|&)\s+[\w\s-]+", q_lower) and any(kw in q_lower for kw in ("app", "clone", "system", "dashboard", "site", "page", "bot", "service", "features", "cli", "tool", "project")):
-        return 2, "Deep think", "Deep think: multi-feature scope joined by with/and detected"
-
-    # Scope words and deep phrases
-    tier2_scope_words = (
-        "clone", "entire", "full", "complete", "website", "dashboard",
-        "portfolio", "from scratch", "architecture", "entire codebase", "all files",
-        "across the project", "full system", "redesign", "port to", "migrate",
-        "rewrite", "debug and fix all", "refactor", "system", "files in workspace",
-        "analyze files", "scan all", "audit all",
-    )
-    for word in tier2_scope_words:
-        if re.search(rf"\b{re.escape(word)}\b", q_lower):
-            return 2, "Deep think", f"Deep think: scope keyword '{word}' detected"
-
-    # Deep creation verbs with app/system/cli nouns or multi-file keywords
-    deep_generation_verbs = ("build", "create", "design", "implement", "generate", "analyze", "scaffold", "setup")
-    deep_generation_nouns = (
-        "app", "application", "system", "clone", "platform", "portal", "dashboard",
-        "portfolio", "website", "service", "game", "extension", "project", "layout",
-        "html", "site", "page", "file", "codebase", "workspace", "cli", "tool",
-        "package", "module", "repo", "repository", "program", "script", "backend",
-        "frontend", "fullstack", "library", "component", "widget", "suite",
-    )
-    for verb in deep_generation_verbs:
-        if re.search(rf"\b{verb}\b", q_lower):
-            for noun in deep_generation_nouns:
-                if re.search(rf"\b{noun}\b", q_lower):
-                    return 2, "Deep think", f"Deep think: project creation '{verb} {noun}' detected"
-            if "multiple" in q_lower or "multi-file" in q_lower or "multifile" in q_lower or "huge" in q_lower:
-                return 2, "Deep think", f"Deep think: multi-file generation '{verb}' detected"
-
-    # Multi-file or multi-language generation scope
-    raw_file_targets = re.findall(r"\b[\w-]+\.(?:py|java|c|cpp|h|hpp|ts|tsx|js|jsx|html|css|go|rs|rb|php|cs|json|md)\b", q_lower)
-    file_targets = [f for f in raw_file_targets if f.lower() not in KNOWN_TECH_NAMES]
-    if len(file_targets) >= 2:
-        return 2, "Deep think", f"Deep think: multi-file generation ({len(file_targets)} target files) detected"
-
-    if re.search(r"\b(?:\d+|multiple|several)\s+languages?\b", q_lower):
-        return 2, "Deep think", "Deep think: multi-language scope detected"
-
-    # If explicit paths > 2 files attached
-    if attached_paths and len(attached_paths) > 2:
-        return 2, "Deep think", "Deep think: >2 attached files specified"
-
-    # 3. Tier 1 Quick Task Checks (Single-target actions)
-    # Question starters that indicate conceptual inquiry rather than direct code action
-    question_starters = (
-        "what does", "how does", "what is", "how do i", "explain", "why is",
-        "where is", "can you explain", "tell me about", "describe", "summary of",
-        "how to", "what are", "is there", "why does", "could you explain",
-    )
-    is_question = any(q_lower.startswith(qs) or f" {qs}" in q_lower for qs in question_starters)
-
-    if not is_question:
-        quick_task_verbs = (
-            "add", "fix", "change", "rename", "update", "run", "edit",
-            "modify", "replace", "delete", "remove", "insert", "append",
-            "set", "write", "make", "put", "run pytest", "run test", "test",
-            "execute", "format", "lint", "inspect", "check", "scan", "audit",
-            "search", "find", "analyze", "create", "build", "generate",
-            "scaffold", "setup", "implement",
-        )
-        for verb in quick_task_verbs:
-            if re.search(rf"\b{re.escape(verb)}\b", q_lower):
-                return 1, "Quick Task", f"Quick task: single-target action '{verb}'"
-
-        file_match = re.search(r"\b[\w-]+\.(py|ts|tsx|js|jsx|json|md|html|css|rs|go|c|cpp|h|java|sql)\b", q_lower)
-        if file_match and file_match.group(0).lower() not in KNOWN_TECH_NAMES:
-            return 1, "Quick Task", "Quick task: specific target file detected"
-
-    # 4. Tier 0 (Fast Answer) — Questions, explanations, small snippets
-    if is_question:
-        return 0, "Fast Answer", "Fast path: conceptual inquiry / question"
-
-    return 0, "Fast Answer", "Fast path: standard conversational / Q&A response"
 
 
 def _classify_task_effort(

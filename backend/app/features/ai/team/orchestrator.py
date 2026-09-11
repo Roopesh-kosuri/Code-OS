@@ -404,11 +404,11 @@ class TeamOrchestrator:
             # ── 1.5 Smart Model Router: Classify Difficulty & Route Model ──
             if getattr(self.team_config, "smart_router_enabled", False):
                 try:
-                    from app.features.ai.smart_router.difficulty_classifier import classify_task_difficulty
+                    from app.features.ai.intelligence.task_classifier import classify_task
                     from app.features.ai.smart_router.model_router import route_model
 
                     files = (task.context or {}).get("files") if isinstance(task.context, dict) else None
-                    classification = classify_task_difficulty(task.title, file_list=files)
+                    classification = classify_task(task.title, file_list=files)
                     routed = route_model(classification["difficulty"])
                     assigned_model_str = f"{routed['provider']}/{routed['model']}"
 

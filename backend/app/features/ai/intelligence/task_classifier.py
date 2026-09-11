@@ -59,6 +59,12 @@ REVIEW_KEYWORDS = frozenset({
     "what does this say", "explain my", "look at my", "break down",
 })
 
+QUESTION_STARTERS = (
+    "what does", "how does", "what is", "how do i", "explain", "why is",
+    "where is", "can you explain", "tell me about", "describe", "summary of",
+    "how to", "what are", "is there", "why does", "could you explain",
+)
+
 _global_llm_classifier: Optional[Callable] = None
 
 
@@ -84,6 +90,9 @@ def extract_task_features(
     clean_prompt = re.sub(r'<attached_files[\s\S]*?</attached_files>', '', text, flags=re.IGNORECASE)
     clean_prompt = re.sub(r'<untrusted_file_content[\s\S]*?</untrusted_file_content>', '', clean_prompt, flags=re.IGNORECASE)
     clean_prompt = re.sub(r'<file[\s\S]*?</file>', '', clean_prompt, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'<untrusted_web_content[\s\S]*?</untrusted_web_content>', '', clean_prompt, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'\[web content context\]:[\s\S]*', '', clean_prompt, flags=re.IGNORECASE)
+    clean_prompt = re.sub(r'\[attached image visual findings\][\s\S]*?\[end attached image visual findings\]', '', clean_prompt, flags=re.IGNORECASE)
     words = set(re.findall(r"\b\w+\b", clean_prompt.lower()))
 
     hard_matches = sorted(words.intersection(HARD_KEYWORDS))
@@ -170,6 +179,17 @@ def _heuristic_classify(features: dict[str, Any]) -> dict[str, Any]:
             "confidence": 0.90,
             "score": 0.5,
             "reasons": ["Fast path: document review inquiry"],
+        }
+
+    # Conceptual inquiry / question
+    if any(clean_q.startswith(qs) or f" {qs}" in clean_q for qs in QUESTION_STARTERS) and not any(w in clean_q for w in ("create", "build", "edit", "fix", "write", "modify", "refactor", "architect")):
+        return {
+            "tier": "EASY",
+            "difficulty": "FAST",
+            "effort_tier": 0,
+            "confidence": 0.85,
+            "score": 0.5,
+            "reasons": ["Fast path: conceptual inquiry / question"],
         }
 
     reasons: list[str] = []
@@ -311,22 +331,27 @@ def classify_task(
         except Exception as exc:
             logger.debug("LLM classification failed, falling back to heuristic: %s", exc)
 
+    difficulty = "MEDIUM"
+    effort_tier = 1
+
     # 2. Fall back to weighted feature heuristic (Option B)
     if not llm_success:
         h_res = _heuristic_classify(features)
         tier = h_res["tier"]
+        difficulty = h_res.get("difficulty", tier)
+        effort_tier = h_res.get("effort_tier", 1 if tier == "MEDIUM" else (2 if tier == "HARD" else 0))
         confidence = h_res["confidence"]
         score = h_res["score"]
         reasons = h_res["reasons"]
         method = "heuristic"
-
-    # Map effort tier
-    if tier == "HARD":
-        effort_tier = 2
-    elif tier == "EASY":
-        effort_tier = 1 if features["file_count"] > 0 or features["total_loc"] > 0 else 0
     else:
-        effort_tier = 1
+        difficulty = tier
+        if tier == "HARD":
+            effort_tier = 2
+        elif tier == "EASY":
+            effort_tier = 1 if features["file_count"] > 0 or features["total_loc"] > 0 else 0
+        else:
+            effort_tier = 1
 
     # 3. Context-Window Awareness
     estimated_tokens = features["estimated_tokens"]
@@ -366,7 +391,7 @@ def classify_task(
 
     return {
         "tier": tier,
-        "difficulty": tier,
+        "difficulty": difficulty,
         "effort_tier": effort_tier,
         "confidence": confidence,
         "score": score,

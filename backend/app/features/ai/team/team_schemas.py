@@ -71,11 +71,11 @@ class TeamConfig(BaseModel):
         """Get the model and provider configured for a given role, with difficulty-based auto routing."""
         if getattr(self, "smart_router_enabled", False):
             try:
-                from app.features.ai.smart_router.difficulty_classifier import classify_task_difficulty
+                from app.features.ai.intelligence.task_classifier import classify_task
                 from app.features.ai.smart_router.model_router import route_model
 
                 files = (task_context or {}).get("files") if isinstance(task_context, dict) else None
-                cls_result = classify_task_difficulty(task_title, file_list=files)
+                cls_result = classify_task(task_title, file_list=files)
                 routed = route_model(cls_result["difficulty"])
                 return {"provider": routed["provider"], "model": routed["model"]}
             except Exception:
