@@ -103,11 +103,15 @@ export const useBackendStore = create<BackendState>((set, get) => ({
   },
 
   checkHealth: async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
     try {
       const res = await fetch("http://127.0.0.1:8000/health", {
         method: "GET",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       if (res.ok) {
         get().recordSuccess();
         void get().checkFreshness();
@@ -117,9 +121,8 @@ export const useBackendStore = create<BackendState>((set, get) => ({
         return false;
       }
     } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        get().recordFailure(e);
-      }
+      clearTimeout(timeoutId);
+      get().recordFailure(e);
       return false;
     }
   },

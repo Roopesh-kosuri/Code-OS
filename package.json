@@ -20,6 +20,7 @@
     "npm": ">=10"
   },
   "scripts": {
+    "predev": "node scripts/cleanup-dev-ports.js",
     "dev": "concurrently --kill-others-on-fail \"npm:dev:backend\" \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:renderer": "vite --host 127.0.0.1",
     "dev:backend": "node scripts/dev-backend.js",

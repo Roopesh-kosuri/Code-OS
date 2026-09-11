@@ -75,16 +75,33 @@ function startBackend() {
   });
 }
 
-process.on("SIGINT", () => {
+function killCurrent() {
   shouldRestart = false;
-  if (currentProc) currentProc.kill("SIGINT");
+  if (currentProc && currentProc.pid) {
+    if (process.platform === "win32") {
+      try {
+        execSync(`taskkill /F /T /PID ${currentProc.pid}`, { stdio: "ignore" });
+      } catch {}
+    } else {
+      try {
+        currentProc.kill("SIGTERM");
+      } catch {}
+    }
+  }
+}
+
+process.on("SIGINT", () => {
+  killCurrent();
   process.exit(0);
 });
 
 process.on("SIGTERM", () => {
-  shouldRestart = false;
-  if (currentProc) currentProc.kill("SIGTERM");
+  killCurrent();
   process.exit(0);
+});
+
+process.on("exit", () => {
+  killCurrent();
 });
 
 startBackend();
