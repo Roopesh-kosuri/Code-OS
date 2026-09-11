@@ -134,6 +134,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [agentPlannerModel, setAgentPlannerModel] = useState(
     () => localStorage.getItem("code-os:agent.plannerModel") || "gpt-4o"
   );
+  const [useSemanticRag, setUseSemanticRag] = useState(
+    () => localStorage.getItem("code-os:ai.use_semantic_rag") !== "false"
+  );
 
   // Budget & Costs Guard State
   const budget = useCostStore((s) => s.budget);
@@ -1512,6 +1515,29 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                             localStorage.setItem("code-os:ai.allow_link_fetch", String(e.target.checked));
                             void saveSetting("ai.allow_link_fetch", String(e.target.checked));
                             showFeedback(`Link fetching ${e.target.checked ? "enabled" : "disabled"}`);
+                          }}
+                          className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                        />
+                        <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                      <div>
+                        <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Use Semantic RAG</div>
+                        <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                          Use MiniLM-L6-v2 embeddings and cross-encoder reranking for codebase retrieval. When disabled, falls back to keyword-only retrieval.
+                        </div>
+                      </div>
+                      <label className="relative inline-block w-10 h-6 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={useSemanticRag}
+                          onChange={(e) => {
+                            setUseSemanticRag(e.target.checked);
+                            localStorage.setItem("code-os:ai.use_semantic_rag", String(e.target.checked));
+                            void saveSetting("ai.use_semantic_rag", String(e.target.checked));
+                            showFeedback(`Semantic RAG ${e.target.checked ? "enabled" : "disabled"}`);
                           }}
                           className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
                         />

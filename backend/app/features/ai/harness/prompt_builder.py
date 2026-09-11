@@ -17,7 +17,7 @@ SEMANTIC_SEARCH_TOP_K = 10
 
 from app.core.paths import normalize_workspace, ensure_within_workspace
 from app.features.ai.agents.agent_tools import _handle_search_code
-from app.features.search.semantic_service import semantic_search
+from app.features.ai.rag.vector_index_service import semantic_search
 
 logger = logging.getLogger(__name__)
 import difflib
@@ -295,8 +295,15 @@ async def _gather_budgeted_rag_context(
 
     if symbol_hits:
         sym_text = "\n\n".join(symbol_hits)
-        grounding_blocks.append(f"## Symbol Definition Locations:\n{sym_text}")
-        total_chars += len(sym_text)
+        block = f"## Symbol Definition Locations:\n{sym_text}"
+        if total_chars + len(block) <= limit_chars:
+            grounding_blocks.append(block)
+            total_chars += len(block)
+        else:
+            remaining = limit_chars - total_chars
+            if remaining > 100:
+                grounding_blocks.append(block[:remaining] + "\n... [Truncated for token budget]")
+                total_chars = limit_chars
 
     # 2. Semantic Search for Top matches
     semantic_results: list[dict] = []
@@ -318,17 +325,19 @@ async def _gather_budgeted_rag_context(
     for m in top_matches:
         if total_chars >= limit_chars:
             break
-        rel_p = m.get("relative_path", m.get("path", ""))
+        rel_p = m.get("relative_path", m.get("file_path", m.get("path", "")))
         if not rel_p:
             continue
         try:
             full_path = ensure_within_workspace(workspace, rel_p)
             if full_path.is_file():
-                content = _read_file_cached(full_path)
+                content = m.get("chunk_text") or m.get("content") or _read_file_cached(full_path)
                 lines = content.splitlines()
                 window = lines[:100]
                 snippet = "\n".join(window)
-                block = f"### File `{rel_p}` (relevance: {m.get('score', 0):.2f}, lines 1-{len(window)}):\n<untrusted_file_content path=\"{rel_p}\">\n{snippet}\n</untrusted_file_content>"
+                line_range = m.get("line_range", f"1-{len(window)}")
+                sim_score = m.get("score", 0.0)
+                block = f"### File `{rel_p}` (relevance: {sim_score:.2f}, lines {line_range}):\n<untrusted_file_content path=\"{rel_p}\">\n{snippet}\n</untrusted_file_content>"
                 if total_chars + len(block) <= limit_chars:
                     grounding_blocks.append(block)
                     total_chars += len(block)

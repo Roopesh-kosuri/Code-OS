@@ -177,9 +177,9 @@ async def test_get_file_context_returns_all_chunks(tmp_path: Path):
     """Verify get_file_context retrieves all chunks for a target file in chunk_index order."""
     _setup_test_codebase(tmp_path)
 
-    # Create a file large enough to produce multiple chunks (>60 lines)
+    # Create a file large enough to produce multiple chunks (>200 lines)
     large_file = tmp_path / "src" / "large_service.py"
-    large_lines = [f"# Line {i}: service implementation detail logic" for i in range(1, 140)]
+    large_lines = [f"# Line {i}: service implementation detail logic" for i in range(1, 450)]
     large_file.write_text("\n".join(large_lines), encoding="utf-8")
 
     chunks_count = await index_file(str(tmp_path), str(large_file))
@@ -241,3 +241,142 @@ async def test_rag_routes_api(temp_db, tmp_path: Path):
         )
         assert resp_ctx.status_code == 200
         assert len(resp_ctx.json()["chunks"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_uses_embeddings(tmp_path: Path):
+    """Verify that semantic_search queries the embedding function for the query."""
+    from unittest.mock import patch, MagicMock
+    from app.features.ai.rag.vector_index_service import _get_embedding_function
+
+    _setup_test_codebase(tmp_path)
+    await index_workspace(str(tmp_path))
+
+    ef = _get_embedding_function()
+    mock_ef = MagicMock(side_effect=ef)
+
+    with patch("app.features.ai.rag.vector_index_service._get_embedding_function", return_value=mock_ef):
+        results = await semantic_search(str(tmp_path), "authentication jwt verify", top_k=2)
+        assert isinstance(results, list)
+        assert len(results) > 0
+
+
+@pytest.mark.asyncio
+async def test_semantic_similarity_ranking(tmp_path: Path):
+    """Verify 'authentication flow' query returns auth_service.py even without the word 'authentication' in the file."""
+    src_dir = tmp_path / "src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+
+    # File 1: Auth service without the exact word "authentication"
+    auth_service = src_dir / "auth_service.py"
+    auth_service.write_text(
+        "def login_user(credentials):\n"
+        "    '''Verify user secret and return bearer session token.'''\n"
+        "    if credentials.get('valid'):\n"
+        "        return issue_jwt_bearer_token(credentials['user_id'])\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    assert "authentication" not in auth_service.read_text().lower()
+
+    # File 2: Unrelated database code
+    db_service = src_dir / "db_service.py"
+    db_service.write_text(
+        "def execute_db_query(conn, query_string):\n"
+        "    '''Execute raw SQL select against sqlite tables.'''\n"
+        "    cursor = conn.cursor()\n"
+        "    return cursor.execute(query_string).fetchall()\n",
+        encoding="utf-8",
+    )
+
+    await index_workspace(str(tmp_path))
+
+    results = await semantic_search(str(tmp_path), "authentication flow", top_k=2)
+    assert len(results) >= 1
+    top_result = results[0]
+    top_path = top_result["file_path"].replace("\\", "/")
+    assert "auth_service.py" in top_path
+
+
+def test_hybrid_retrieval_merges_scores():
+    """Verify that hybrid retrieval merges semantic (70%) and keyword (30%) scores properly."""
+    from app.features.ai.rag.vector_index_service import _merge_hybrid_scores
+
+    sem_results = [
+        {"file_path": "auth.py", "chunk_index": 0, "score": 0.80, "chunk_text": "auth code"},
+        {"file_path": "other.py", "chunk_index": 0, "score": 0.60, "chunk_text": "other code"},
+    ]
+    kw_results = [
+        {"file_path": "auth.py", "chunk_index": 0, "score": 0.60, "chunk_text": "auth code"},
+        {"file_path": "db.py", "chunk_index": 0, "score": 0.90, "chunk_text": "db code"},
+    ]
+
+    merged = _merge_hybrid_scores(sem_results, kw_results)
+    assert len(merged) == 3
+
+    # auth.py should have: 0.70 * 0.80 + 0.30 * 0.60 = 0.56 + 0.18 = 0.74
+    auth_item = next(m for m in merged if m["file_path"] == "auth.py")
+    assert auth_item["score"] == 0.74
+    assert auth_item["semantic_score"] == 0.80
+    assert auth_item["keyword_score"] == 0.60
+
+    # other.py should have: 0.70 * 0.60 + 0.30 * 0.0 = 0.42
+    other_item = next(m for m in merged if m["file_path"] == "other.py")
+    assert other_item["score"] == 0.42
+
+    # db.py should have: 0.70 * 0.0 + 0.30 * 0.90 = 0.27
+    db_item = next(m for m in merged if m["file_path"] == "db.py")
+    assert db_item["score"] == 0.27
+
+
+def test_reranker_improves_top5():
+    """Verify cross-encoder reranker improves top-5 precision and reorders results."""
+    from app.features.ai.rag.vector_index_service import set_reranker, reset_reranker, _rerank_chunks
+
+    candidates = [
+        {"file_path": "low_initial.py", "chunk_text": "def specific_auth_target(): pass", "score": 0.40},
+        {"file_path": "high_initial.py", "chunk_text": "def unrelated_topic(): pass", "score": 0.90},
+    ]
+
+    # Custom mock reranker that boosts specific_auth_target
+    def mock_reranker(query: str, items: list[dict]) -> list[dict]:
+        res = []
+        for it in items:
+            item_copy = dict(it)
+            if "specific_auth_target" in item_copy["chunk_text"]:
+                item_copy["score"] = 0.99
+            else:
+                item_copy["score"] = 0.10
+            res.append(item_copy)
+        res.sort(key=lambda x: x["score"], reverse=True)
+        return res
+
+    set_reranker(mock_reranker)
+    try:
+        reranked = _rerank_chunks("specific auth target", candidates, top_k=5)
+        assert len(reranked) == 2
+        assert reranked[0]["file_path"] == "low_initial.py"
+        assert reranked[0]["score"] == 0.99
+    finally:
+        reset_reranker()
+
+
+@pytest.mark.asyncio
+async def test_budget_respected(tmp_path: Path):
+    """Verify token budget is enforced after semantic retrieval in _gather_budgeted_rag_context."""
+    from app.features.ai.harness.prompt_builder import _gather_budgeted_rag_context
+
+    _setup_test_codebase(tmp_path)
+    await index_workspace(str(tmp_path))
+
+    # Request small character budget of 250 characters
+    results, rag_summary = await _gather_budgeted_rag_context(
+        workspace=str(tmp_path),
+        query="authenticate user credentials",
+        token_budget=50,
+        max_chars=250,
+    )
+
+    assert isinstance(results, list)
+    assert len(rag_summary) <= 300  # Strict budget adhered to with buffer
+

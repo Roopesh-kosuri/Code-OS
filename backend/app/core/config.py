@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     encryption_key_name: str = "secret.key"
     ollama_base_url: str = "http://127.0.0.1:11434"
     strict_sandbox: bool = False
+    use_semantic_rag: bool = True
 
     model_config = SettingsConfigDict(env_prefix="CODE_OS_")
 
