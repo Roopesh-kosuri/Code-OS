@@ -105,7 +105,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   },
 
   enhance: async (prompt?: string, activeFile?: string | null, workspace?: string | null): Promise<string> => {
-    const textToEnhance = (prompt ?? get().originalPrompt).trim();
+    const textToEnhance = (prompt?.trim() || get().originalPrompt).trim();
     if (!textToEnhance) return "";
 
     set({ isEnhancing: true, originalPrompt: textToEnhance });

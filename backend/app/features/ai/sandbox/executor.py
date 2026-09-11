@@ -175,13 +175,32 @@ async def _execute_command_async(
         else:
             args = ["bash", "-c", effective_command]
 
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=str(norm_ws),
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                cwd=str(norm_ws),
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except NotImplementedError:
+            import subprocess
+            loop = asyncio.get_running_loop()
+            def _sync_sub():
+                return subprocess.run(args, cwd=str(norm_ws), env=env, capture_output=True, timeout=timeout)
+            s_res = await loop.run_in_executor(None, _sync_sub)
+            s_out = s_res.stdout.decode("utf-8", errors="replace") if s_res.stdout else ""
+            s_err = s_res.stderr.decode("utf-8", errors="replace") if s_res.stderr else ""
+            raw = (s_out + ("\n" + s_err if s_err else "")).strip()
+            ok = (s_res.returncode == 0)
+            return ToolResult(
+                tool_name="run_command",
+                success=ok,
+                output=raw or "(no output)",
+                error="" if ok else f"Exit code {s_res.returncode}: {raw}",
+                failure_reason=None if ok else "exit_code",
+                failure_detail="" if ok else raw[:500],
+            )
 
         gov_task = asyncio.create_task(_monitor_process_governor(proc, max_memory_bytes=MAX_COMMAND_MEMORY_BYTES))
         communicate_task = asyncio.create_task(proc.communicate())

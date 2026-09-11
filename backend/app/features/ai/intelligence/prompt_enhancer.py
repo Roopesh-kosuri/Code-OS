@@ -194,14 +194,14 @@ def classify_prompt_quality(prompt: str, active_file: Optional[str] = None) -> d
 
 # ── Cheap Model Selector ─────────────────────────────────────────────────────
 
-HARD_TIER_MODELS = set(DEFAULT_MODEL_TIERS.get("HARD", [])) | {
+HARD_TIER_MODELS = {
     "anthropic/claude-sonnet-4-5",
     "claude-sonnet-4-5",
     "claude-3-7-sonnet-latest",
+    "anthropic/claude-3-opus",
+    "claude-3-opus",
     "openai/gpt-4o",
     "gpt-4o",
-    "nvidia-nim/meta/llama-3.2-11b-vision-instruct",
-    "meta/llama-3.2-11b-vision-instruct",
 }
 
 CHEAP_CANDIDATE_MODELS = [
@@ -217,7 +217,7 @@ CHEAP_CANDIDATE_MODELS = [
 async def _is_ollama_reachable(base_url: str = "http://127.0.0.1:11434") -> bool:
     """Quick check if local Ollama server is active and reachable ($0 cost)."""
     try:
-        async with httpx.AsyncClient(timeout=1.0) as client:
+        async with httpx.AsyncClient(timeout=0.15) as client:
             resp = await client.get(f"{base_url.rstrip('/')}/api/tags")
             return resp.status_code == 200
     except Exception:
@@ -228,8 +228,9 @@ async def select_cheap_enhancement_model() -> tuple[str, str]:
     """
     Select the cheapest available AI model for prompt rewriting.
     Hierarchy: local Ollama ($0) -> groq/openai/gpt-oss-20b / gpt-4o-mini -> cheapest active provider.
-    NEVER selects HARD-tier models.
+    NEVER selects HARD-tier models (Sonnet, Opus, GPT-4o).
     """
+    from ...settings.service import get_api_key
     settings = await list_settings()
     ollama_url = settings.get("ollama.baseUrl") or "http://127.0.0.1:11434"
 
@@ -238,23 +239,26 @@ async def select_cheap_enhancement_model() -> tuple[str, str]:
         model = settings.get("ollama.model") or "llama3.2"
         return "ollama", model
 
-    # 2. Check Groq API key
-    if settings.get("groq.apiKey"):
+    # 2. Check active API keys in order of efficiency
+    if await get_api_key("groq"):
         return "groq", "openai/gpt-oss-20b"
 
-    # 3. Check OpenAI API key
-    if settings.get("openai.apiKey"):
+    if await get_api_key("openai"):
         return "openai", "gpt-4o-mini"
 
-    # 4. Check Gemini API key
-    if settings.get("gemini.apiKey"):
+    if await get_api_key("gemini"):
         return "gemini", "gemini-2.5-flash"
 
-    # 5. Check Deepseek API key
-    if settings.get("deepseek.apiKey"):
+    if await get_api_key("deepseek"):
         return "deepseek", "deepseek-chat"
 
-    # Safe default: cheapest model from presets
+    if await get_api_key("mistral"):
+        return "mistral", "mistral-small-latest"
+
+    if await get_api_key("nvidia-nim") or await get_api_key("nvidia"):
+        return "nvidia-nim", "meta/llama-3.2-11b-vision-instruct"
+
+    # Safe default: cheapest candidate
     prov, mod = CHEAP_CANDIDATE_MODELS[0]
     return prov, mod
 
@@ -264,7 +268,7 @@ async def select_cheap_enhancement_model() -> tuple[str, str]:
 ENHANCER_SYSTEM_PROMPT = (
     "You are a prompt engineer for an AI coding assistant. Improve the user's coding request to be "
     "specific, actionable, complete. Add: (1) which files likely need changes, (2) what success looks like, "
-    "(3) constraints. Keep concise. Output ONLY the improved prompt."
+    "(3) constraints. Keep concise. Do NOT output reasoning or think tags. Output ONLY the final improved prompt."
 )
 
 
@@ -394,16 +398,24 @@ async def enhance_prompt(
         async def _call_llm() -> str:
             provider = await provider_for(req)
             chunks: list[str] = []
-            async for chunk in provider.stream_chat(req.messages, model_name, temperature=0.2, max_tokens=250):
+            async for chunk in provider.stream_chat(model_name, req.messages, temperature=0.2, max_tokens=150):
                 chunks.append(chunk)
             return "".join(chunks).strip()
 
-        raw_enhanced = await asyncio.wait_for(_call_llm(), timeout=3.0)
+        raw_enhanced = await asyncio.wait_for(_call_llm(), timeout=5.0)
+        # Clean reasoning/think tags (e.g. from DeepSeek or Groq reasoning models)
+        cleaned_text = re.sub(r'<(?:reasoning|think)>[\s\S]*?</(?:reasoning|think)>', '', raw_enhanced, flags=re.IGNORECASE)
+        cleaned_text = re.sub(r'<(?:reasoning|think)>[\s\S]*$', '', cleaned_text, flags=re.IGNORECASE)
         # Clean quotes or redundant prefixes
-        enhanced_clean = re.sub(r'^(?:Enhanced prompt|Improved prompt):\s*', '', raw_enhanced, flags=re.IGNORECASE).strip('"\n\r ')
+        enhanced_clean = re.sub(r'^(?:Enhanced prompt|Improved prompt):\s*', '', cleaned_text.strip(), flags=re.IGNORECASE).strip('"\n\r ')
 
-        if not enhanced_clean:
-            enhanced_clean = clean_p
+        is_conversational_canned = any(
+            phrase in enhanced_clean.lower()
+            for phrase in ("how can i assist", "how can i help", "hello.", "hi there", "[truncated")
+        )
+        if not enhanced_clean or is_conversational_canned:
+            target = f"in {ctx.get('active_file')}" if ctx.get("active_file") else "in the active file"
+            enhanced_clean = f"Investigate and fix the issue {target}, ensure edge cases are handled, and verify with tests."
 
         changes = _compute_prompt_changes(clean_p, enhanced_clean)
         _STATS["enhanced_count"] += 1

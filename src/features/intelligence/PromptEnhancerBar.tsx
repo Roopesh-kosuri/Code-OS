@@ -1,6 +1,7 @@
 import React from "react";
 import { Sparkles, Check, RotateCcw, Edit3, X, Loader2 } from "lucide-react";
 import { useIntelligenceStore } from "../../stores/intelligenceStore";
+import { useAIStore } from "../../stores/aiStore";
 
 interface PromptEnhancerBarProps {
   currentPrompt: string;
@@ -15,6 +16,7 @@ export const PromptEnhancerBar: React.FC<PromptEnhancerBarProps> = ({
   workspace,
   onApplyEnhanced,
 }) => {
+  const streaming = useAIStore((s) => s.streaming);
   const {
     quality,
     originalPrompt,
@@ -30,6 +32,10 @@ export const PromptEnhancerBar: React.FC<PromptEnhancerBarProps> = ({
     editManually,
     dismiss,
   } = useIntelligenceStore();
+
+  if (streaming) {
+    return null;
+  }
 
   if (!showDiff && !isEnhancing && (!showBar || quality?.quality === "good")) {
     return null;
@@ -58,7 +64,7 @@ export const PromptEnhancerBar: React.FC<PromptEnhancerBarProps> = ({
           <button
             type="button"
             data-testid="prompt-enhance-button"
-            onClick={() => void enhance(currentPrompt, activeFile, workspace)}
+            onClick={() => void enhance(currentPrompt || originalPrompt, activeFile, workspace)}
             disabled={isEnhancing}
             className="flex items-center gap-1 px-2.5 py-1 rounded bg-primary/20 hover:bg-primary/30 text-primary border border-primary/30 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
           >

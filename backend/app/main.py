@@ -1,3 +1,10 @@
+import sys
+if sys.platform == "win32":
+    import asyncio
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    except Exception:
+        pass
 import os
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 import asyncio
