@@ -42,5 +42,13 @@ describe("Electron URL Scheme Validation (FIX M8)", () => {
   it("test_openexternal_allows_http", () => {
     expect(validateExternalUrl("http://localhost:5176")).toBe(true);
   });
+
+  it("test_main_window_sandbox_true", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const mainContent = fs.readFileSync(path.resolve(__dirname, "../../electron/main.ts"), "utf-8");
+    expect(mainContent).toMatch(/sandbox:\s*true/);
+  });
 });
+
 

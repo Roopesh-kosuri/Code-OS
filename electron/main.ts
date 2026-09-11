@@ -157,7 +157,7 @@ async function createWindow(): Promise<void> {
       preload: path.join(__dirname, "preload.js"),
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: false
+      sandbox: true
     }
   });
   mainWindow.setMenuBarVisibility(false);
@@ -257,11 +257,9 @@ ipcMain.handle("clipboard:copy", (_event, text: string) => {
 // database passwords, bearer tokens) are never forwarded even if present in
 // the Electron main process environment (process.env).
 //
-// sandbox: false is required in BrowserWindow webPreferences because the
-// preload script uses ipcRenderer, which needs Node.js APIs that are NOT
-// available in the fully sandboxed renderer context.  contextIsolation: true
-// and nodeIntegration: false are both set, so the renderer cannot access
-// Node APIs directly — only the safe API surface exposed via contextBridge.
+// sandbox: true is enabled in BrowserWindow webPreferences to enforce renderer process
+// sandboxing. nodeIntegration: false and contextIsolation: true are set, and communication
+// uses the safe API surface exposed via contextBridge and ipcRenderer in preload.
 
 const SAFE_ENV_VARS = new Set([
   // Shell / session identity
