@@ -17,6 +17,23 @@ DEFAULT_CHUNK_SIZE_LINES = 200
 DEFAULT_MAX_CONTEXT_TOKENS = 8000
 DEFAULT_MAX_CONTEXT_FILES = 15
 
+# Token budget threshold to trigger hierarchical summarization
+SUMMARIZATION_TOKEN_THRESHOLD = 4000
+
+
+def get_token_count(text: str) -> int:
+    """Return an accurate BPE token count using tiktoken (cl100k_base / GPT-4).
+
+    Falls back to ``len(text) // 4`` character-heuristic if tiktoken is not
+    installed so the rest of the system never hard-fails on import errors.
+    """
+    try:
+        import tiktoken  # type: ignore[import]
+        enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
+
 
 def split_file_into_chunks(file_path: str, content: str, chunk_size_lines: int = DEFAULT_CHUNK_SIZE_LINES) -> list[dict]:
     """Split a file content into ~200-line chunks, respecting logical boundaries where feasible."""
@@ -184,7 +201,86 @@ async def _build_semantic_context(query: str, workspace: str, top_k: int = 5) ->
 # Re-export for convenience and unified context assembly access
 from app.features.ai.harness.prompt_builder import _gather_budgeted_rag_context
 
+
+async def summarize_conversation(
+    messages: list[dict],
+    model: str = "gpt-4o-mini",
+    threshold_tokens: int = SUMMARIZATION_TOKEN_THRESHOLD,
+    provider: Any | None = None,
+) -> str:
+    """Hierarchically summarize a long conversation into a rolling summary.
+
+    Only triggers when the combined token count of *messages* exceeds
+    *threshold_tokens*.  Lines that start with ``ANCHOR:`` are always
+    preserved verbatim so memory anchors survive summarization.
+
+    Args:
+        messages: List of ``{"role": ..., "content": ...}`` dicts.
+        model: Cheap model to use for summarization (default: gpt-4o-mini).
+        threshold_tokens: Minimum token count to trigger summarization.
+        provider: An ``AIProvider`` instance with a ``stream_agent`` method.
+                  When *None* the function returns an empty string (no-op).
+
+    Returns:
+        The summary string, or an empty string when the conversation is
+        short enough or no provider is supplied.
+    """
+    if not messages:
+        return ""
+
+    full_text = "\n".join(
+        f"{m.get('role', 'user').upper()}: {m.get('content', '')}"
+        for m in messages
+    )
+
+    if get_token_count(full_text) <= threshold_tokens:
+        return ""
+
+    if provider is None:
+        logger.debug("context_assembler: summarize_conversation skipped — no provider supplied")
+        return ""
+
+    # Extract ANCHOR lines that must survive summarization
+    anchor_lines: list[str] = [
+        line for line in full_text.splitlines()
+        if line.strip().upper().startswith("ANCHOR:")
+    ]
+
+    try:
+        from app.features.ai.schemas import ChatMessage  # lazy import
+        system_msg = (
+            "You are a concise summarization assistant. "
+            "Summarize the following conversation into a compact, third-person "
+            "rolling summary (\u2264300 words). Focus on: decisions made, files changed, "
+            "errors encountered, and outstanding tasks. "
+            "Do NOT include filler or generic observations."
+        )
+        user_msg = f"Conversation to summarize:\n\n{full_text[:12000]}"
+        messages_for_provider = [
+            ChatMessage(role="system", content=system_msg),
+            ChatMessage(role="user", content=user_msg),
+        ]
+        summary_parts: list[str] = []
+        async for event in provider.stream_agent(model, messages_for_provider, temperature=0.3):
+            # stream_agent yields ProviderStreamEvent objects
+            if hasattr(event, "type") and event.type == "text":
+                summary_parts.append(event.content)
+            elif isinstance(event, str):
+                summary_parts.append(event)
+        summary = "".join(summary_parts).strip()
+    except Exception as exc:
+        logger.warning("context_assembler: summarize_conversation failed: %s", exc)
+        return ""
+
+    if anchor_lines:
+        summary = summary + "\n\n" + "\n".join(anchor_lines)
+
+    return summary
+
+
+
 __all__ = [
+    "get_token_count",
     "split_file_into_chunks",
     "rank_chunks",
     "assemble_context_with_budget",
@@ -192,5 +288,5 @@ __all__ = [
     "_build_context_from_files",
     "_build_semantic_context",
     "_gather_budgeted_rag_context",
+    "summarize_conversation",
 ]
-
