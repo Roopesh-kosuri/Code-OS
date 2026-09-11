@@ -1347,6 +1347,7 @@ export function AIChatPanel() {
           )}
 
           <textarea
+            data-testid="chat-prompt-textarea"
             value={prompt}
             onChange={(e) => {
               const val = e.target.value;
@@ -1364,6 +1365,7 @@ export function AIChatPanel() {
                   setPrompt("");
                   setAttachedImages([]);
                   setAttachedPaths([]);
+                  useIntelligenceStore.getState().reset();
                   void sendMessage(text, currentPaths, currentImages);
                 }
               }

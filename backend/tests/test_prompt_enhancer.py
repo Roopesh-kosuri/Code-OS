@@ -179,3 +179,34 @@ async def test_stats_endpoint_counts(async_client):
     assert stats["accepted_count"] >= 2
     assert stats["reverted_count"] >= 1
     assert stats["tokens_saved_estimate"] >= 900
+
+
+@pytest.mark.asyncio
+async def test_classify_prompt_route_registered(async_client):
+    """Verify GET and POST routes for /api/intelligence/classify-prompt are registered and live."""
+    # 1. GET request with query params
+    res_get = await async_client.get("/api/intelligence/classify-prompt?prompt=fix+it")
+    assert res_get.status_code == 200
+    data_get = res_get.json()
+    assert data_get["quality"] in ("weak", "vague")
+
+    # 2. POST request: "fix it" with active file "main.cpp" is NOT rescued (ambiguous pronoun 'it')
+    res_post_weak = await async_client.post(
+        "/api/intelligence/classify-prompt",
+        json={"prompt": "fix it", "active_file": "main.cpp"},
+    )
+    assert res_post_weak.status_code == 200
+    data_weak = res_post_weak.json()
+    assert data_weak["quality"] in ("weak", "vague")
+    assert data_weak["score"] < 0.70
+
+    # 3. POST request: "fix this" with active file "src/login/handler.py" IS rescued
+    res_post_good = await async_client.post(
+        "/api/intelligence/classify-prompt",
+        json={"prompt": "fix this", "active_file": "src/login/handler.py"},
+    )
+    assert res_post_good.status_code == 200
+    data_good = res_post_good.json()
+    assert data_good["quality"] == "good"
+    assert data_good["score"] >= 0.80
+

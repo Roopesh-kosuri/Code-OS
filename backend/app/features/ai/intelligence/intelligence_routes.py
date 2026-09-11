@@ -72,6 +72,13 @@ async def classify_prompt_endpoint(payload: PromptClassifyRequest) -> PromptClas
     return PromptClassifyResponse(**result)
 
 
+@router.get("/classify-prompt", response_model=PromptClassifyResponse)
+async def classify_prompt_get_endpoint(prompt: str = "", active_file: Optional[str] = None) -> PromptClassifyResponse:
+    """Classify prompt quality via GET query params (supports quick curl / health checks)."""
+    result = classify_prompt_quality(prompt, active_file=active_file)
+    return PromptClassifyResponse(**result)
+
+
 @router.post("/enhance-prompt", response_model=PromptEnhanceResponse)
 async def enhance_prompt_endpoint(payload: PromptEnhanceRequest) -> PromptEnhanceResponse:
     """

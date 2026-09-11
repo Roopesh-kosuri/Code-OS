@@ -80,7 +80,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
           active_file: activeFile ?? null,
         });
 
-        if (res.quality === "weak" || res.quality === "vague") {
+        if (res.quality === "weak" || res.quality === "vague" || res.quality !== "good") {
           set({
             quality: res,
             originalPrompt: trimmed,

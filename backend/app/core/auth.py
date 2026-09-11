@@ -51,6 +51,7 @@ _UNAUTHENTICATED_PATHS = frozenset({
     "/api/ai/ollama/models",
     "/api/health",
     "/api/system/readiness",
+    "/api/intelligence/classify-prompt",
 })
 
 

@@ -94,7 +94,7 @@ SUCCESS_CRITERIA_PATTERN = re.compile(
 )
 
 PRONOUN_TARGET_PATTERN = re.compile(
-    r"^(?:please\s+)?(?:fix|debug|refactor|test|clean\s*up|improve|check|update)\s+(?:this|it|the\s+file|this\s+file|this\s+function|here)\s*$",
+    r"^(?:please\s+)?(?:fix|debug|refactor|test|clean\s*up|improve|check|update)\s+(?:this|the\s+file|this\s+file|this\s+function|here)\s*$",
     re.IGNORECASE,
 )
 
@@ -113,14 +113,18 @@ def classify_prompt_quality(prompt: str, active_file: Optional[str] = None) -> d
         }
 
     # 1. Check Active File Rescue
-    # If user has an active file open and prompt references it via pronoun or short verb
+    # If user has an active file open and prompt references it via deictic pronoun ('this') or pointer
     # e.g. 'fix this' + active_file='src/login/handler.py' -> good
+    # 'fix it', 'make better', etc. are NEVER rescued — 'it' is ambiguous and requires enhancement.
     has_active_file = bool(active_file and active_file.strip())
     is_pronoun_command = bool(PRONOUN_TARGET_PATTERN.match(clean_p)) or clean_p.lower() in (
-        "fix this", "fix it", "clean this", "test this", "debug this", "improve this", "update this"
+        "fix this", "clean this", "test this", "debug this", "improve this", "update this"
+    )
+    never_rescue = clean_p.lower() in (
+        "fix it", "make better", "make it better", "do it", "help", "clean up", "do the thing", "make it work"
     )
 
-    if has_active_file and (is_pronoun_command or "this file" in clean_p.lower() or "this function" in clean_p.lower()):
+    if has_active_file and not never_rescue and (is_pronoun_command or "this file" in clean_p.lower() or "this function" in clean_p.lower()):
         return {
             "quality": "good",
             "issues": [],

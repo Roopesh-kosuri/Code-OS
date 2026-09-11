@@ -31,12 +31,12 @@ export const PromptEnhancerBar: React.FC<PromptEnhancerBarProps> = ({
     dismiss,
   } = useIntelligenceStore();
 
-  if (!showBar && !showDiff && !isEnhancing) {
+  if (!showDiff && !isEnhancing && (!showBar || quality?.quality === "good")) {
     return null;
   }
 
   // State 1: Subtle inline suggestion hint
-  if (showBar && !showDiff) {
+  if (showBar && !showDiff && quality?.quality !== "good") {
     return (
       <div
         data-testid="prompt-enhancer-hint-bar"
