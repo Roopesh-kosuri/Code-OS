@@ -22,4 +22,25 @@ describe("Electron URL Scheme Validation (FIX M8)", () => {
     expect(validateExternalUrl("")).toBe(false);
     expect(validateExternalUrl("not-a-valid-url")).toBe(false);
   });
+
+  it("test_openexternal_blocks_file", () => {
+    expect(validateExternalUrl("file:///C:/Windows/System32/cmd.exe")).toBe(false);
+  });
+
+  it("test_openexternal_blocks_javascript", () => {
+    expect(validateExternalUrl("javascript:alert(1)")).toBe(false);
+  });
+
+  it("test_openexternal_blocks_data", () => {
+    expect(validateExternalUrl("data:text/html,<script>alert(1)</script>")).toBe(false);
+  });
+
+  it("test_openexternal_allows_https", () => {
+    expect(validateExternalUrl("https://github.com")).toBe(true);
+  });
+
+  it("test_openexternal_allows_http", () => {
+    expect(validateExternalUrl("http://localhost:5176")).toBe(true);
+  });
 });
+
