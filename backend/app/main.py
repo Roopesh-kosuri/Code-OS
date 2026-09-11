@@ -59,6 +59,7 @@ from app.features.ai.security.security_routes import router as security_router
 from app.features.ai.standup.standup_routes import router as standup_router
 from app.features.ai.cicd.cicd_routes import router as cicd_router
 from app.features.ai.memory.memory_routes import router as memory_router
+from app.features.ai.intelligence import intelligence_router
 from app.features.ai.cost.budget_guard import install_budget_guard_hook
 from app.core.monitoring import monitor
 from app.core.errors import AppError, app_error_handler
@@ -537,5 +538,6 @@ app.include_router(security_router, prefix="/api/security", tags=["security"])
 app.include_router(standup_router, prefix="/api/standup", tags=["standup"])
 app.include_router(cicd_router, prefix="/api/cicd", tags=["cicd"])
 app.include_router(memory_router, prefix="/api/memories", tags=["memories"])
+app.include_router(intelligence_router, prefix="/api/intelligence", tags=["intelligence"])
 
 install_budget_guard_hook()

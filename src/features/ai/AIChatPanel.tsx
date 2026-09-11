@@ -38,6 +38,8 @@ import { api } from "../../lib/api";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { DockedApprovalCard } from "./DockedApprovalCard";
 import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink, AlertTriangle, Globe } from "lucide-react";
+import { PromptEnhancerBar } from "../intelligence/PromptEnhancerBar";
+import { useIntelligenceStore } from "../../stores/intelligenceStore";
 
 function parseProposals(text: string) {
   const proposals: { path: string; original: string; updated: string }[] = [];
@@ -261,6 +263,8 @@ export function AIChatPanel() {
   const rejectAction = useAIStore((s) => s.rejectAction);
   const undoTurn = useAIStore((s) => s.undoTurn);
   const workspace = useWorkspaceStore((s) => s.currentWorkspace);
+  const activePath = useEditorStore((s) => s.activePath);
+  const classifyOnInput = useIntelligenceStore((s) => s.classifyOnInput);
 
   const handleVerifyInBrowser = async () => {
     if (!workspace?.path || isVerifyingBrowser) return;
@@ -1271,6 +1275,16 @@ export function AIChatPanel() {
           className="hidden"
         />
 
+        {/* Prompt Enhancer Bar (Phase 5) */}
+        <PromptEnhancerBar
+          currentPrompt={prompt}
+          activeFile={activePath}
+          workspace={workspace?.path}
+          onApplyEnhanced={(newText) => {
+            setPrompt(newText);
+          }}
+        />
+
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -1281,6 +1295,7 @@ export function AIChatPanel() {
             setPrompt("");
             setAttachedImages([]);
             setAttachedPaths([]);
+            useIntelligenceStore.getState().reset();
             void sendMessage(text, currentPaths, currentImages);
           }}
           onDragOver={(e) => e.preventDefault()}
@@ -1333,7 +1348,11 @@ export function AIChatPanel() {
 
           <textarea
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => {
+              const val = e.target.value;
+              setPrompt(val);
+              classifyOnInput(val, activePath, workspace?.path);
+            }}
             onPaste={handlePaste}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {

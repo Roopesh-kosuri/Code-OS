@@ -137,6 +137,12 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   const [useSemanticRag, setUseSemanticRag] = useState(
     () => localStorage.getItem("code-os:ai.use_semantic_rag") !== "false"
   );
+  const [suggestPromptEnhancements, setSuggestPromptEnhancements] = useState(
+    () => localStorage.getItem("code-os:ai.suggest_prompt_enhancements") !== "false"
+  );
+  const [autoEnhanceWeakPrompts, setAutoEnhanceWeakPrompts] = useState(
+    () => localStorage.getItem("code-os:ai.auto_enhance_weak_prompts") === "true"
+  );
 
   // Budget & Costs Guard State
   const budget = useCostStore((s) => s.budget);
@@ -1538,6 +1544,52 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                             localStorage.setItem("code-os:ai.use_semantic_rag", String(e.target.checked));
                             void saveSetting("ai.use_semantic_rag", String(e.target.checked));
                             showFeedback(`Semantic RAG ${e.target.checked ? "enabled" : "disabled"}`);
+                          }}
+                          className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                        />
+                        <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                      <div>
+                        <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Suggest prompt enhancements</div>
+                        <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                          Detect vague or weak prompts and offer one-click enhancement with workspace context before sending.
+                        </div>
+                      </div>
+                      <label className="relative inline-block w-10 h-6 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={suggestPromptEnhancements}
+                          onChange={(e) => {
+                            setSuggestPromptEnhancements(e.target.checked);
+                            localStorage.setItem("code-os:ai.suggest_prompt_enhancements", String(e.target.checked));
+                            void saveSetting("ai.suggest_prompt_enhancements", String(e.target.checked));
+                            showFeedback(`Prompt enhancements ${e.target.checked ? "enabled" : "disabled"}`);
+                          }}
+                          className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
+                        />
+                        <div className="toggle-label block overflow-hidden h-6 rounded-full bg-surface-variant cursor-pointer" />
+                      </label>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-surface-container-high/40 pt-4">
+                      <div>
+                        <div className="font-ui-label-reg text-ui-label-reg text-on-surface">Auto-enhance weak prompts</div>
+                        <div className="font-caption text-caption text-on-surface-variant mt-0.5">
+                          Automatically rewrite weak prompts and show the diff card for confirmation without clicking Enhance.
+                        </div>
+                      </div>
+                      <label className="relative inline-block w-10 h-6 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={autoEnhanceWeakPrompts}
+                          onChange={(e) => {
+                            setAutoEnhanceWeakPrompts(e.target.checked);
+                            localStorage.setItem("code-os:ai.auto_enhance_weak_prompts", String(e.target.checked));
+                            void saveSetting("ai.auto_enhance_weak_prompts", String(e.target.checked));
+                            showFeedback(`Auto-enhancement ${e.target.checked ? "enabled" : "disabled"}`);
                           }}
                           className="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer z-10 opacity-0"
                         />
