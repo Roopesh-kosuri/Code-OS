@@ -223,10 +223,53 @@ def _heuristic_classify(features: dict[str, Any]) -> dict[str, Any]:
         hard_score += 2.0
         reasons.append(f"Cross-module dependencies ({deps_count} modules)")
 
+    # Deep compound project creation with tests / readme
+    creation_verbs = ("build", "create", "scaffold", "implement", "setup", "make", "generate", "write")
+    compound_test_markers = (
+        "with test", "and test", "with tests", "and tests", "with unit test", "with readme",
+        "and readme", "test suite", "tests and", "tests &", "tests +", "including test",
+    )
+    if any(v in text for v in creation_verbs) and any(t in text for t in compound_test_markers):
+        hard_score += 6.0
+        reasons.append("Deep think: project creation with tests/readme detected")
+
+    # Explicit size patterns: "1000 lines", "1000+ lines", "500 lines", "full stack", "fullstack"
+    if re.search(r"\b\d+\+?\s*lines?\b", text) or "full stack" in text or "fullstack" in text:
+        hard_score += 5.0
+        reasons.append("Deep think: explicit size / full-stack scope detected")
+
+    # Multi-feature join patterns
+    if re.search(r"\b(with|including|having)\s+[\w\s-]+,\s*[\w\s-]+(\s+(and|&)\s+[\w\s-]+)?", text):
+        hard_score += 5.0
+        reasons.append("Deep think: multi-feature architecture detected")
+
     # Scope words in text
-    if any(sw in text for sw in ("architecture", "refactor", "clone", "full stack", "fullstack", "entire codebase")):
-        hard_score += 3.0
-        reasons.append("Architectural/full-system scope keywords present")
+    tier2_scope_words = (
+        "clone", "entire", "full", "complete", "website", "dashboard",
+        "portfolio", "from scratch", "architecture", "entire codebase", "all files",
+        "across the project", "full system", "redesign", "port to", "migrate",
+        "rewrite", "debug and fix all", "refactor",
+    )
+    for word in tier2_scope_words:
+        if re.search(rf"\b{re.escape(word)}\b", text):
+            hard_score += 3.5
+            reasons.append(f"Deep think: scope keyword '{word}' detected")
+
+    # Quick action verbs (single-target actions)
+    quick_task_verbs = (
+        "add", "fix", "change", "rename", "update", "run", "edit",
+        "modify", "replace", "delete", "remove", "insert", "append",
+        "set", "format", "lint",
+    )
+    matched_quick_verb = None
+    for verb in quick_task_verbs:
+        if re.search(rf"\b{re.escape(verb)}\b", text):
+            matched_quick_verb = verb
+            break
+
+    if matched_quick_verb and hard_score == 0:
+        easy_score += 3.0
+        reasons.append(f"Quick task: single-target action '{matched_quick_verb}'")
 
     if hard_score > 0 and hard_score >= easy_score and hard_score >= medium_score:
         confidence = min(0.95, 0.70 + (hard_score * 0.05))
