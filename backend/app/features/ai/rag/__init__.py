@@ -8,6 +8,7 @@ from .vector_index_service import (
     get_file_context,
     get_indexing_status,
     schedule_rag_reindex,
+    reindex_workspace_now,
 )
 
 __all__ = [
@@ -20,4 +21,5 @@ __all__ = [
     "get_file_context",
     "get_indexing_status",
     "schedule_rag_reindex",
+    "reindex_workspace_now",
 ]

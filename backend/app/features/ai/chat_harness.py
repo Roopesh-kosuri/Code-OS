@@ -138,7 +138,7 @@ from .harness import (
     govern_payload, _truncate_attachment_in_text, estimate_request_tokens,
     PROJECT_MEMORY_MAX_CHARS,
     _build_system_prompt, _gather_budgeted_rag_context, _discover_and_run_test_snapshot,
-    _evaluate_edit_critique, _CHAT_AGENT_SYSTEM_PROMPT, _DEEP_TASK_SYSTEM_PROMPT,
+    _evaluate_edit_critique, _is_codebase_inquiry, _CHAT_AGENT_SYSTEM_PROMPT, _DEEP_TASK_SYSTEM_PROMPT,
     _LEAN_CHAT_SYSTEM_PROMPT, _QUICK_TASK_SYSTEM_PROMPT,
     _finalize_staged_changes,
     _escalate_to_duo,
@@ -344,7 +344,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             # Tier 0 Fast Answer: Skip RAG, skip heavy context gathering gate -> immediate streaming
             pass
         elif tier == 1:
-            # Tier 1 Quick Task: Active file context only
+            # Tier 1 Quick Task: Active file context and targeted RAG for codebase inquiries
             yield _sse_status("thinking", "Preparing fast task context...")
             if request.attached_paths:
                 try:
@@ -353,6 +353,16 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         context["active_file"] = {"name": p.name, "content": _read_file_cached(p)}
                 except Exception as exc:
                     log_and_flag_failure("active_file_reading", exc, {"attached_paths": request.attached_paths})
+
+            # Gather small semantic RAG budget (top-3 chunks) if asking conceptual codebase question
+            if _is_codebase_inquiry(user_query) and user_query.strip():
+                try:
+                    _, rag_snippets = await _gather_budgeted_rag_context(
+                        workspace, user_query, request.attached_paths, max_chars=1200, file_ids=request.file_ids
+                    )
+                except Exception as exc:
+                    _, sse_warn = log_and_flag_failure("rag_context_gathering_tier1", exc, {"workspace": workspace, "query": user_query})
+                    yield sse_warn
         else:
             # Tier 2 Deep Task: Compact prompt - explore via tools (search/read) instead of heavy pre-injected context
             yield _sse_status("thinking", "Preparing compact task environment...")
@@ -1735,7 +1745,13 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         q = tc.arguments.get("query", "")
                         sem_matches = await semantic_search(workspace, q, limit=5)
                         if sem_matches:
-                            out_lines = [f"- {m.get('relative_path', m.get('path'))} (score: {m.get('score', 0):.2f})" for m in sem_matches]
+                            out_lines = []
+                            for m in sem_matches:
+                                p = m.get("relative_path") or m.get("path") or m.get("file_path", "")
+                                sc = m.get("score", 0.0)
+                                lr = m.get("line_range", "")
+                                txt = (m.get("chunk_text") or m.get("content") or "")[:200].strip().replace("\n", " ")
+                                out_lines.append(f"- {p} (lines {lr}, score: {sc:.2f}): {txt}")
                             result = ToolResult(tool_name="semantic_search", success=True, output="Semantic matches:\n" + "\n".join(out_lines))
                         else:
                             result = ToolResult(tool_name="semantic_search", success=True, output="No semantic matches found.")

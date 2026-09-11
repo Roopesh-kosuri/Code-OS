@@ -17,6 +17,7 @@ from .vector_index_service import (
     semantic_search,
     get_file_context,
     get_indexing_status,
+    reindex_workspace_now,
 )
 
 router = APIRouter()
@@ -51,6 +52,14 @@ async def handle_index_workspace(req: IndexWorkspaceRequest) -> Dict[str, Any]:
     """Scan and index all code files in the workspace into ChromaDB."""
     await ensure_workspace_trusted(req.workspace)
     status = await index_workspace(req.workspace)
+    return {"ok": True, **status}
+
+
+@router.post("/reindex-now")
+async def handle_reindex_now(req: IndexWorkspaceRequest) -> Dict[str, Any]:
+    """Manually trigger immediate full workspace reindex with visible logging."""
+    await ensure_workspace_trusted(req.workspace)
+    status = await reindex_workspace_now(req.workspace)
     return {"ok": True, **status}
 
 

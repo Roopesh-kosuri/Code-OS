@@ -407,6 +407,23 @@ CORE_CODING_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "semantic_search",
+            "description": "Search workspace codebase by concept or architectural meaning using semantic vector retrieval. Prefer over search_code for questions about how features, authentication, or systems work.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query describing the desired logic or component.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "run_command",
             "description": "Execute a shell or terminal command in the workspace directory (e.g. 'javac Calculator.java && java Calculator', 'pytest', 'npm test').",
             "parameters": {
@@ -581,7 +598,7 @@ SLIM_CODING_TOOLS = [
     t for t in CORE_CODING_TOOLS
     if t["function"]["name"] in (
         "edit_file", "read_file", "list_directory", "search_code",
-        "run_command", "run_test", "ask_user", "git_diff"
+        "semantic_search", "run_command", "run_test", "ask_user", "git_diff"
     )
 ]
 

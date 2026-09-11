@@ -47,7 +47,7 @@ from .tool_executor import (
 )
 from .prompt_builder import (
     _build_system_prompt, _gather_budgeted_rag_context, _discover_and_run_test_snapshot,
-    _evaluate_edit_critique, _CHAT_AGENT_SYSTEM_PROMPT, _DEEP_TASK_SYSTEM_PROMPT,
+    _evaluate_edit_critique, _is_codebase_inquiry, _CHAT_AGENT_SYSTEM_PROMPT, _DEEP_TASK_SYSTEM_PROMPT,
     _LEAN_CHAT_SYSTEM_PROMPT, _QUICK_TASK_SYSTEM_PROMPT,
 )
 from .stage_finalizer import _finalize_staged_changes
@@ -153,6 +153,7 @@ __all__ = [
     "_gather_budgeted_rag_context",
     "_discover_and_run_test_snapshot",
     "_evaluate_edit_critique",
+    "_is_codebase_inquiry",
     "_CHAT_AGENT_SYSTEM_PROMPT",
     "_DEEP_TASK_SYSTEM_PROMPT",
     "_LEAN_CHAT_SYSTEM_PROMPT",

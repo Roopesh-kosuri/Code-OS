@@ -25,7 +25,7 @@ class LoggingEventHandler(FileSystemEventHandler):
             asyncio.run_coroutine_threadsafe(index_manager.schedule_file_change(self.workspace, event.src_path), self.loop)
             try:
                 from ..ai.rag import schedule_rag_reindex
-                schedule_rag_reindex(self.workspace, event.src_path, event.event_type)
+                schedule_rag_reindex(self.workspace, event.src_path, event.event_type, loop=self.loop)
             except Exception:
                 pass
 

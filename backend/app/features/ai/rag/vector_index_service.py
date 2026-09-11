@@ -304,6 +304,7 @@ async def index_workspace(workspace: str) -> Dict[str, Any]:
     now_iso = datetime.now(timezone.utc).isoformat()
     status = {
         "indexed_files": indexed_files,
+        "files_indexed": indexed_files,
         "total_chunks": total_chunks,
         "last_indexed_at": now_iso,
     }
@@ -633,9 +634,14 @@ async def _reindex_worker():
             logger.debug("Error in reindex worker: %s", exc)
 
 
-def schedule_rag_reindex(workspace: str, file_path: str, event_type: str = "modified") -> None:
+def schedule_rag_reindex(
+    workspace: str,
+    file_path: str,
+    event_type: str = "modified",
+    loop: Optional[asyncio.AbstractEventLoop] = None,
+) -> None:
     """
-    Hook called from file_watcher to schedule rate-limited re-indexing of changed code files.
+    Hook called from file_watcher or background threads to schedule rate-limited re-indexing of changed code files.
     """
     global _reindex_queue, _reindex_worker_task
 
@@ -643,13 +649,50 @@ def schedule_rag_reindex(workspace: str, file_path: str, event_type: str = "modi
     if ext not in CODE_EXTENSIONS:
         return
 
-    if _reindex_queue is None:
-        _reindex_queue = asyncio.Queue()
+    # Determine the target asyncio event loop
+    target_loop = loop
+    if target_loop is None or not target_loop.is_running():
+        try:
+            target_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                target_loop = asyncio.get_event_loop()
+            except RuntimeError:
+                target_loop = None
+
+    if target_loop is None or not target_loop.is_running():
+        logger.debug("schedule_rag_reindex: no active event loop available to schedule reindex of %s", file_path)
+        return
+
+    def _enqueue():
+        global _reindex_queue, _reindex_worker_task
+        if _reindex_queue is None:
+            _reindex_queue = asyncio.Queue()
+        if _reindex_worker_task is None or _reindex_worker_task.done():
+            _reindex_worker_task = target_loop.create_task(_reindex_worker())
+        _reindex_queue.put_nowait((workspace, file_path, event_type))
 
     try:
-        loop = asyncio.get_running_loop()
-        if _reindex_worker_task is None or _reindex_worker_task.done():
-            _reindex_worker_task = loop.create_task(_reindex_worker())
-        _reindex_queue.put_nowait((workspace, file_path, event_type))
+        current_loop = asyncio.get_running_loop()
     except RuntimeError:
-        pass
+        current_loop = None
+
+    if current_loop is target_loop:
+        _enqueue()
+    else:
+        target_loop.call_soon_threadsafe(_enqueue)
+
+
+async def reindex_workspace_now(workspace: str) -> Dict[str, Any]:
+    """
+    Manual, immediately-executed reindexing of all workspace files with visible logging.
+    """
+    logger.info("reindex_workspace_now: starting manual full reindex for workspace '%s'", workspace)
+    status = await index_workspace(workspace)
+    logger.info(
+        "reindex_workspace_now: manual reindex complete for '%s' — %d files indexed, %d total chunks",
+        workspace,
+        status.get("files_indexed", 0),
+        status.get("total_chunks", 0),
+    )
+    return status
