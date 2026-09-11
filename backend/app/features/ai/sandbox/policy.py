@@ -13,28 +13,27 @@ FORBIDDEN_OPERATORS = [
     ";", "&&", "||", "|", "&", "`", "$(", "${", ">", "<", "\n", "\r",
 ]
 
-# High-risk commands that must never be run via run_test
+# High-risk binaries and execution constructs that must never be run via run_test
 DANGEROUS_COMMAND_PATTERNS = [
     r"\bcurl\b",
     r"\bwget\b",
-    r"\brm\s+(-[rfRF]+\s+)?(/|~|[a-zA-Z]:\\)",
     r"\brm\b",
     r"\bchmod\b",
     r"\bchown\b",
     r"\bnc\b",
     r"\bnetcat\b",
     r"\bncat\b",
+    r"\beval\b",
+    r"\bexec\b",
+    r"\bpython(?:\d+(?:\.\d+)?)?\s*-c\b",
+    r"\bpy(?:\.exe)?\s*-c\b",
+    r"\bnode(?:\.exe)?\s*-e\b",
     r"\bpowershell\b",
     r"\bpwsh\b",
     r"\bcmd(?:\.exe)?\b",
     r"\bbash\b",
     r"\bsh\b",
     r"\bzsh\b",
-    r"python(?:\d+(?:\.\d+)?)?\s+-c",
-    r"py(?:\.exe)?\s+-c",
-    r"node(?:\.exe)?\s+-e",
-    r"\beval\b",
-    r"\bexec\b",
 ]
 
 # Legitimate test runner command prefixes allowed without manual user approval
@@ -49,15 +48,9 @@ ALLOWED_TEST_RUNNERS = [
     "npm test",
     "npm run test",
     "npx vitest",
-    "vitest",
     "npx jest",
-    "jest",
     "go test",
     "cargo test",
-    "mvn test",
-    "gradle test",
-    "dotnet test",
-    "ctest",
 ]
 
 
@@ -84,14 +77,19 @@ def validate_test_command(cmd: str) -> Tuple[bool, str, str]:
         if re.search(pattern, cmd_clean, re.IGNORECASE):
             return False, "blocked", f"Command contains blocked execution pattern: '{pattern}'"
 
-    # 3. Check for known test runner invocations
+    # 3. Check for validated test runner invocations (with flags and path args)
     cmd_lower = cmd_clean.lower()
     for runner in ALLOWED_TEST_RUNNERS:
-        if cmd_lower == runner or cmd_lower.startswith(runner + " "):
+        runner_lower = runner.lower()
+        if cmd_lower == runner_lower or cmd_lower.startswith(runner_lower + " "):
             return True, "safe", ""
 
     # 4. Unknown runner: not blocked outright, but requires approval
     return False, "needs_approval", f"Unrecognized test runner invocation: '{cmd_clean}' requires user approval."
+
+
+_validate_test_command = validate_test_command
+
 
 
 DANGEROUS_PATTERNS = [

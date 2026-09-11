@@ -342,21 +342,65 @@ def _handle_run_test(workspace: str, arguments: dict) -> ToolResult:
     """Run tests or verification commands safely in the workspace."""
     import os
     import subprocess
+    import json
     from ....core.paths import normalize_workspace
     from ...terminal.service import _build_safe_environment
+    from ..sandbox.policy import validate_test_command
+    from ..harness.tool_executor import _is_command_malicious, _is_command_safe
+    from ..harness.approval_coordinator import _is_command_trusted
 
-    command = arguments.get("command", "") or arguments.get("cmd", "")
+    command = arguments.get("command", "") or arguments.get("cmd", "") or arguments.get("test_path", "")
     if not command.strip():
-        command = "python -m pytest"
+        command = "pytest"
+
+    cmd_clean = command.strip()
+
+    # 1. Reject malicious command injection
+    if _is_command_malicious(cmd_clean):
+        policy_err = "Test command blocked by security policy: potential command injection detected."
+        return ToolResult(
+            tool_name="run_test",
+            success=False,
+            output="",
+            error=json.dumps({"reason": "security_policy_blocked", "detail": policy_err, "command": cmd_clean}),
+            failure_reason="security_policy_blocked",
+            failure_detail=policy_err,
+        )
+
+    # 2. Validate test runner invocation
+    is_allowed, test_status, test_reason = validate_test_command(cmd_clean)
+    if test_status == "blocked":
+        policy_err = f"Test command blocked by security policy: {test_reason}"
+        return ToolResult(
+            tool_name="run_test",
+            success=False,
+            output="",
+            error=json.dumps({"reason": "security_policy_blocked", "detail": policy_err, "command": cmd_clean}),
+            failure_reason="security_policy_blocked",
+            failure_detail=policy_err,
+        )
+
+    # 3. If unvalidated test runner, ensure it is trusted or safe allowlist, else require approval
+    if test_status != "safe":
+        if not _is_command_trusted(workspace, cmd_clean) and not _is_command_safe(cmd_clean, workspace):
+            approval_err = f"Unrecognized test runner requires user approval: '{cmd_clean}'"
+            return ToolResult(
+                tool_name="run_test",
+                success=False,
+                output="",
+                error=json.dumps({"reason": "approval_required", "detail": approval_err, "command": cmd_clean}),
+                failure_reason="approval_required",
+                failure_detail=approval_err,
+            )
 
     try:
         norm_ws = normalize_workspace(workspace)
         env = _build_safe_environment()
 
         if os.name == "nt":
-            args = ["powershell", "-NoLogo", "-NoProfile", "-Command", command]
+            args = ["powershell", "-NoLogo", "-NoProfile", "-Command", cmd_clean]
         else:
-            args = ["bash", "-c", command]
+            args = ["bash", "-c", cmd_clean]
 
         proc = subprocess.run(
             args,
@@ -378,10 +422,10 @@ def _handle_run_test(workspace: str, arguments: dict) -> ToolResult:
         return ToolResult(
             tool_name="run_test",
             success=True,
-            output=f"=== TEST RUN: {command} [{status_str}] ===\n{summary}"
+            output=f"=== TEST RUN: {cmd_clean} [{status_str}] ===\n{summary}"
         )
     except subprocess.TimeoutExpired:
-        return ToolResult(tool_name="run_test", success=False, output="", error=f"Command timed out after 30 seconds: {command}")
+        return ToolResult(tool_name="run_test", success=False, output="", error=f"Command timed out after 30 seconds: {cmd_clean}")
     except Exception as exc:
         return ToolResult(tool_name="run_test", success=False, output="", error=f"Execution error: {exc}")
 
