@@ -71,7 +71,7 @@ async def _escalate_to_duo(
         
         target_prop_id = session.final_proposal_id or (session.rounds[-1].proposal_id if session.rounds and session.rounds[-1].proposal_id else None)
         if target_prop_id:
-            from .service import get_proposal
+            from ..service import get_proposal
             prop = await get_proposal(target_prop_id)
             if prop:
                 action_id = f"duo-proposal-{uuid.uuid4().hex[:8]}"
@@ -109,13 +109,13 @@ async def _escalate_to_duo(
                 try:
                     await asyncio.wait_for(pending.event.wait(), timeout=_get_edit_approval_timeout())
                     if pending.approved:
-                        from .service import apply_proposal
+                        from ..service import apply_proposal
                         await apply_proposal(target_prop_id)
                         yield _sse_status("tool", f"Approved: Applied Duo Loop changes to {summary_paths}", tool="edit_file", detail=summary_paths)
                         yield _sse_command_result(f"edit {summary_paths}", f"Successfully applied Duo Loop changes to {summary_paths} (Proposal: {target_prop_id})", 0, True)
                         yield _sse_done(True, f"Duo Loop changes approved and applied to {summary_paths}.")
                     else:
-                        from .service import reject_proposal
+                        from ..service import reject_proposal
                         try:
                             await reject_proposal(target_prop_id)
                         except Exception as exc:
