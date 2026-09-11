@@ -263,19 +263,25 @@ def _is_codebase_inquiry(query: str) -> bool:
     q = (query or "").lower().strip()
     if not q:
         return False
+
+    # Strip attached files, user document content, and web content before testing user intent
+    clean_q = re.sub(r'<attached_files[\s\S]*?</attached_files>', '', q, flags=re.IGNORECASE)
+    clean_q = re.sub(r'<file[\s\S]*?</file>', '', clean_q, flags=re.IGNORECASE)
+    clean_q = re.sub(r'<untrusted_file_content[\s\S]*?</untrusted_file_content>', '', clean_q, flags=re.IGNORECASE).strip()
+    if not clean_q:
+        return False
+
     q_starters = (
         "how", "what", "where", "why", "who", "which",
         "explain", "describe", "tell me", "overview",
         "does this", "is there", "can you",
     )
-    has_q_starter = any(q.startswith(qs) or f" {qs} " in f" {q} " for qs in q_starters) or "?" in q
+    has_q_starter = any(clean_q.startswith(qs) or f" {qs} " in f" {clean_q} " for qs in q_starters) or "?" in clean_q
     codebase_kws = (
-        "codebase", "project", "repo", "repository", "this project", "our project",
-        "system", "architecture", "work", "works", "implemented", "implementation",
-        "authentication", "auth", "login", "signup", "data flow", "pipeline", "backend",
-        "frontend", "database", "service", "handler", "controller", "model",
+        "codebase", "this project", "our project", "the project",
+        "repo", "repository", "architecture", "system architecture",
     )
-    has_codebase_kw = any(kw in q for kw in codebase_kws)
+    has_codebase_kw = any(kw in clean_q for kw in codebase_kws)
     return has_q_starter and has_codebase_kw
 
 

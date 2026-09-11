@@ -194,6 +194,12 @@ export interface ActivityLogEntry {
   details?: string;
 }
 
+export interface RAGContextInfo {
+  chunksCount: number;
+  topSimilarity: number;
+  files: string[];
+}
+
 export interface ExtendedChatMessage extends ChatMessage {
   id?: string;
   model?: string;
@@ -207,6 +213,7 @@ export interface ExtendedChatMessage extends ChatMessage {
   agentToolHistory?: ToolEvent[];
   commands?: CommandExecution[];
   checkpoint?: CheckpointInfo;
+  ragContext?: RAGContextInfo;
 }
 
 export interface ChatThread {
@@ -362,6 +369,20 @@ export function createSSEStreamHandler(
         currentTierLabel: labelVal,
         currentTierReason: reasonVal,
       }));
+    } else if (eventType === "rag_context") {
+      const ragInfo: RAGContextInfo = {
+        chunksCount: typeof data.chunks_count === "number" ? data.chunks_count : 0,
+        topSimilarity: typeof data.top_similarity === "number" ? data.top_similarity : 0,
+        files: Array.isArray(data.files) ? data.files : [],
+      };
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = { ...last, ragContext: ragInfo };
+        }
+        return { messages };
+      });
     } else if (eventType === "status") {
       const statusObj: AgentStatus = {
         type: data.type || "thinking",

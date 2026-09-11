@@ -17,12 +17,6 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from app.features.ai.smart_router.model_router import (
-    DEFAULT_MODEL_TIERS,
-    MODEL_TIERS,
-    parse_model_string,
-    _normalize_provider,
-)
 from app.features.ai.providers.catalog import get_verified_models
 
 logger = logging.getLogger(__name__)
@@ -183,6 +177,16 @@ def _heuristic_classify(features: dict[str, Any]) -> dict[str, Any]:
 
     # Conceptual inquiry / question
     if any(clean_q.startswith(qs) or f" {qs}" in clean_q for qs in QUESTION_STARTERS) and not any(w in clean_q for w in ("create", "build", "edit", "fix", "write", "modify", "refactor", "architect")):
+        from app.features.ai.harness.prompt_builder import _is_codebase_inquiry
+        if _is_codebase_inquiry(clean_q):
+            return {
+                "tier": "EASY",
+                "difficulty": "EASY",
+                "effort_tier": 1,
+                "confidence": 0.85,
+                "score": 0.5,
+                "reasons": ["Fast path: codebase conceptual inquiry (promoted to Tier 1 for semantic RAG)"],
+            }
         return {
             "tier": "EASY",
             "difficulty": "FAST",
@@ -422,6 +426,11 @@ def classify_task(
             reasons.append(f"Routing to EASY tier to save budget (spend guard at {budget_percent:.0f}% >= 80%)")
 
     # 5. Live Catalog Validation
+    from app.features.ai.smart_router.model_router import (
+        parse_model_string,
+        _normalize_provider,
+        DEFAULT_MODEL_TIERS,
+    )
     prov, m_name = parse_model_string(recommended_model)
     norm_p = _normalize_provider(prov)
     verified = get_verified_models(norm_p)

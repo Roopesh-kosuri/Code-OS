@@ -123,6 +123,18 @@ async def _deferred_startup_tasks() -> None:
     except Exception as exc:
         logger.warning("Deferred startup catalog refresher: %s", exc)
 
+    try:
+        from app.features.ai.rag import reconcile_workspace_index
+        db = await get_db()
+        cursor = await db.execute("SELECT path FROM workspaces")
+        rows = await cursor.fetchall()
+        for r in rows:
+            ws_path = r[0] if isinstance(r, (list, tuple)) else r["path"]
+            if ws_path and os.path.isdir(ws_path):
+                asyncio.create_task(reconcile_workspace_index(ws_path))
+    except Exception as exc:
+        logger.warning("Deferred startup RAG reconciliation: %s", exc)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("backend starting up")

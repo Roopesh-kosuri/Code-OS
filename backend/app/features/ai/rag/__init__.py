@@ -9,6 +9,8 @@ from .vector_index_service import (
     get_indexing_status,
     schedule_rag_reindex,
     reindex_workspace_now,
+    reconcile_workspace_index,
+    get_rag_stats,
 )
 
 __all__ = [
@@ -22,4 +24,6 @@ __all__ = [
     "get_indexing_status",
     "schedule_rag_reindex",
     "reindex_workspace_now",
+    "reconcile_workspace_index",
+    "get_rag_stats",
 ]

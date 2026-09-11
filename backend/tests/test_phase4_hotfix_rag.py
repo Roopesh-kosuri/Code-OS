@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 import pytest
 
 from app.features.ai.rag.vector_index_service import (
@@ -11,8 +11,12 @@ from app.features.ai.rag.vector_index_service import (
     semantic_search,
     schedule_rag_reindex,
     reindex_workspace_now,
+    reconcile_workspace_index,
+    get_rag_stats,
     CODE_EXTENSIONS,
 )
+from app.features.ai.intelligence.task_classifier import classify_task
+from app.features.ai.harness.plan_parser import _classify_rules, _classify_task_effort
 from app.features.ai.harness.prompt_builder import (
     _build_system_prompt,
     _gather_budgeted_rag_context,
@@ -130,3 +134,130 @@ async def test_tier1_codebase_question_includes_rag_context(tmp_path):
     prompt = _build_system_prompt(workspace, tier=1, context={}, rag_snippet_summary=rag_snippets)
     assert "auth_service.py" in prompt
     assert "bcrypt.checkpw" in prompt
+
+
+# ── Phase 4.2 Hotfix Regression Tests ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_startup_reconciliation_indexes_preexisting_files(tmp_path):
+    """Verify that startup reconciliation indexes pre-existing files into codebase_rag."""
+    workspace = str(tmp_path)
+    # Create pre-existing files before reconciliation
+    f1 = tmp_path / "service.py"
+    f1.write_text("def handle_auth():\n    return 'auth'\n", encoding="utf-8")
+    f2 = tmp_path / "login_system.md"
+    f2.write_text("# Login System\nVerifies passwords with bcrypt.\n", encoding="utf-8")
+
+    # Initially, collection count is 0
+    col = init_vector_store(workspace, collection_name="codebase_rag")
+    assert col.count() == 0
+
+    # Run reconciliation
+    res = await reconcile_workspace_index(workspace)
+    assert res["files_indexed"] >= 2
+    assert res["total_chunks"] >= 2
+
+    # Verify both files are in indexed_files and stats report correct data
+    stats = await get_rag_stats(workspace)
+    assert "service.py" in stats["indexed_files"]
+    assert "login_system.md" in stats["indexed_files"]
+    assert stats["chunk_count"] >= 2
+    assert stats["last_index_at"] is not None
+
+
+def test_codebase_question_never_tier0_without_context():
+    """Verify that codebase inquiries are NEVER classified as Tier 0 (Fast Answer)."""
+    questions = [
+        "How does authentication work in this codebase?",
+        "Explain the architecture of this repo",
+        "Where is database initialized in this project?",
+        "How does the plugin system work in this repo?",
+        "Can you describe how login is implemented in this codebase?",
+    ]
+
+    for q in questions:
+        # task_classifier level
+        classified = classify_task(q)
+        assert classified.get("effort_tier") >= 1, f"Expected effort_tier >= 1 for '{q}', got {classified}"
+        assert classified.get("difficulty") != "FAST", f"Expected difficulty != FAST for '{q}', got {classified}"
+
+        # plan_parser _classify_rules level
+        tier, label, _ = _classify_rules(q.lower())
+        assert tier >= 1, f"Expected tier >= 1 in _classify_rules for '{q}', got {tier} ({label})"
+
+        # plan_parser _classify_task_effort level
+        tier2, label2, _ = _classify_task_effort(q)
+        assert tier2 >= 1, f"Expected tier >= 1 in _classify_task_effort for '{q}', got {tier2} ({label2})"
+
+
+@pytest.mark.asyncio
+async def test_rag_injection_event_emitted(tmp_path, temp_db):
+    """Verify that chat harness yields a 'rag_context' SSE event and writes activity log."""
+    from app.features.ai.chat_harness import run_chat_agent, ChatAgentRequest, _load_activity_log
+
+    workspace = str(tmp_path)
+    auth_file = tmp_path / "login_system.md"
+    auth_file.write_text("# Login System\nUses salted bcrypt hashes and JWT tokens.\n", encoding="utf-8")
+    await index_file(workspace, str(auth_file))
+
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=workspace,
+        messages=[{"role": "user", "content": "How does authentication work in this codebase?"}],
+    )
+
+    async def mock_stream(*args, **kwargs):
+        yield "Authentication uses bcrypt and JWT.\n[DONE]"
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(side_effect=[mock_stream()])
+
+    events = []
+    with patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+        async for sse_chunk in run_chat_agent(req):
+            events.append(sse_chunk)
+
+    # Check for rag_context event
+    rag_events = [e for e in events if "event: rag_context" in e]
+    assert len(rag_events) >= 1, f"Expected 'event: rag_context' in SSE stream, got: {events}"
+    assert "login_system.md" in rag_events[0]
+    assert "chunks_count" in rag_events[0]
+
+    # Check activity log for rag_injection
+    act_log = _load_activity_log(workspace)
+    rag_logs = [entry for entry in act_log if entry.get("action_type") == "rag_injection"]
+    assert len(rag_logs) >= 1, f"Expected 'rag_injection' in activity log, got: {act_log}"
+    assert "rag_context" in rag_logs[0].get("details", "")
+
+
+@pytest.mark.asyncio
+async def test_rag_stats_endpoint_reports_missing_files(tmp_path, temp_db, async_client):
+    """Verify that get_rag_stats and GET /api/rag/stats report chunk count, indexed files, and missing files sample."""
+    from app.features.workspaces.trust_service import set_workspace_trust
+
+    workspace = str(tmp_path)
+    await set_workspace_trust(workspace, True)
+
+    file_a = tmp_path / "indexed_module.py"
+    file_a.write_text("def foo():\n    return 42\n", encoding="utf-8")
+    file_b = tmp_path / "unindexed_module.py"
+    file_b.write_text("def bar():\n    return 99\n", encoding="utf-8")
+
+    # Index only file_a
+    await index_file(workspace, str(file_a))
+
+    stats = await get_rag_stats(workspace)
+    assert stats["chunk_count"] >= 1
+    assert "indexed_module.py" in stats["indexed_files"]
+    assert "unindexed_module.py" not in stats["indexed_files"]
+    assert "unindexed_module.py" in stats["missing_files_sample"]
+    assert stats["last_index_at"] is not None
+
+    # Test via API endpoint
+    response = await async_client.get(f"/api/rag/stats?workspace={workspace}")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["chunk_count"] >= 1
+    assert "indexed_module.py" in data["indexed_files"]
+    assert "unindexed_module.py" in data["missing_files_sample"]

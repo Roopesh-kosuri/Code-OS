@@ -53,6 +53,12 @@ class WorkspaceWatcher:
             self._observer.schedule(LoggingEventHandler(resolved, self._loop), resolved, recursive=True)
             self._watched.add(resolved)
             logger.info("workspace.watch started path=%s watched_count=%s", resolved, len(self._watched))
+            if self._loop and self._loop.is_running():
+                try:
+                    from ..ai.rag import reconcile_workspace_index
+                    asyncio.run_coroutine_threadsafe(reconcile_workspace_index(resolved, loop=self._loop), self._loop)
+                except Exception as exc:
+                    logger.debug("workspace.watch: failed to trigger initial RAG reconciliation: %s", exc)
 
     def stop(self) -> None:
         with self._lock:

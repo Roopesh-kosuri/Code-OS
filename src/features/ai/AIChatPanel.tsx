@@ -943,6 +943,15 @@ export function AIChatPanel() {
                 <span className="font-caption text-caption text-on-surface-variant">
                   {message.agentStatus || agentMode ? "Rony Agent" : "Rony"}
                 </span>
+                {message.ragContext && message.ragContext.chunksCount > 0 && (
+                  <span
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10.5px] font-mono font-medium bg-primary/15 text-primary border border-primary/30 shadow-xs"
+                    title={`RAG injected ${message.ragContext.chunksCount} chunks (top sim: ${message.ragContext.topSimilarity}) from: ${message.ragContext.files.join(", ")}`}
+                  >
+                    <Sparkles size={10} className="shrink-0" />
+                    RAG: {message.ragContext.chunksCount} snippet{message.ragContext.chunksCount === 1 ? "" : "s"}
+                  </span>
+                )}
               </div>
 
               <div className="bg-[#1e1f24] text-on-surface p-3.5 rounded-xl shadow-[0_4px_20px_rgba(0,0,0,0.15)] ring-1 ring-white/5 w-full min-w-0 max-w-full space-y-2.5 overflow-hidden transition-all duration-200">

@@ -67,6 +67,13 @@ async def remove_workspaces(paths: list[str]) -> None:
     db = await get_db()
     await db.executemany("DELETE FROM workspaces WHERE path = ?", [(path,) for path in paths])
     await db.commit()
+    try:
+        from ..ai.rag.vector_index_service import close_vector_store
+        for p in paths:
+            close_vector_store(p)
+    except Exception:
+        pass
+
 
 
 def workspace_name(path: str) -> str:

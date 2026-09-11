@@ -18,6 +18,7 @@ from .vector_index_service import (
     get_file_context,
     get_indexing_status,
     reindex_workspace_now,
+    get_rag_stats,
 )
 
 router = APIRouter()
@@ -104,3 +105,10 @@ async def handle_get_file_context(
     """Retrieve all indexed chunks for a file, sorted by line order."""
     chunks = await get_file_context(workspace, file_path)
     return {"ok": True, "file_path": file_path, "chunks": chunks, "count": len(chunks)}
+
+
+@router.get("/stats")
+async def handle_get_stats(workspace: str = Query(..., description="Absolute workspace root directory")) -> Dict[str, Any]:
+    """Diagnostic endpoint returning indexed_files, chunk_count, last_index_at, and missing_files_sample."""
+    await ensure_workspace_trusted(workspace)
+    return await get_rag_stats(workspace)

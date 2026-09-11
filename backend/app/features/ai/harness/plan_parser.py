@@ -66,7 +66,8 @@ def _classify_rules(q_lower: str, attached_paths: list[str] | None = None) -> tu
     tier_name = res.get("tier", "MEDIUM")
     reason = res.get("reasoning") or "; ".join(res.get("reasons", [])) or "Classified by unified task classifier"
 
-    if effort == 0 or diff == "FAST":
+    from .prompt_builder import _is_codebase_inquiry
+    if (effort == 0 or diff == "FAST") and not _is_codebase_inquiry(q_lower):
         return 0, "Fast Answer", reason
     elif effort == 2 or tier_name == "HARD":
         return 2, "Deep think", reason

@@ -317,6 +317,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             request.is_agent_mode,
             has_images=bool(request.attached_images),
         )
+        if tier == 0 and _is_codebase_inquiry(user_query):
+            tier = 1
+            tier_label = "Quick Task"
+            tier_reason = "Codebase inquiry promoted from Tier 0 to Tier 1 for semantic RAG"
+
         yield _sse_tier_routing(tier, tier_label, reason=tier_reason)
         yield _sse_status("tier_routing", f"Routing: {tier_reason}", tier=tier, label=tier_label)
         _append_activity_log(workspace, {
@@ -338,6 +343,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         # ── Step 2: Context Gathering & Memory Loading ───────────────────────
         project_memory = _load_project_memory(workspace)
         rag_snippets = ""
+        semantic_results: list[dict] = []
         context: dict = {"workspace": workspace}
 
         if tier == 0:
@@ -357,7 +363,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             # Gather small semantic RAG budget (top-3 chunks) if asking conceptual codebase question
             if _is_codebase_inquiry(user_query) and user_query.strip():
                 try:
-                    _, rag_snippets = await _gather_budgeted_rag_context(
+                    semantic_results, rag_snippets = await _gather_budgeted_rag_context(
                         workspace, user_query, request.attached_paths, max_chars=1200, file_ids=request.file_ids
                     )
                 except Exception as exc:
@@ -381,12 +387,36 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
             if user_query.strip():
                 try:
-                    _, rag_snippets = await _gather_budgeted_rag_context(
+                    semantic_results, rag_snippets = await _gather_budgeted_rag_context(
                         workspace, user_query, request.attached_paths, max_chars=2000, file_ids=request.file_ids
                     )
                 except Exception as exc:
                     _, sse_warn = log_and_flag_failure("rag_context_gathering", exc, {"workspace": workspace, "query": user_query})
                     yield sse_warn
+
+        # Visibility: Emit SSE event and activity log if RAG chunks were injected
+        if rag_snippets and rag_snippets.strip():
+            top_chunks = [m for m in (semantic_results or []) if m.get("relative_path") or m.get("path") or m.get("file_path")]
+            chunks_count = len(top_chunks)
+            top_similarity = max([float(m.get("score", 0.0)) for m in top_chunks], default=0.0)
+            rag_files = list(dict.fromkeys([
+                m.get("relative_path") or m.get("path") or m.get("file_path")
+                for m in top_chunks
+                if m.get("relative_path") or m.get("path") or m.get("file_path")
+            ]))
+            yield _sse_event("rag_context", {
+                "chunks_count": chunks_count,
+                "top_similarity": round(float(top_similarity), 2),
+                "files": rag_files,
+            })
+            _append_activity_log(workspace, {
+                "action_type": "rag_injection",
+                "target": user_query[:100],
+                "outcome": "success",
+                "tier": tier,
+                "token_count": len(rag_snippets) // 4,
+                "details": f"rag_context: {chunks_count} chunks, top similarity {top_similarity:.2f}, files: {rag_files}",
+            })
 
         # ── Step 3: Provider Initialization ──────────────────────────────────
         system_prompt = _build_system_prompt(workspace, tier, context, rag_snippets, project_memory)

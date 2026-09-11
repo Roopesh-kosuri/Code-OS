@@ -148,6 +148,20 @@ def init_vector_store(workspace: str, collection_name: str = "codebase_rag") -> 
     return collection
 
 
+def close_vector_store(workspace: Optional[str] = None) -> None:
+    """Close and evict ChromaDB PersistentClient and Collection references to release file locks on Windows."""
+    global _clients, _collections
+    if workspace:
+        norm_ws = _normalize_workspace_path(workspace)
+        col_keys = [k for k in _collections if k.startswith(f"{norm_ws}::")]
+        for k in col_keys:
+            _collections.pop(k, None)
+        _clients.pop(norm_ws, None)
+    else:
+        _collections.clear()
+        _clients.clear()
+
+
 def _extract_symbols(text: str) -> str:
     """Extract symbol definitions (functions, classes, variables) from text."""
     symbols = set()
@@ -236,6 +250,10 @@ async def index_file(workspace: str, file_path: str) -> int:
     ids = []
     documents = []
     metadatas = []
+    try:
+        mtime = full_p.stat().st_mtime
+    except Exception:
+        mtime = time.time()
 
     for chunk_text, line_range, chunk_idx in chunks:
         chunk_id = f"{rel_path}::chunk_{chunk_idx}"
@@ -249,6 +267,7 @@ async def index_file(workspace: str, file_path: str) -> int:
             "line_range": line_range,
             "symbols": symbols,
             "workspace": norm_ws,
+            "mtime": mtime,
         })
 
     # 3. Upsert to ChromaDB
@@ -696,3 +715,156 @@ async def reindex_workspace_now(workspace: str) -> Dict[str, Any]:
         status.get("total_chunks", 0),
     )
     return status
+
+
+async def reconcile_workspace_index(workspace: str, loop: Optional[asyncio.AbstractEventLoop] = None) -> Dict[str, Any]:
+    """
+    Reconcile pre-existing workspace files with codebase_rag ChromaDB index.
+    Diffs disk files (path + mtime) against collection metadata:
+    - Indexes missing files.
+    - Re-indexes modified files.
+    - Removes deleted files.
+    """
+    norm_ws = _normalize_workspace_path(workspace)
+    ws_path = Path(norm_ws)
+    if not ws_path.is_dir():
+        return {"workspace": norm_ws, "files_indexed": 0, "total_chunks": 0, "missing_files_sample": []}
+
+    collection = init_vector_store(norm_ws)
+
+    # Retrieve current collection metadata
+    existing_file_meta: Dict[str, float] = {}
+    try:
+        data = collection.get(include=["metadatas"])
+        for meta in data.get("metadatas") or []:
+            fp = meta.get("file_path")
+            if fp:
+                mt = float(meta.get("mtime") or 0.0)
+                existing_file_meta[fp] = max(existing_file_meta.get(fp, 0.0), mt)
+    except Exception as exc:
+        logger.debug("reconcile_workspace_index: failed to load existing metadatas: %s", exc)
+
+    # Scan disk files
+    disk_files: Dict[str, Path] = {}
+    for root, dirs, files in os.walk(ws_path):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        for f in files:
+            p = Path(root) / f
+            if p.suffix.lower() in CODE_EXTENSIONS:
+                rel_p = _get_relative_path(norm_ws, str(p))
+                disk_files[rel_p] = p
+
+    missing_or_modified: List[Tuple[str, Path]] = []
+    for rel_p, p in disk_files.items():
+        if rel_p not in existing_file_meta:
+            missing_or_modified.append((rel_p, p))
+        else:
+            try:
+                disk_mtime = p.stat().st_mtime
+                if disk_mtime > existing_file_meta[rel_p] + 1e-3:
+                    missing_or_modified.append((rel_p, p))
+            except Exception:
+                pass
+
+    # Deleted files to prune
+    deleted_files = [fp for fp in existing_file_meta if fp not in disk_files]
+    for df in deleted_files:
+        try:
+            await remove_file(norm_ws, df)
+        except Exception as exc:
+            logger.debug("reconcile_workspace_index: error removing deleted file %s: %s", df, exc)
+
+    # Index missing or modified
+    files_indexed = 0
+    total_new_chunks = 0
+    for rel_p, p in missing_or_modified:
+        try:
+            chunks = await index_file(norm_ws, str(p))
+            if chunks > 0:
+                files_indexed += 1
+                total_new_chunks += chunks
+        except Exception as exc:
+            logger.warning("reconcile_workspace_index: failed to index %s: %s", rel_p, exc)
+
+    chunk_cnt = collection.count()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    status = {
+        "workspace": norm_ws,
+        "files_indexed": files_indexed,
+        "files_reconciled": len(missing_or_modified),
+        "files_removed": len(deleted_files),
+        "total_chunks": chunk_cnt,
+        "last_indexed_at": now_iso,
+    }
+    _status_cache[norm_ws] = status
+    logger.info(
+        "reconcile_workspace_index: completed for '%s' — %d new/updated files indexed, %d removed, %d total chunks",
+        norm_ws, files_indexed, len(deleted_files), chunk_cnt
+    )
+    return status
+
+
+async def get_rag_stats(workspace: str) -> Dict[str, Any]:
+    """
+    Diagnostic endpoint handler for GET /api/rag/stats?workspace=...
+    Returns {
+        "indexed_files": list[str],
+        "chunk_count": int,
+        "last_index_at": float | str | None,
+        "missing_files_sample": list[str]
+    }
+    """
+    norm_ws = _normalize_workspace_path(workspace)
+    ws_path = Path(norm_ws)
+    if not ws_path.is_dir():
+        return {
+            "indexed_files": [],
+            "chunk_count": 0,
+            "last_index_at": None,
+            "missing_files_sample": [],
+        }
+
+    collection = init_vector_store(norm_ws)
+    indexed_files: set[str] = set()
+    last_mtime: float | None = None
+
+    try:
+        data = collection.get(include=["metadatas"])
+        for m in data.get("metadatas") or []:
+            fp = m.get("file_path")
+            if fp:
+                indexed_files.add(fp)
+            mt = m.get("mtime")
+            if mt is not None:
+                try:
+                    last_mtime = max(last_mtime or 0.0, float(mt))
+                except (ValueError, TypeError):
+                    pass
+    except Exception as exc:
+        logger.warning("get_rag_stats: error querying collection: %s", exc)
+
+    # Disk scan for missing files sample
+    missing_files: list[str] = []
+    for root, dirs, files in os.walk(ws_path):
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        for f in files:
+            p = Path(root) / f
+            if p.suffix.lower() in CODE_EXTENSIONS:
+                rel_p = _get_relative_path(norm_ws, str(p))
+                if rel_p not in indexed_files:
+                    missing_files.append(rel_p)
+                    if len(missing_files) >= 10:
+                        break
+        if len(missing_files) >= 10:
+            break
+
+    cached_status = _status_cache.get(norm_ws, {})
+    last_index_at = cached_status.get("last_indexed_at") or (last_mtime if last_mtime else None)
+
+    return {
+        "indexed_files": sorted(list(indexed_files)),
+        "chunk_count": collection.count(),
+        "last_index_at": last_index_at,
+        "missing_files_sample": missing_files[:10],
+    }
+
