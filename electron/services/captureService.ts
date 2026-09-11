@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
+import dns from "node:dns";
 import { BrowserWindow, app } from "electron";
 
 export interface CaptureRequest {
@@ -24,10 +25,21 @@ export interface CaptureResponse {
 
 export function isPrivateOrMetadataHost(hostname: string): boolean {
   const host = hostname.toLowerCase().trim();
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0") {
+  if (
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host === "::"
+  ) {
     return true;
   }
-  if (host === "169.254.169.254" || host === "fd00:ec2::254" || host === "100.100.100.200") {
+  if (
+    host === "169.254.169.254" ||
+    host === "fd00:ec2::254" ||
+    host === "100.100.100.200" ||
+    host === "metadata.google.internal"
+  ) {
     return true;
   }
   const parts = host.split(".");
@@ -40,12 +52,41 @@ export function isPrivateOrMetadataHost(hostname: string): boolean {
       if (b0 === 192 && b1 === 168) return true;
       if (b0 === 169 && b1 === 254) return true;
       if (b0 === 100 && b1 >= 64 && b1 <= 127) return true;
+      if (b0 >= 224) return true; // Multicast / Reserved
     }
   }
-  if (host.startsWith("fc") || host.startsWith("fd") || host.startsWith("fe80")) {
+  if (
+    host.startsWith("fc") ||
+    host.startsWith("fd") ||
+    host.startsWith("fe8") ||
+    host.startsWith("fe9") ||
+    host.startsWith("fea") ||
+    host.startsWith("feb")
+  ) {
     return true;
   }
   return false;
+}
+
+export async function resolveAndValidateHost(hostname: string): Promise<{ safe: boolean; reason?: string }> {
+  const host = hostname.toLowerCase().trim();
+  if (isPrivateOrMetadataHost(host)) {
+    return { safe: false, reason: `Direct access to internal/private/metadata host '${host}' is blocked.` };
+  }
+  try {
+    const addresses = await dns.promises.lookup(host, { all: true });
+    if (!addresses || addresses.length === 0) {
+      return { safe: false, reason: `Could not resolve hostname: '${host}'` };
+    }
+    for (const entry of addresses) {
+      if (isPrivateOrMetadataHost(entry.address)) {
+        return { safe: false, reason: `SSRF blocked: Hostname '${host}' resolves to unsafe IP '${entry.address}'` };
+      }
+    }
+    return { safe: true };
+  } catch (err: any) {
+    return { safe: false, reason: `DNS resolution failed for '${host}': ${err?.message || err}` };
+  }
 }
 
 export class OffscreenWindowPool {
@@ -79,13 +120,13 @@ export class OffscreenWindowPool {
           offscreen: true,
           javascript: true,
           webSecurity: true,
-          allowRunningInsecureContent: false,
           contextIsolation: true,
         },
       });
       this.windows.push(win);
       return win;
     }
+
 
     // Pool full, wait for one to become available (up to 15s timeout)
     return new Promise<BrowserWindow>((resolve, reject) => {
@@ -195,11 +236,10 @@ export class CaptureService {
   public start(): Promise<number> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer(async (req, res) => {
-        // Restrict CORS: only allow renderer origin http://127.0.0.1:5176 or http://localhost:5176
+        // Restrict CORS: allow only renderer origin http://127.0.0.1:5176 or omit CORS entirely
         const origin = req.headers["origin"] || "";
-        const ALLOWED_ORIGINS = ["http://127.0.0.1:5176", "http://localhost:5176"];
-        if (typeof origin === "string" && ALLOWED_ORIGINS.includes(origin)) {
-          res.setHeader("Access-Control-Allow-Origin", origin);
+        if (origin === "http://127.0.0.1:5176") {
+          res.setHeader("Access-Control-Allow-Origin", "http://127.0.0.1:5176");
         }
         res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS, GET");
         res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-session-token");
@@ -307,7 +347,12 @@ export class CaptureService {
       return { success: false, error: "Missing required 'target' parameter for preview capture." };
     }
 
-    if (target.toLowerCase().startsWith("file://") || target.toLowerCase().startsWith("file:")) {
+    const targetLower = target.toLowerCase();
+    if (
+      targetLower.startsWith("file:") ||
+      targetLower.startsWith("file:/") ||
+      targetLower.startsWith("file://")
+    ) {
       return { success: false, error: "file:// protocol is strictly blocked for security." };
     }
 
@@ -318,12 +363,17 @@ export class CaptureService {
       return { success: false, error: `Invalid URL target: '${target}'. file:// and relative file paths are blocked.` };
     }
 
-    if (parsedUrl.protocol !== "https:" && parsedUrl.protocol !== "http:") {
-      return { success: false, error: `Protocol '${parsedUrl.protocol}' is disallowed. Only http/https permitted.` };
+    if (parsedUrl.protocol === "file:") {
+      return { success: false, error: "file:// protocol is strictly blocked for security." };
     }
 
-    if (isPrivateOrMetadataHost(parsedUrl.hostname)) {
-      return { success: false, error: `Access to private, localhost, or metadata host '${parsedUrl.hostname}' is blocked.` };
+    if (parsedUrl.protocol !== "https:") {
+      return { success: false, error: `Protocol '${parsedUrl.protocol}' is disallowed. Remote targets must use HTTPS only.` };
+    }
+
+    const hostCheck = await resolveAndValidateHost(parsedUrl.hostname);
+    if (!hostCheck.safe) {
+      return { success: false, error: hostCheck.reason || `Access to host '${parsedUrl.hostname}' is blocked.` };
     }
 
     const targetUrl = parsedUrl.href;
