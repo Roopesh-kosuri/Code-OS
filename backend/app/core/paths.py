@@ -134,14 +134,25 @@ def verify_path_unchanged(path: Path | str, resolved_at_check: Path) -> bool:
 
 def safe_read_file(workspace: str, target: str) -> str:
     """
-    Safely read file within workspace, re-verifying path resolution before read.
+    Safely read file within workspace, re-verifying path resolution before read
+    and using O_NOFOLLOW where supported to mitigate TOCTOU symlink swap races.
     """
     verified_path = ensure_within_workspace(workspace, target)
     candidate = Path(target) if Path(target).is_absolute() else Path(workspace) / target
     if not verify_path_unchanged(candidate, verified_path):
         raise HTTPException(status_code=403, detail="TOCTOU detected: path changed between check and use")
     ensure_file(verified_path)
-    return verified_path.read_text(encoding="utf-8", errors="replace")
+
+    open_flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        open_flags |= os.O_NOFOLLOW
+
+    try:
+        fd = os.open(str(verified_path), open_flags)
+        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError as err:
+        raise HTTPException(status_code=403, detail=f"File access blocked: {err}")
 
 
 def safe_write_file(workspace: str, target: str, content: str) -> Path:
@@ -162,6 +173,8 @@ def safe_write_file(workspace: str, target: str, content: str) -> Path:
         if not is_within_workspace(normalize_workspace(workspace), verified_path):
             raise HTTPException(status_code=403, detail="Target path escaped workspace")
         os.replace(temp_name, str(verified_path))
+        if not verify_path_unchanged(verified_path, verified_path):
+            raise HTTPException(status_code=403, detail="TOCTOU detected after write")
         return verified_path
     except Exception:
         if os.path.exists(temp_name):

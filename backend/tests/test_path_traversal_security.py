@@ -297,5 +297,40 @@ class TestIsWithinWorkspace(unittest.TestCase):
         self.assertFalse(is_within_workspace(root, parent))
 
 
+# ---------------------------------------------------------------------------
+# 6. TOCTOU Symlink Mitigation & Safe File I/O
+# ---------------------------------------------------------------------------
+
+class TestTOCTOUSymlinkMitigation(unittest.TestCase):
+    def test_symlink_swap_detected(self):
+        from app.core.paths import verify_path_unchanged, safe_write_file, safe_read_file
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ws = Path(tmp_dir)
+            target1 = ws / "target1.txt"
+            target1.write_text("one", encoding="utf-8")
+
+            target2 = ws / "target2.txt"
+            target2.write_text("two", encoding="utf-8")
+
+            check_path = target1.resolve()
+
+            # Path unchanged
+            self.assertTrue(verify_path_unchanged(target1, check_path))
+
+            # Path swapped
+            self.assertFalse(verify_path_unchanged(target2, check_path))
+
+            # safe_write_file and safe_read_file work as expected
+            written = safe_write_file(str(ws), "nested/safe.txt", "data")
+            self.assertTrue(written.exists())
+            self.assertEqual(safe_read_file(str(ws), "nested/safe.txt"), "data")
+
+
+def test_symlink_swap_detected():
+    """Standalone pytest-compatible function for test_symlink_swap_detected."""
+    case = TestTOCTOUSymlinkMitigation()
+    case.test_symlink_swap_detected()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
