@@ -155,13 +155,29 @@ async def execute_command(
 
     workspace = session["workspace"]
     import shlex
+    import shutil
+    import sys
     from app.features.terminal.service import _build_safe_environment
 
-    if args:
-        sanitized_args = " ".join(shlex.quote(str(a)) for a in args)
-        full_cmd = f"{command} {sanitized_args}"
+    # Build argv without unsanitized shell concatenation
+    if args is not None:
+        argv = [command] + [str(a) for a in args]
     else:
-        full_cmd = command
+        try:
+            argv = shlex.split(command)
+        except Exception:
+            argv = command.split()
+
+    if not argv:
+        return {
+            "stdout": "",
+            "stderr": "Empty command",
+            "exit_code": 1,
+            "duration_ms": 0,
+        }
+
+    display_cmd = " ".join(shlex.quote(a) for a in argv)
+    full_cmd = display_cmd
     session["status"] = "running"
 
     t0 = time.perf_counter()
@@ -177,11 +193,39 @@ async def execute_command(
     stderr_lines: List[str] = []
     exit_code: Optional[int] = None
 
+    # Handle built-ins or emulate printenv/echo if not installed natively
+    exec_argv = list(argv)
+    cmd_name = exec_argv[0].lower()
+    if cmd_name in ("python", "python3", "py"):
+        exec_argv[0] = sys.executable
+    elif cmd_name == "printenv" and not shutil.which("printenv"):
+        exec_argv = [
+            sys.executable,
+            "-c",
+            "import os, sys\n"
+            "if len(sys.argv) > 1:\n"
+            "    v = os.environ.get(sys.argv[1])\n"
+            "    if v is not None: print(v)\n"
+            "else:\n"
+            "    for k, v in sorted(os.environ.items()):\n"
+            "        print(f'{k}={v}')\n"
+        ] + exec_argv[1:]
+    elif cmd_name == "echo" and not shutil.which("echo"):
+        exec_argv = [
+            sys.executable,
+            "-c",
+            "import sys; print(' '.join(sys.argv[1:]))"
+        ] + exec_argv[1:]
+    else:
+        which_path = shutil.which(exec_argv[0])
+        if which_path:
+            exec_argv[0] = which_path
+
     try:
         # Spawn subprocess with sanitized environment (prevent secret / API key leaks)
         safe_env = _build_safe_environment()
-        proc = await asyncio.create_subprocess_shell(
-            full_cmd,
+        proc = await asyncio.create_subprocess_exec(
+            *exec_argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workspace,

@@ -1,30 +1,53 @@
 import os
-import shlex
 import pytest
-from app.features.terminal.service import _build_safe_environment
+from pathlib import Path
+from app.features.ai.terminal.agentic_terminal_service import (
+    create_session,
+    execute_command,
+    get_session,
+)
 
 
-def test_agentic_terminal_safe_env_no_api_key_leak():
-    # Simulate parent process having secrets
-    os.environ["OPENAI_API_KEY"] = "sk-fake-secret-key-12345"
-    os.environ["CODE_OS_GIT_PAT"] = "ghp_fake_github_pat_secret"
-    os.environ["DATABASE_PASSWORD"] = "super-secret-password"
+@pytest.mark.asyncio
+async def test_agentic_terminal_sanitizes_secrets(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-live-secret-key-12345")
+    monkeypatch.setenv("CODE_OS_GIT_PAT", "ghp_dummy_secret_token_abcde")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret-access-key")
+    monkeypatch.setenv("DB_PASSWORD", "super_secret_password")
+    monkeypatch.setenv("AUTH_TOKEN", "token_value")
 
-    safe_env = _build_safe_environment()
+    term_id = create_session("env_test_job", str(tmp_path))
 
-    assert "OPENAI_API_KEY" not in safe_env
-    assert "CODE_OS_GIT_PAT" not in safe_env
-    assert "DATABASE_PASSWORD" not in safe_env
+    # 1. printenv OPENAI_API_KEY -> empty
+    res = await execute_command(term_id, "printenv OPENAI_API_KEY")
+    assert res["stdout"].strip() == ""
+
+    # 2. printenv CODE_OS_GIT_PAT -> empty
+    res = await execute_command(term_id, "printenv CODE_OS_GIT_PAT")
+    assert res["stdout"].strip() == ""
+
+    # 3. printenv -> contains no KEY/SECRET/TOKEN/PASS/AUTH vars
+    res = await execute_command(term_id, "printenv")
+    stdout = res["stdout"]
+    for line in stdout.splitlines():
+        k = line.split("=")[0].upper()
+        if k in ("SSH_AGENT_PID", "SSH_AUTH_SOCK"):
+            continue
+        assert not any(bad in k for bad in ("KEY", "SECRET", "TOKEN", "PASS", "AUTH")), f"Leaked sensitive env var: {line}"
 
 
-def test_agentic_terminal_safe_env_contains_system_vars():
-    safe_env = _build_safe_environment()
-    # Required system execution variables must still be present
-    assert "PATH" in safe_env or "Path" in safe_env
+@pytest.mark.asyncio
+async def test_agentic_terminal_prevents_arg_injection(tmp_path: Path):
+    term_id = create_session("injection_test_job", str(tmp_path))
 
+    # Create a canary file that would be deleted if "; rm ..." were interpreted
+    canary = tmp_path / "canary.txt"
+    canary.write_text("safe")
 
-def test_shell_injection_quoted():
-    dangerous_args = ["hello; rm -rf /", "foo | bash"]
-    sanitized = " ".join(shlex.quote(str(a)) for a in dangerous_args)
-    # The shell metacharacters must be safely quoted/escaped
-    assert "hello; rm -rf /" not in sanitized or "'" in sanitized or '"' in sanitized
+    # Pass malicious argument containing shell separator and dangerous command
+    dangerous_arg = f"; rm {canary.name}"
+    res = await execute_command(term_id, "echo", [dangerous_arg])
+
+    # The arg must be printed as literal string, NOT executed as a shell command
+    assert canary.exists(), "Canary file was deleted! Command injection occurred!"
+    assert dangerous_arg in res["stdout"]
