@@ -37,3 +37,34 @@ def test_loopback_ip_blocked():
     with patch("app.features.ai.url_fetcher.resolve_hostname_ips", return_value=["127.0.0.1"]):
         with pytest.raises(ValueError, match="SSRF blocked"):
             validate_hostname_safe("localhost")
+
+
+@pytest.mark.asyncio
+async def test_pinned_ip_used():
+    """Verify that PinnedTransport connects to the validated IP, preserving Host header."""
+    transport = PinnedTransport(pinned_ip="198.51.100.1", original_host="api.external.com")
+    req = httpx.Request("GET", "https://api.external.com/v1/resource")
+
+    mock_resp = httpx.Response(200, request=req)
+    with patch.object(httpx.AsyncHTTPTransport, "handle_async_request", new_callable=AsyncMock) as mock_handle:
+        mock_handle.return_value = mock_resp
+        await transport.handle_async_request(req)
+
+        assert req.url.host == "198.51.100.1"
+        assert req.headers["Host"] == "api.external.com"
+
+
+def test_dns_rebinding_blocked():
+    """Verify that multi-IP or mixed safe/unsafe resolution is blocked before request."""
+    # Hostname resolving to public IP AND private loopback
+    with patch("app.features.ai.url_fetcher.resolve_hostname_ips", return_value=["93.184.216.34", "127.0.0.1"]):
+        with pytest.raises(ValueError, match="SSRF blocked"):
+            validate_hostname_safe("rebind.attacker.com")
+
+
+def test_metadata_ip_blocked_via_rebind():
+    """Verify that cloud metadata IP 169.254.169.254 in rebind scenario is blocked."""
+    with patch("app.features.ai.url_fetcher.resolve_hostname_ips", return_value=["169.254.169.254"]):
+        with pytest.raises(ValueError, match="SSRF blocked.*169.254.169.254"):
+            validate_hostname_safe("instance-data.attacker.com")
+
