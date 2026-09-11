@@ -42,6 +42,10 @@ CODE OS v3.1.0 incorporates enterprise defense-in-depth security measures:
    - `pip-audit` reports **0 known vulnerabilities**.
    - Software Bill of Materials documented in `docs/SBOM.md`.
 
+7. **Tiered Command Isolation (Phase 3A)**:
+   - Tiered command isolation: host resource controls by default, container sandboxing enforced for untrusted workspaces and in strict mode.
+   - Server-side `decide_execution_mode` ignores model-supplied flags and fails closed with `SandboxUnavailableError` when Docker is missing.
+
 ---
 
 ## Known Limitations

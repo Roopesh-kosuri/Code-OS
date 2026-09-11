@@ -36,7 +36,7 @@ Most "AI IDEs" are a chat box bolted onto a text editor. CODE OS is built differ
 - ⚔️ **Duo Loop** — two models argue it out (Generator vs. Critic) until the code is actually good, before you ever see it. Both Agent Console and Rony Agent can escalate into it for high-stakes work.
 - 🛡️ **Code Verification & Security Scanner** — an AST-driven security auditor that checks for SQL injection, exposed secrets, and dependency vulnerabilities, generating one-click AST-safe automated patches with test verification.
 - 👁️ **Vision** — the agent can take a screenshot of what it just built (a running app window, or CODE OS itself), send it to a vision model, and catch visual defects a text-only pass would miss.
-- 🏖️ **Sandboxed execution** — tiered isolation for anything the agent runs, from lightweight path/resource containment up to a fully disposable Windows Sandbox VM for untrusted projects.
+- 🏖️ **Sandboxed execution** — Tiered command isolation: host resource controls by default, container sandboxing enforced for untrusted workspaces and in strict mode.
 - 💻 **Agentic terminal** — genuine PTY support (`vim`, `git rebase -i`, REPLs) with real-time SSE command streaming and safety classification.
 - 🎨 **4 polished themes** — Dark, Light, Void, and a proper dual-accent Cyberpunk mode.
 
@@ -321,7 +321,7 @@ Real-time cost tracking with TopBar spend pill, Recharts visual analytics, budge
 Captures application screenshots and sends them to vision models for automated visual defect detection.
 
 ### 🏖️ Sandboxed & Hardened Execution
-Tiered isolation: path/resource limits on all machines, Docker/WSL2 containers when available, and disposable Windows Sandbox VMs.
+Tiered command isolation: host resource controls by default, container sandboxing enforced for untrusted workspaces and in strict mode.
 
 ### 🛡️ Server-Side Trust & Security
 Restricted Mode enforced server-side. Session bearer tokens on privileged endpoints, path sandboxing, and encrypted API key storage.

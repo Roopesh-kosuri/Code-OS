@@ -1896,17 +1896,17 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     elif tc.name == "run_command":
                         cmd = tc.arguments.get("command", "")
                         caps = _detect_container_runtime()
-                        from .sandbox.policy import should_require_sandbox, is_dangerous_command
+                        docker_avail = bool(caps.get("docker_available", False))
+                        from .sandbox_policy import decide_execution_mode, ExecutionMode, SANDBOX_UNAVAILABLE_MESSAGE
                         from ..workspaces.trust_service import get_workspace_trust
                         ws_trust = await get_workspace_trust(workspace)
                         is_trusted_ws = ws_trust.get("trusted", False)
-                        is_cmd_trusted = _is_command_trusted(workspace, cmd)
-                        is_cmd_safe = _is_command_safe(cmd, workspace)
-                        require_sandbox = should_require_sandbox(
-                            workspace, cmd,
-                            is_trusted=is_trusted_ws,
-                            is_safe=is_cmd_safe,
-                            is_command_trusted=is_cmd_trusted,
+
+                        exec_mode = decide_execution_mode(
+                            workspace_trust=is_trusted_ws,
+                            cmd=cmd,
+                            docker_available=docker_avail,
+                            workspace=workspace,
                         )
 
                         # Reject autonomous git mutations unless explicitly requested by the user
@@ -1957,10 +1957,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 failure_reason="security_policy_blocked",
                                 failure_detail=policy_err,
                             )
-                        elif require_sandbox and is_dangerous_command(cmd) and not caps.get("docker_available"):
-                            # Dangerous command requiring container isolation cannot fall back to host execution
-                            sandbox_err = "This command requires sandboxing but Docker is not available. Install Docker or approve for host execution."
-                            logger.warning("chat_harness: Dangerous command requires sandbox but Docker is unavailable: %s", cmd)
+                        elif exec_mode == ExecutionMode.BLOCKED:
+                            # Command requiring container isolation cannot fall back to host execution without Docker
+                            sandbox_err = SANDBOX_UNAVAILABLE_MESSAGE
+                            logger.warning("chat_harness: Command requires sandbox but Docker is unavailable: %s", cmd)
                             yield _sse_error(sandbox_err)
                             yield _sse_command_result(cmd, sandbox_err, exit_code=1, success=False, reason="sandbox_unavailable")
                             result = ToolResult(
@@ -1975,7 +1975,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 failure_reason="sandbox_unavailable",
                                 failure_detail=sandbox_err,
                             )
-                        elif require_sandbox and caps.get("docker_available"):
+                        elif exec_mode == ExecutionMode.SANDBOX_REQUIRED:
                                 try:
                                     yield _sse_status("tool", f"[Container Sandbox] Running command: {cmd}", tool="run_command", command=cmd, sandboxed=True)
                                     result = await _execute_command_sandboxed(workspace, cmd)
@@ -1997,12 +1997,12 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                         failure_reason="sandbox_unavailable",
                                         failure_detail=str(exc),
                                     )
-                        elif _is_command_trusted(workspace, cmd):
+                        elif exec_mode == ExecutionMode.TRUSTED_HOST:
                             yield _sse_status("tool", f"[Trusted] Running command: {cmd}", tool="run_command", command=cmd, trusted=True)
                             result = await _execute_command_async(workspace, cmd)
                             if not result.success:
                                 yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
-                        elif _is_command_safe(cmd, workspace):
+                        elif exec_mode == ExecutionMode.ALLOWLIST_HOST:
                             result = await _execute_command_async(workspace, cmd)
                             if not result.success:
                                 yield _sse_command_result(cmd, result.failure_detail or result.error, exit_code=1, success=False, reason=result.failure_reason or "exit_code")
