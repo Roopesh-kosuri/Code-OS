@@ -8,6 +8,7 @@ from app.core.paths import (
     safe_write_file,
     safe_read_file,
 )
+from app.features.ai.harness.tool_executor import _is_command_safe
 from fastapi import HTTPException
 
 
@@ -26,6 +27,9 @@ def test_similar_prefix_rejected():
         with pytest.raises(HTTPException) as exc:
             ensure_within_workspace(str(proj), str(evil_file))
         assert exc.value.status_code == 403
+
+        # Also verify _is_command_safe rejects command referencing proj-evil
+        assert _is_command_safe(f"ls {evil_file}", workspace=str(proj)) is False
 
 
 def test_exact_workspace_allowed():

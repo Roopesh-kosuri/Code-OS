@@ -930,14 +930,17 @@ def _is_command_safe(command: str, workspace: str = "") -> bool:
                 if not arg.startswith("-"):  # skip flags like -la
                     try:
                         target_path = Path(arg)
+                        norm_ws = normalize_workspace(workspace)
                         if target_path.is_absolute():
-                            norm_ws = normalize_workspace(workspace)
                             try:
                                 target_path.resolve().relative_to(norm_ws.resolve())
                             except ValueError:
                                 return False
-                        elif ".." in arg.replace("\\", "/").split("/"):
-                            ensure_within_workspace(workspace, arg)
+                        else:
+                            try:
+                                (norm_ws / target_path).resolve().relative_to(norm_ws.resolve())
+                            except ValueError:
+                                return False
                     except Exception:
                         return False
 
