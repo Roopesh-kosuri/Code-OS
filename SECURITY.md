@@ -46,6 +46,11 @@ CODE OS v3.1.0 incorporates enterprise defense-in-depth security measures:
    - Tiered command isolation: host resource controls by default, container sandboxing enforced for untrusted workspaces and in strict mode.
    - Server-side `decide_execution_mode` ignores model-supplied flags and fails closed with `SandboxUnavailableError` when Docker is missing.
 
+8. **Encryption Key Storage & Plaintext Fallback (M7)**:
+   - Fernet master encryption keys are stored primarily in the host OS keyring (Windows Credential Manager, macOS Keychain, Linux Secret Service).
+   - If the OS keyring is unavailable (e.g. headless environments, containerized deployments, or missing SecretService daemon), the master key falls back to `<data_dir>/secret.key` stored as plaintext bytes protected by filesystem permissions (`0o600` on Unix).
+   - An explicit security warning log is emitted whenever fallback occurs. This fallback is designed for single-user local workstation applications where access to the user profile equals access to application data.
+
 ---
 
 ## Known Limitations

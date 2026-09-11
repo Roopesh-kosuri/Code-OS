@@ -42,7 +42,11 @@ def _load_or_create_key() -> bytes:
                 _secure_file_permissions(key_path)
             return stored_key.encode("utf-8")
     except Exception as exc:
-        logger.warning("Keyring get_password failed: %s", exc)
+        logger.warning(
+            "[security] OS keyring unavailable (%s); falling back to plaintext secret key file at %s protected by 0o600 file permissions.",
+            exc,
+            key_path,
+        )
 
     # 2. Migration path: check for legacy plaintext key file
     if key_path.exists():
@@ -53,7 +57,11 @@ def _load_or_create_key() -> bytes:
             try:
                 keyring.set_password(SERVICE_NAME, KEY_NAME, key_bytes.decode("utf-8"))
             except Exception as exc:
-                logger.warning("Keyring migration set_password failed: %s", exc)
+                logger.warning(
+                    "[security] Keyring migration set_password failed (%s); continuing with plaintext key file at %s.",
+                    exc,
+                    key_path,
+                )
             return key_bytes
         except Exception as exc:
             logger.warning("Failed reading key file %s: %s", key_path, exc)
@@ -65,7 +73,11 @@ def _load_or_create_key() -> bytes:
     try:
         keyring.set_password(SERVICE_NAME, KEY_NAME, new_key_str)
     except Exception as exc:
-        logger.warning("Keyring set_password failed: %s", exc)
+        logger.warning(
+            "[security] Failed writing Fernet key to OS keyring (%s); writing to local secret file at %s with 0o600 file permissions.",
+            exc,
+            key_path,
+        )
 
     try:
         key_path.parent.mkdir(parents=True, exist_ok=True)
