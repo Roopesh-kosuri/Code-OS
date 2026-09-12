@@ -1361,12 +1361,28 @@ async def handle_rate_limit_or_circuit_break(job_id: str, task_id: str, exc: Exc
 
 from dataclasses import dataclass, asdict
 
-@dataclass
 class ToolResult:
-    success: bool
-    output: str = ""
-    error: str = ""
-    data: dict[str, Any] | None = None
+    """Universal result container for tool execution across CODE OS."""
+    def __init__(
+        self,
+        success: bool = True,
+        output: str = "",
+        error: str = "",
+        data: dict[str, Any] | None = None,
+        tool_name: str = "",
+        failure_reason: str = "",
+        failure_detail: str = "",
+        **kwargs: Any,
+    ):
+        self.success = bool(success)
+        self.output = str(output) if output is not None else ""
+        self.error = str(error) if error is not None else ""
+        self.data = data or {}
+        self.tool_name = str(tool_name) if tool_name is not None else ""
+        self.failure_reason = str(failure_reason) if failure_reason is not None else ""
+        self.failure_detail = str(failure_detail) if failure_detail is not None else ""
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1374,7 +1390,13 @@ class ToolResult:
             "output": self.output,
             "error": self.error,
             "data": self.data or {},
+            "tool_name": self.tool_name,
+            "failure_reason": self.failure_reason,
+            "failure_detail": self.failure_detail,
         }
+
+    def __repr__(self) -> str:
+        return f"ToolResult(success={self.success}, tool_name={self.tool_name!r}, output={self.output[:40]!r}, error={self.error[:40]!r})"
 
 
 async def execute_tool_idempotent(

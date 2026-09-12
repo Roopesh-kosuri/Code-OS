@@ -75,9 +75,14 @@ _CONVERSATIONAL_PATTERNS = [
     re.compile(r"^nice to meet you[!.]*$", re.IGNORECASE),
     re.compile(r"^tell me about yourself\??$", re.IGNORECASE),
     re.compile(r"^are you (an? [a-z]+|there|ready)\??$", re.IGNORECASE),
-    re.compile(r"^what('s| is) your name\??$", re.IGNORECASE),
+    re.compile(r"^what('s| is) your (name|role|purpose|job)\??$", re.IGNORECASE),
     re.compile(r"^(thank you|thanks)(\s+(so much|a lot|very much|mate|bro|for\s+[\w\s]+))?[!.]*$", re.IGNORECASE),
     re.compile(r"^good\s+(morning|afternoon|evening|night|day)[!.]*$", re.IGNORECASE),
+    re.compile(r"^(i('m| am)\s+)?(feeling\s+)?(in a\s+)?(good|great|well|fine|bad|sad|happy|ok|tired|awesome|doing well|doing great)(\s+today|\s+mood)?\b[!.]*$", re.IGNORECASE),
+    re.compile(r"^(i('m| am)\s+)?doing\s+(good|great|well|fine|ok)[!.]*$", re.IGNORECASE),
+    re.compile(r"^(what|how)\s+(can|do)\s+you\s+(do|help|assist)\b.*", re.IGNORECASE),
+    re.compile(r"^can you help me(\s+with\s+anything)?\??$", re.IGNORECASE),
+    re.compile(r"^help(\s+me)?\??$", re.IGNORECASE),
 ]
 
 _TASK_VERB_PATTERNS = [
@@ -108,39 +113,36 @@ def is_conversational_turn(query: str) -> bool:
 
 def has_explicit_change_intent(query: str) -> bool:
     """Check if the user explicitly requested a file modification, addition, deletion, or fix."""
-    if not query or not query.strip():
+    if not query:
         return False
-    q_lower = query.strip().lower()
+    clean = query.strip()
+    if is_conversational_turn(clean):
+        return False
 
-    # User explicitly continuing an ongoing task or approving next step
-    if any(q_lower.startswith(c) for c in ("continue", "proceed", "go ahead", "do it", "resume", "apply")):
+    if any(clean.lower().startswith(c) for c in ("continue", "proceed", "go ahead", "do it", "resume", "apply")):
         return True
 
-    change_verbs = [
-        "fix", "add", "change", "create", "update", "refactor",
-        "remove", "implement", "write", "edit", "rename", "delete",
-        "improve", "modify", "replace", "overwrite", "append",
-        "build", "make", "generate", "setup", "scaffold", "patch",
-        "install", "clean", "integrate", "wire", "repair", "set",
-        "enable", "disable", "configure", "toggle", "switch"
-    ]
-    has_verb = any(re.search(rf"\b{re.escape(v)}\b", q_lower) for v in change_verbs)
+    has_verb = bool(re.search(
+        r"\b(edit|modify|update|change|replace|rewrite|fix|patch|write|create|add|append|delete|remove|refactor|rename|implement)\b",
+        clean,
+        re.IGNORECASE,
+    ))
     if not has_verb:
         return False
 
-    # Check for presence of targets: file extension, path, or code component
     has_target = (
-        re.search(r"\b[\w\-./\\]+\.[a-zA-Z0-9_]+\b", q_lower)  # e.g. main.cpp, foo.py
-        or any(w in q_lower for w in (
+        bool(re.search(r"\b[\w\-./\\]+\.[a-zA-Z0-9_]+\b", clean))
+        or any(w in clean.lower() for w in (
             "file", "files", "code", "function", "class", "method", "variable", "line",
             "module", "component", "endpoint", "test", "tests", "typo", "bug", "error",
             "feature", "jwt", "auth", "backend", "frontend", "server", "logic",
             "script", "documentation", "doc", "readme", "route", "handler", "vulnerability",
             "token", "tokens", "config", "configuration",
-            "system", "page", "app", "application", "ui", "api", "database", "db", "login"
+            "system", "page", "app", "application", "ui", "api", "database", "db", "login",
+            "this", "it", "here", "above", "below"
         ))
     )
-    return bool(has_target)
+    return has_target
 
 
 from app.features.ai.intelligence.task_classifier import classify_task
@@ -148,7 +150,7 @@ from app.features.ai.intelligence.task_classifier import classify_task
 
 def _classify_rules(q_lower: str, attached_paths: list[str] | None = None, is_agent_mode: bool = False) -> tuple[int, str, str]:
     """Task effort classifier delegating to unified task_classifier engine."""
-    if is_conversational_turn(q_lower) and not attached_paths:
+    if is_conversational_turn(q_lower):
         return 0, "Fast Answer", "Fast path: conversational turn (greeting or small talk)"
 
     res = classify_task(q_lower, file_list=attached_paths, use_llm=False)
@@ -176,7 +178,7 @@ def _classify_task_effort(
     model: str = "",
 ) -> tuple[int, str, str]:
     """Public effort classification entrypoint."""
-    if is_conversational_turn(user_query) and not attached_paths:
+    if is_conversational_turn(user_query):
         return 0, "Fast Answer", "Fast path: conversational turn (greeting or small talk)"
 
     tier, label, reason = _classify_rules(user_query.lower(), attached_paths, is_agent_mode=is_agent_mode)
