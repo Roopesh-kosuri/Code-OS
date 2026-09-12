@@ -113,10 +113,54 @@ async def _finalize_staged_changes(
             yield _sse_event("finalization", {"success": False, "reason": "secret_scan_rejected"})
             return
 
+        # Proposal Integrity Gate (Placeholders, Truncation, Syntax, Cross-Turn Contamination)
+        from .content_integrity import validate_content_integrity
+        yield _sse_status("integrity_gate", f"Integrity check: validating {len(staged_changes)} staged change(s)...")
+        overall_integrity_status = "valid"
+        integrity_warnings: list[str] = []
+
+        for change in staged_changes:
+            status, warning = validate_content_integrity(
+                path=change.path,
+                content=change.updated,
+                user_query=user_query,
+            )
+            if status != "valid":
+                if status == "blocked":
+                    overall_integrity_status = "blocked"
+                elif status == "incomplete" and overall_integrity_status != "blocked":
+                    overall_integrity_status = "incomplete"
+                elif status == "suspicious" and overall_integrity_status not in ("blocked", "incomplete"):
+                    overall_integrity_status = "suspicious"
+                if warning:
+                    integrity_warnings.append(warning)
+
+        if overall_integrity_status == "blocked":
+            blocked_msg = "Proposal Integrity Check Failed: " + "; ".join(integrity_warnings)
+            yield _sse_status("integrity_gate", f"🚫 {blocked_msg}", outcome="rejected")
+            _append_activity_log(workspace, {
+                "action_type": "integrity_gate",
+                "target": ", ".join(c.path for c in staged_changes),
+                "outcome": "rejected",
+                "tier": tier,
+                "token_count": 0,
+                "details": blocked_msg,
+            })
+            yield _sse_command_result("integrity_gate", blocked_msg, 1, False)
+            yield _sse_error(blocked_msg)
+            yield _sse_event("finalization", {"success": False, "reason": "integrity_check_failed"})
+            return
+
+        combined_warning = "; ".join(integrity_warnings) if integrity_warnings else None
+        if combined_warning:
+            yield _sse_status("integrity_gate", f"⚠️ Integrity Warning: {combined_warning}", outcome="warning")
+
         proposal_payload = EditProposalRequest(
             workspace=workspace,
             summary=f"Rony Agent: {len(staged_changes)} file(s) created/modified",
             changes=staged_changes,
+            integrity_status=overall_integrity_status,
+            integrity_warning=combined_warning,
         )
         create_proposal_fn = _get_create_proposal()
         proposal = await create_proposal_fn(proposal_payload)
@@ -140,6 +184,8 @@ async def _finalize_staged_changes(
             path=summary_paths,
             diff_summary=diff_summary,
             workspace=workspace,
+            integrity_status=overall_integrity_status,
+            integrity_warning=combined_warning,
         )
         _pending_approvals[action_id] = pending
 
@@ -151,6 +197,8 @@ async def _finalize_staged_changes(
             proposal_id=proposal_id,
             path=summary_paths,
             diff_summary=diff_summary,
+            integrity_status=overall_integrity_status,
+            integrity_warning=combined_warning,
         )
         yield _sse_status(
             "approval_required",

@@ -678,6 +678,8 @@ async def create_proposal(payload: EditProposalRequest) -> EditProposalDto:
         "plan": payload.plan,
         "self_review": payload.self_review,
         "test_results": payload.test_results,
+        "integrity_status": getattr(payload, "integrity_status", "valid"),
+        "integrity_warning": getattr(payload, "integrity_warning", None),
     }
     db = await get_db()
     # Ensure the workspace row exists so the FK constraint is satisfied.
@@ -717,6 +719,8 @@ async def create_proposal(payload: EditProposalRequest) -> EditProposalDto:
         plan=payload.plan,
         self_review=payload.self_review,
         test_results=payload.test_results,
+        integrity_status=getattr(payload, "integrity_status", "valid"),
+        integrity_warning=getattr(payload, "integrity_warning", None),
     )
 
 
@@ -739,6 +743,8 @@ async def get_proposal(proposal_id: str) -> EditProposalDto:
         plan=payload.get("plan"),
         self_review=payload.get("self_review"),
         test_results=payload.get("test_results"),
+        integrity_status=payload.get("integrity_status", "valid"),
+        integrity_warning=payload.get("integrity_warning"),
     )
 
 

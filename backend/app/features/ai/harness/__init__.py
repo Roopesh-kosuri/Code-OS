@@ -31,7 +31,7 @@ from .plan_parser import (
     _classify_rules, _classify_task_effort, _is_deep_query, _is_quick_task_query,
     _has_escalate_marker, _response_is_done, _declares_tool_intent,
     _extract_heuristic_tool_calls, _parse_tool_calls_extended, _has_tool_calls_extended, step_matches_work,
-    KNOWN_TECH_NAMES,
+    KNOWN_TECH_NAMES, is_conversational_turn, has_explicit_change_intent,
 )
 from .tool_executor import (
     MAX_AGENT_ITERATIONS, MAX_HUGE_TASK_ITERATIONS, MAX_QUICK_TASK_ITERATIONS, MAX_TOOL_CALLS_PER_ITERATION,
@@ -42,8 +42,12 @@ from .tool_executor import (
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
-    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, get_tools_for_tier,
+    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, READ_ONLY_TOOLS, get_tools_for_tier,
     PROJECT_MEMORY_MAX_CHARS,
+)
+from .content_integrity import (
+    is_placeholder_content, validate_language_syntax, is_truncated_content,
+    check_cross_turn_contamination, validate_file_target, validate_content_integrity,
 )
 from .prompt_builder import (
     _build_system_prompt, _gather_budgeted_rag_context, _discover_and_run_test_snapshot,
@@ -57,6 +61,15 @@ from .payload_governor import (
 )
 
 __all__ = [
+    "is_conversational_turn",
+    "has_explicit_change_intent",
+    "is_placeholder_content",
+    "validate_language_syntax",
+    "is_truncated_content",
+    "check_cross_turn_contamination",
+    "validate_file_target",
+    "validate_content_integrity",
+    "READ_ONLY_TOOLS",
     "MAX_AGENT_ITERATIONS",
     "MAX_QUICK_TASK_ITERATIONS",
     "MAX_TOOL_CALLS_PER_ITERATION",

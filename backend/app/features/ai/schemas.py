@@ -53,6 +53,8 @@ class EditProposalRequest(BaseModel):
     plan: dict | None = None
     self_review: dict | None = None
     test_results: dict | None = None
+    integrity_status: str = "valid"  # "valid" | "incomplete" | "suspicious" | "blocked"
+    integrity_warning: str | None = None
 
 
 class EditProposalDto(BaseModel):
@@ -65,6 +67,8 @@ class EditProposalDto(BaseModel):
     plan: dict | None = None
     self_review: dict | None = None
     test_results: dict | None = None
+    integrity_status: str = "valid"
+    integrity_warning: str | None = None
 
 
 class ContextRequest(BaseModel):

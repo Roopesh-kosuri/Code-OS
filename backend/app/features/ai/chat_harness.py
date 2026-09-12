@@ -134,7 +134,8 @@ from .harness import (
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
-    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, get_tools_for_tier,
+    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, READ_ONLY_TOOLS, get_tools_for_tier,
+    is_conversational_turn, has_explicit_change_intent,
     govern_payload, _truncate_attachment_in_text, estimate_request_tokens,
     PROJECT_MEMORY_MAX_CHARS,
     _build_system_prompt, _gather_budgeted_rag_context, _discover_and_run_test_snapshot,
@@ -579,7 +580,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             stream_finish_reason: str | None = None
 
             # Tool availability: Tier 0 passes no tools (pure streaming answer)
-            if tier >= 1:
+            # Conversational turns (greetings, pleasantries, small talk) NEVER receive tools or clarification cards
+            if tier >= 1 and not is_conversational_turn(user_query):
                 from ..mcp.mcp_manager import mcp_manager
                 mcp_tool_defs = []
                 try:
@@ -1576,8 +1578,23 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         if not isinstance(opts, list) or not opts:
                             opts = ["Yes, proceed", "No, cancel"]
 
+                        # Check conversational turn or question directed at assistant / mirroring
+                        is_conv = is_conversational_turn(user_query)
+                        is_social_inquiry = any(re.search(pat, user_query, re.IGNORECASE) for pat in (
+                            r"^how are you", r"^who are you", r"^what are you", r"^what('s| is) up", r"^how('s| is) it going"
+                        ))
+                        is_mirror = _is_similar_question(q_text, user_query) or any(
+                            phrase in q_text.lower() and phrase in user_query.lower()
+                            for phrase in ("how are you", "who are you", "what are you", "how is it going")
+                        )
+                        if is_conv or is_social_inquiry or is_mirror:
+                            logger.info("chat_harness: rejected ask_user for conversational/mirrored inquiry: %s", q_text)
+                            mirror_err = "Answer the user's question directly in conversational prose instead of asking clarification."
+                            yield _sse_status("tool_error", mirror_err, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=mirror_err)
+                            turn_all_tools_successful = False
                         # Check semantic question repetition loop
-                        if any(_is_similar_question(q_text, past_q) for past_q in asked_questions):
+                        elif any(_is_similar_question(q_text, past_q) for past_q in asked_questions):
                             logger.warning("chat_harness: ask_user repeated question loop detected: %s", q_text)
                             repeat_err = f"Clarification question '{q_text[:60]}' has already been asked in this turn. Do not re-ask. Synthesize the answer directly using the user's prior choice and conclude with [DONE]."
                             yield _sse_status("tool_error", repeat_err, tool="ask_user")
@@ -1684,6 +1701,19 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             )
                             yield _sse_status("tool_error", ref_err, tool=tc.name)
                             result = ToolResult(tool_name=tc.name, success=False, output="", error=ref_err)
+                            turn_all_tools_successful = False
+                        elif not has_explicit_change_intent(user_query):
+                            logger.warning("chat_harness: blocked file edit without explicit change intent: %s query=%s", raw_target, user_query[:60])
+                            intent_err = "Blocked: no explicit change request in this turn. Tell me what to change and I'll do it."
+                            yield _sse_status("tool_error", intent_err, tool=tc.name)
+                            _append_activity_log(workspace, {
+                                "action_type": "security_block",
+                                "target": raw_target,
+                                "outcome": "blocked",
+                                "tier": tier,
+                                "details": "Blocked: no explicit change request in this turn",
+                            })
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=intent_err)
                             turn_all_tools_successful = False
                         elif tc.name == "edit_file":
                             valid, err, change = _validate_smart_edit(workspace, tc.arguments)
@@ -2527,8 +2557,38 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             yield _sse_done(False, "Fast answer could not be generated. Please try again or switch model in the dropdown.")
             return
 
-        async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
-            yield event
+        # Proposal Integrity Gate on iteration cap:
+        # Separate valid, complete edits from incomplete / placeholder edits
+        valid_staged: list[FileChange] = []
+        incomplete_staged: list[tuple[FileChange, str]] = []
+        from .harness.content_integrity import validate_content_integrity
+        for sc in staged_changes:
+            st, wrn = validate_content_integrity(sc.path, sc.updated, user_query=user_query)
+            if st == "valid":
+                valid_staged.append(sc)
+            else:
+                incomplete_staged.append((sc, wrn or f"Integrity status: {st}"))
+
+        if incomplete_staged:
+            logger.warning(
+                "chat_harness: iteration cap excluded %d incomplete/placeholder file(s): %s",
+                len(incomplete_staged), [c[0].path for c in incomplete_staged]
+            )
+            for sc, reason_msg in incomplete_staged:
+                yield _sse_status(
+                    "tool_error",
+                    f"Incomplete staged file '{sc.path}' skipped at iteration limit: {reason_msg} (incomplete — do not apply)"
+                )
+
+        if valid_staged:
+            async for event in _finalize_staged_changes(valid_staged, workspace, tier, turn_number=turn_number, user_query=user_query):
+                yield event
+        elif staged_changes:
+            yield _sse_status(
+                "integrity_gate",
+                f"All {len(staged_changes)} staged file(s) contained incomplete or placeholder code at iteration cap. No proposal generated.",
+                outcome="rejected"
+            )
 
         duration_ms = (time.time() - start_time) * 1000.0
         tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
@@ -2548,8 +2608,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             "Completed Items:",
         ]
         completed_list: list[str] = []
-        if staged_changes:
-            for c in staged_changes:
+        if valid_staged:
+            for c in valid_staged:
                 c_desc = f"Staged changes for '{c.path}' ({len(c.updated.splitlines())} lines)"
                 report_lines.append(f"  ✓ {c_desc}")
                 completed_list.append(c_desc)
@@ -2558,10 +2618,13 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             report_lines.append(f"  ✓ {c_desc}")
             completed_list.append(c_desc)
         else:
-            report_lines.append("  - No files were modified.")
+            report_lines.append("  - No valid files were staged.")
 
         report_lines.append("Skipped / Incomplete Items:")
         skipped_list: list[str] = list(skipped_items)
+        if incomplete_staged:
+            for sc, r_msg in incomplete_staged:
+                skipped_list.append(f"'{sc.path}': {r_msg} (incomplete — do not apply)")
         if dag_plan_steps and current_step < len(dag_plan_steps):
             for step in dag_plan_steps[current_step:]:
                 skipped_list.append(f"Incomplete step: {step.title}")

@@ -29,10 +29,16 @@ export function DockedApprovalCard({
 }: DockedApprovalCardProps) {
   const [alwaysAllow, setAlwaysAllow] = useState(false);
   const [trustWildcard, setTrustWildcard] = useState(false);
+  const [integrityConfirmed, setIntegrityConfirmed] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
 
   const isEdit = pendingApproval.action_type === "edit";
+  const hasIntegrityWarning = isEdit && Boolean(
+    pendingApproval.integrity_warning ||
+    (pendingApproval.integrity_status && pendingApproval.integrity_status !== "valid")
+  );
+  const canApprove = !hasIntegrityWarning || integrityConfirmed;
   const filePath = pendingApproval.path || pendingApproval.detail || "";
   const queueCount = pendingApprovals.length;
   
@@ -205,6 +211,32 @@ export function DockedApprovalCard({
           </div>
         )}
 
+        {/* Proposal Integrity Warning Banner */}
+        {hasIntegrityWarning && (
+          <div
+            data-testid="proposal-integrity-warning-banner"
+            className="p-2.5 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-200 text-xs flex flex-col gap-1.5"
+          >
+            <div className="flex items-center gap-2 font-bold text-rose-300">
+              <ShieldAlert size={15} className="text-rose-400 shrink-0" />
+              <span>⚠️ Proposal Integrity Warning ({pendingApproval.integrity_status || "incomplete"})</span>
+            </div>
+            <p className="text-[11px] text-rose-200/90 leading-tight">
+              {pendingApproval.integrity_warning || "This proposal contains suspicious or incomplete code changes."}
+            </p>
+            <label className="flex items-center gap-2 mt-1 cursor-pointer select-none text-[11px] font-semibold text-rose-100">
+              <input
+                type="checkbox"
+                data-testid="confirm-integrity-override"
+                checked={integrityConfirmed}
+                onChange={(e) => setIntegrityConfirmed(e.target.checked)}
+                className="rounded border-rose-500/50 text-rose-500 focus:ring-rose-500/40 bg-black/40 cursor-pointer"
+              />
+              <span>I understand this code may be incomplete or invalid; approve anyway</span>
+            </label>
+          </div>
+        )}
+
         {/* Preview Snippet */}
         {isEdit ? (
           pendingApproval.diff_summary && (
@@ -300,8 +332,11 @@ export function DockedApprovalCard({
           <button
             type="button"
             onClick={handleApprove}
+            disabled={isApproving || !canApprove}
             className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-black font-bold text-xs shadow-lg interactive-scale cursor-pointer transition-all active:scale-95 ${
-              isEdit
+              !canApprove
+                ? "opacity-50 cursor-not-allowed bg-zinc-600 text-zinc-300 shadow-none"
+                : isEdit
                 ? "bg-emerald-400 hover:bg-emerald-300 hover:shadow-emerald-500/30"
                 : "bg-amber-400 hover:bg-amber-300 hover:shadow-amber-500/30"
             }`}

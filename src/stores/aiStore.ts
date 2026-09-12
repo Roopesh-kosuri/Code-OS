@@ -102,6 +102,8 @@ export interface PendingApprovalState {
   task_id?: string;
   team_mode?: boolean;
   metadata?: Record<string, any>;
+  integrity_status?: "valid" | "incomplete" | "suspicious" | "blocked";
+  integrity_warning?: string;
 }
 
 export interface PendingUserResponseState {
@@ -533,6 +535,8 @@ export function createSSEStreamHandler(
         proposal_id: data.proposal_id,
         path: data.path,
         diff_summary: data.diff_summary,
+        integrity_status: data.integrity_status,
+        integrity_warning: data.integrity_warning,
       };
       set((state) => {
         const currentList = state.pendingApprovals || [];
@@ -851,6 +855,8 @@ export const useAIStore = create<AIState>((set, get) => ({
           path: item.payload?.path,
           diff_summary: item.payload?.diff_summary,
           command: item.payload?.command,
+          integrity_status: item.payload?.integrity_status,
+          integrity_warning: item.payload?.integrity_warning,
           always_allow: false,
           trust_pattern: null,
         }));

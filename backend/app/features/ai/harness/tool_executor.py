@@ -602,6 +602,15 @@ SLIM_CODING_TOOLS = [
     )
 ]
 
+# Read-only coding tools for conversational / review turns (strictly NO write or interactive quiz tools)
+READ_ONLY_TOOLS = [
+    t for t in CORE_CODING_TOOLS
+    if t["function"]["name"] in (
+        "read_file", "list_directory", "search_code", "semantic_search",
+        "find_references", "go_to_definition", "git_diff", "list_tests"
+    )
+]
+
 BROWSER_TOOLS = [
     {
         "type": "function",
@@ -995,16 +1004,42 @@ def _load_project_memory(workspace: str) -> str:
     return ""
 
 
+_NON_TECHNICAL_MEMORY_PATTERNS = [
+    re.compile(r"\b(mood|feeling|feels|happy|sad|angry|cheerful|upset|excited|tired|bored|grumpy)\b", re.IGNORECASE),
+    re.compile(r"\buser is (in|feeling|a bit|doing|good|bad|fine|well|okay|neutral)\b", re.IGNORECASE),
+    re.compile(r"\buser('s)? (mood|temperament|emotion|feelings?|personality)\b", re.IGNORECASE),
+    re.compile(r"\b(personality|demeanor|temperament|calm|nervous|anxious)\b", re.IGNORECASE),
+    re.compile(r"^(hi|hello|hey|greetings|how are you|good morning|good evening)\b", re.IGNORECASE),
+    re.compile(r"\b(weather|personal life|hobby|hobbies|coffee|tea|lunch|dinner|breakfast)\b", re.IGNORECASE),
+    re.compile(r"\b(user said hi|user greeted|social inquiry|small talk)\b", re.IGNORECASE),
+]
+
+
+def _is_social_or_mood_fact(fact_str: str) -> bool:
+    """Check if fact matches social, mood, greeting, or small talk patterns."""
+    if not fact_str or not fact_str.strip():
+        return False
+    stripped = fact_str.strip()
+    if stripped.startswith(("- ", "* ")):
+        stripped = stripped[2:].strip()
+    return any(p.search(stripped) for p in _NON_TECHNICAL_MEMORY_PATTERNS)
+
+
 def _handle_memory_write(workspace: str, arguments: dict) -> tuple[bool, str]:
     """Append a user-stated preference or project convention to RONY.md."""
     fact = arguments.get("fact") or arguments.get("memory") or arguments.get("content") or ""
     if not fact or not str(fact).strip():
         return False, "Parameter 'fact' cannot be empty"
+
+    fact_str = str(fact).strip()
+    if fact_str.startswith(("- ", "* ")):
+        fact_str = fact_str[2:].strip()
+
+    if _is_social_or_mood_fact(fact_str):
+        return False, "Rejected: memory_write is restricted to technical project facts, architectural decisions, and coding conventions (social/mood notes are not permitted)."
+
     try:
         p = Path(workspace) / "RONY.md"
-        fact_str = str(fact).strip()
-        if fact_str.startswith(("- ", "* ")):
-            fact_str = fact_str[2:].strip()
 
         raw_existing = p.read_text(encoding="utf-8", errors="replace") if p.is_file() else "# Project Memory (RONY.md)\n\n"
         lines = [line.rstrip() for line in raw_existing.splitlines()]
@@ -1128,6 +1163,13 @@ def _validate_smart_edit(
         return False, f"Cannot edit reference document '{clean_path}'. Attached and uploaded documents are strictly read-only data. Provide your analysis, review, or answer in direct conversation prose.", None
 
     if not original:
+        from .content_integrity import is_placeholder_content, validate_language_syntax
+        is_ph, ph_msg = is_placeholder_content(updated)
+        if is_ph:
+            return False, f"Staging rejected for '{clean_path}': placeholder or stub code detected ({ph_msg}). Provide full, functional implementation.", None
+        syn_ok, syn_msg = validate_language_syntax(clean_path, updated)
+        if not syn_ok:
+            return False, f"Staging rejected for '{clean_path}': {syn_msg}", None
         return True, "", FileChange(path=clean_path, original="", updated=updated)
 
     if not full_path.is_file():
@@ -1143,6 +1185,16 @@ def _validate_smart_edit(
             "Action Required: Use `read_file` to inspect the latest file content and supply the exact matching lines."
         )
         return False, err_msg, None
+
+    from .content_integrity import is_placeholder_content, validate_language_syntax
+    is_ph, ph_msg = is_placeholder_content(updated)
+    if is_ph:
+        return False, f"Staging rejected for '{clean_path}': placeholder or stub code detected ({ph_msg}). Provide full, functional implementation.", None
+
+    projected_content = current_content.replace(original, updated, 1)
+    syn_ok, syn_msg = validate_language_syntax(clean_path, projected_content)
+    if not syn_ok:
+        return False, f"Staging rejected for '{clean_path}': edit introduces syntax error: {syn_msg}", None
 
     return True, "", FileChange(path=clean_path, original=original, updated=updated)
 

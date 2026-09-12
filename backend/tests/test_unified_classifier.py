@@ -65,12 +65,17 @@ def test_harness_plan_parser_delegation():
 
 def test_harness_task_effort_wrapper():
     """Verify _classify_task_effort entrypoint with agent mode."""
-    # Fast query in non-agent vs agent mode
-    tier, label, _ = _classify_task_effort("hi", is_agent_mode=False)
-    # Fast answers have tier 0 or 1 depending on query
-    tier_agent, label_agent, _ = _classify_task_effort("hi", is_agent_mode=True)
-    assert tier_agent >= 1
-    assert label_agent == "Quick Task"
+    # Conversational turns stay Tier 0 even with agent mode enabled (Phase 6.1 safety)
+    tier_hi, label_hi, _ = _classify_task_effort("hi", is_agent_mode=False)
+    assert tier_hi == 0
+    tier_hi_agent, label_hi_agent, _ = _classify_task_effort("hi", is_agent_mode=True)
+    assert tier_hi_agent == 0
+    assert label_hi_agent == "Fast Answer"
+
+    # Non-conversational fast tasks promote to Quick Task in agent mode
+    tier_task, label_task, _ = _classify_task_effort("explain the syntax of list comprehensions", is_agent_mode=True)
+    assert tier_task >= 1
+    assert label_task == "Quick Task"
 
 
 def test_team_schemas_smart_router_integration():

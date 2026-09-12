@@ -44,6 +44,8 @@ class PendingApproval:
     task_id: str = ""
     agent_role: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    integrity_status: str = "valid"
+    integrity_warning: str | None = None
     created_at: float = field(default_factory=time.time)
 
 
