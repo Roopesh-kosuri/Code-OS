@@ -425,12 +425,12 @@ async def health() -> HealthCheckResponse:
     try:
         pool = await get_pool()
         t0 = time.perf_counter()
-        rows = await pool.read_query("PRAGMA quick_check(1);")
+        rows = await pool.read_query("SELECT 1;")
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-        if rows and rows[0][0] == "ok":
+        if rows and (rows[0][0] == 1 or rows[0]["1"] == 1):
             subsystems["database"] = SubsystemHealth(status="ok", latency_ms=latency_ms)
         else:
-            subsystems["database"] = SubsystemHealth(status="degraded", latency_ms=latency_ms, error="Quick check failed")
+            subsystems["database"] = SubsystemHealth(status="degraded", latency_ms=latency_ms, error="Database ping failed")
             is_healthy = False
     except Exception as exc:
         subsystems["database"] = SubsystemHealth(status="degraded", error=str(exc))
