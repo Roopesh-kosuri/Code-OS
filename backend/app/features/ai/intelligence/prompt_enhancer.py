@@ -350,6 +350,7 @@ async def enhance_prompt(
             "original": clean_p,
             "changes": [],
             "model_used": "none",
+            "error": None,
         }
 
     # Session cache check
@@ -364,6 +365,7 @@ async def enhance_prompt(
             "original": clean_p,
             "changes": [],
             "model_used": "pass-through",
+            "error": None,
         }
         _SESSION_ENHANCE_CACHE[clean_p] = result
         return result
@@ -376,6 +378,7 @@ async def enhance_prompt(
             "original": clean_p,
             "changes": [],
             "model_used": "pass-through",
+            "error": None,
         }
         _SESSION_ENHANCE_CACHE[clean_p] = result
         return result
@@ -407,9 +410,19 @@ async def enhance_prompt(
                 "original": clean_p,
                 "changes": changes,
                 "model_used": "test-mock-cheap",
+                "error": None,
             }
             _SESSION_ENHANCE_CACHE[clean_p] = res
             return res
+        except asyncio.TimeoutError:
+            logger.warning("enhance_prompt: mock hook timed out")
+            return {
+                "enhanced": clean_p,
+                "original": clean_p,
+                "changes": [],
+                "model_used": "fallback",
+                "error": "Enhancement unavailable (request timed out)",
+            }
         except Exception as exc:
             logger.warning("enhance_prompt: mock hook exception (fail-open): %s", exc)
             return {
@@ -417,10 +430,12 @@ async def enhance_prompt(
                 "original": clean_p,
                 "changes": [],
                 "model_used": "fallback",
+                "error": f"Enhancement unavailable ({str(exc) or type(exc).__name__})",
             }
 
     # Model resolution
     provider_name, model_name = await select_cheap_enhancement_model()
+    logger.info("enhance_prompt: resolved provider=%s model=%s", provider_name, model_name)
 
     # Safety assertion: Never use HARD-tier models for enhancement
     full_model_tag = f"{provider_name}/{model_name}"
@@ -451,7 +466,8 @@ async def enhance_prompt(
                 chunks.append(chunk)
             return "".join(chunks).strip()
 
-        raw_enhanced = await asyncio.wait_for(_call_llm(), timeout=5.0)
+        raw_enhanced = await asyncio.wait_for(_call_llm(), timeout=3.0)
+        logger.info("enhance_prompt: raw_enhanced=%r", raw_enhanced)
         # Clean reasoning/think tags (e.g. from DeepSeek or Groq reasoning models)
         cleaned_text = re.sub(r'<(?:reasoning|think)>[\s\S]*?</(?:reasoning|think)>', '', raw_enhanced, flags=re.IGNORECASE)
         cleaned_text = re.sub(r'<(?:reasoning|think)>[\s\S]*$', '', cleaned_text, flags=re.IGNORECASE)
@@ -460,15 +476,16 @@ async def enhance_prompt(
 
         is_conversational_canned = any(
             phrase in enhanced_clean.lower()
-            for phrase in ("how can i assist", "how can i help", "hello.", "hi there", "[truncated", "investigate and fix")
+            for phrase in ("how can i assist", "how can i help", "hello.", "hi there", "[truncated")
         )
         if not enhanced_clean or is_conversational_canned:
-            logger.info("enhance_prompt: rejected empty or canned LLM output, failing open to original prompt")
+            logger.info("enhance_prompt: rejected empty or canned LLM output (enhanced_clean=%r), failing open to original prompt", enhanced_clean)
             return {
                 "enhanced": clean_p,
                 "original": clean_p,
                 "changes": [],
                 "model_used": "fail-open",
+                "error": "Enhancement model returned an empty or invalid response",
             }
 
         changes = _compute_prompt_changes(clean_p, enhanced_clean)
@@ -479,15 +496,27 @@ async def enhance_prompt(
             "original": clean_p,
             "changes": changes,
             "model_used": f"{provider_name}/{model_name}",
+            "error": None,
         }
         _SESSION_ENHANCE_CACHE[clean_p] = result
         return result
 
     except Exception as exc:
         logger.info("enhance_prompt: error/timeout (fail-open returning original): %s", exc)
+        err_str = str(exc).strip()
+        if isinstance(exc, asyncio.TimeoutError):
+            err_msg = "Enhancement unavailable (request timed out)"
+        elif "api key not configured" in err_str.lower():
+            err_msg = "Enhancement unavailable (AI model not configured; add an API key or configure Ollama in Settings)"
+        elif "connection" in err_str.lower() or "connect" in err_str.lower():
+            err_msg = "Enhancement unavailable (model server unreachable)"
+        else:
+            err_msg = f"Enhancement unavailable ({err_str or type(exc).__name__})"
+
         return {
             "enhanced": clean_p,
             "original": clean_p,
             "changes": [],
             "model_used": "fallback",
+            "error": err_msg,
         }

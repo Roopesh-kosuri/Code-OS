@@ -117,6 +117,7 @@ async def test_enhance_fail_open():
     assert res_timeout["enhanced"] == orig_prompt
     assert res_timeout["original"] == orig_prompt
     assert res_timeout["model_used"] == "fallback"
+    assert res_timeout["error"] is not None
 
     # 2. Exception simulation
     async def failing_enhancer(prompt, ctx):
@@ -129,6 +130,7 @@ async def test_enhance_fail_open():
     assert res_err["enhanced"] == orig_prompt
     assert res_err["original"] == orig_prompt
     assert res_err["model_used"] == "fallback"
+    assert res_err["error"] is not None
 
 
 @pytest.mark.asyncio
@@ -243,5 +245,70 @@ async def test_conversational_passes_through_enhancer_untouched():
         assert res["original"] == inp
         assert res["changes"] == []
         assert res["model_used"] == "pass-through"
+        assert res["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_enhance_endpoint_returns_valid_json(async_client):
+    """Verify POST /api/intelligence/enhance-prompt returns valid JSON with all required fields in success and fail cases."""
+    # 1. Success case (mocked model)
+    mock_provider = MagicMock()
+    async def mock_stream(*args, **kwargs):
+        yield "Investigate and fix bug in src/main.py, adding unit tests to verify."
+    mock_provider.stream_chat = mock_stream
+
+    with patch("app.features.ai.service.provider_for", AsyncMock(return_value=mock_provider)):
+        res_success = await async_client.post(
+            "/api/intelligence/enhance-prompt",
+            json={"prompt": "fix it", "active_file": "src/main.py"},
+        )
+        assert res_success.status_code == 200
+        data_success = res_success.json()
+        assert "enhanced" in data_success
+        assert "original" in data_success
+        assert "changes" in data_success
+        assert "model_used" in data_success
+        assert "error" in data_success
+        assert data_success["original"] == "fix it"
+        assert "Investigate and fix bug in src/main.py" in data_success["enhanced"]
+        assert data_success["error"] is None
+
+    # 2. Fail case (exception thrown by provider)
+    clear_enhancer_session_cache()
+    with patch("app.features.ai.service.provider_for", AsyncMock(side_effect=RuntimeError("Provider connection failed"))):
+        res_fail = await async_client.post(
+            "/api/intelligence/enhance-prompt",
+            json={"prompt": "make it better", "active_file": "src/main.py"},
+        )
+        assert res_fail.status_code == 200
+        data_fail = res_fail.json()
+        assert "enhanced" in data_fail
+        assert "original" in data_fail
+        assert "changes" in data_fail
+        assert "model_used" in data_fail
+        assert "error" in data_fail
+        assert data_fail["enhanced"] == "make it better"
+        assert data_fail["original"] == "make it better"
+        assert data_fail["model_used"] == "fallback"
+        assert "Enhancement unavailable" in data_fail["error"]
+
+
+@pytest.mark.asyncio
+async def test_enhance_model_unreachable_shows_clear_error(async_client):
+    """Verify that when the model is unreachable, endpoint returns clear error and original prompt."""
+    clear_enhancer_session_cache()
+    with patch("app.features.ai.service.provider_for", AsyncMock(side_effect=ConnectionRefusedError("Connection refused by host"))):
+        res = await async_client.post(
+            "/api/intelligence/enhance-prompt",
+            json={"prompt": "clean up", "active_file": "app.py"},
+        )
+        assert res.status_code == 200
+        data = res.json()
+        assert data["original"] == "clean up"
+        assert data["enhanced"] == "clean up"
+        assert data["model_used"] == "fallback"
+        assert data["error"] is not None
+        assert "unreachable" in data["error"].lower() or "connection" in data["error"].lower()
+
 
 

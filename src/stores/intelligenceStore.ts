@@ -23,6 +23,7 @@ interface IntelligenceState {
   showBar: boolean;
   showDiff: boolean;
   isEnhancing: boolean;
+  enhancementError: string | null;
   stats: EnhancementStats;
 
   classifyOnInput: (prompt: string, activeFile?: string | null, workspace?: string | null) => void;
@@ -32,6 +33,7 @@ interface IntelligenceState {
   editManually: () => void;
   dismiss: () => void;
   reset: () => void;
+  clearError: () => void;
   fetchStats: () => Promise<void>;
 }
 
@@ -46,6 +48,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   showBar: false,
   showDiff: false,
   isEnhancing: false,
+  enhancementError: null,
   stats: {
     enhanced_count: 0,
     accepted_count: 0,
@@ -61,14 +64,14 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
 
     const trimmed = prompt.trim();
     if (!trimmed) {
-      set({ showBar: false, showDiff: false, quality: null, originalPrompt: "", enhancedPrompt: "" });
+      set({ showBar: false, showDiff: false, quality: null, originalPrompt: "", enhancedPrompt: "", enhancementError: null });
       return;
     }
 
     // Check user settings toggle: Suggest prompt enhancements (default ON)
     const suggestEnabled = localStorage.getItem("code-os:ai.suggest_prompt_enhancements") !== "false";
     if (!suggestEnabled) {
-      set({ showBar: false, showDiff: false });
+      set({ showBar: false, showDiff: false, enhancementError: null });
       return;
     }
 
@@ -85,6 +88,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
             quality: res,
             originalPrompt: trimmed,
             showBar: true,
+            enhancementError: null,
           });
 
           // Check if auto-enhance is enabled (default OFF)
@@ -96,6 +100,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
           set({
             quality: res,
             showBar: false,
+            enhancementError: null,
           });
         }
       } catch (err) {
@@ -108,7 +113,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
     const textToEnhance = (prompt?.trim() || get().originalPrompt).trim();
     if (!textToEnhance) return "";
 
-    set({ isEnhancing: true, originalPrompt: textToEnhance });
+    set({ isEnhancing: true, originalPrompt: textToEnhance, enhancementError: null });
 
     try {
       const res = await api.post<{
@@ -116,6 +121,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         original: string;
         changes: string[];
         model_used: string;
+        error?: string | null;
       }>("/api/intelligence/enhance-prompt", {
         prompt: textToEnhance,
         quality: get().quality,
@@ -123,15 +129,8 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         workspace: workspace ?? null,
       });
 
-      const isPassThrough =
-        res.model_used === "pass-through" ||
-        res.model_used === "fail-open" ||
-        res.model_used === "fallback" ||
-        !res.enhanced ||
-        res.enhanced.trim() === textToEnhance.trim() ||
-        res.enhanced.trim() === (res.original || "").trim();
-
-      if (isPassThrough) {
+      // Conversational turns and already-good prompts pass through without diff card or error
+      if (res.model_used === "pass-through") {
         set({
           enhancedPrompt: res.enhanced || textToEnhance,
           changes: [],
@@ -139,8 +138,36 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
           showDiff: false,
           showBar: false,
           isEnhancing: false,
+          enhancementError: null,
         });
         return res.enhanced || textToEnhance;
+      }
+
+      const isFailure =
+        Boolean(res.error) ||
+        res.model_used === "fail-open" ||
+        res.model_used === "fallback" ||
+        !res.enhanced ||
+        res.enhanced.trim() === textToEnhance.trim() ||
+        res.enhanced.trim() === (res.original || "").trim();
+
+      if (isFailure) {
+        const errorMsg =
+          res.error ||
+          (res.model_used === "fail-open"
+            ? "Enhancement unavailable (model returned no changes or failed open)"
+            : "Enhancement unavailable (model unreachable or timed out)");
+
+        set({
+          enhancedPrompt: textToEnhance,
+          changes: [],
+          modelUsed: res.model_used,
+          showDiff: false,
+          showBar: true, // Keep card visible per UX contract!
+          isEnhancing: false,
+          enhancementError: errorMsg,
+        });
+        return textToEnhance;
       }
 
       set({
@@ -150,6 +177,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         showDiff: true,
         showBar: true,
         isEnhancing: false,
+        enhancementError: null,
       });
 
       return res.enhanced;
@@ -160,15 +188,16 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         changes: [],
         modelUsed: "fallback",
         showDiff: false,
-        showBar: false,
+        showBar: true, // Keep card visible per UX contract!
         isEnhancing: false,
+        enhancementError: "Enhancement unavailable (request timed out or server error)",
       });
       return textToEnhance;
     }
   },
 
   accept: async () => {
-    set({ showDiff: false, showBar: false });
+    set({ showDiff: false, showBar: false, enhancementError: null });
     try {
       await api.post("/api/intelligence/record-action", { action: "accept" });
     } catch {
@@ -177,7 +206,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   },
 
   revert: async () => {
-    set({ showDiff: false, showBar: false, enhancedPrompt: "" });
+    set({ showDiff: false, showBar: false, enhancedPrompt: "", enhancementError: null });
     try {
       await api.post("/api/intelligence/record-action", { action: "revert" });
     } catch {
@@ -186,16 +215,20 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   },
 
   editManually: () => {
-    set({ showDiff: false, showBar: false });
+    set({ showDiff: false, showBar: false, enhancementError: null });
   },
 
   dismiss: () => {
-    set({ showBar: false, showDiff: false });
+    set({ showBar: false, showDiff: false, enhancementError: null });
     try {
       void api.post("/api/intelligence/record-action", { action: "dismiss" });
     } catch {
       // Non-blocking
     }
+  },
+
+  clearError: () => {
+    set({ enhancementError: null });
   },
 
   reset: () => {
@@ -208,6 +241,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
       showBar: false,
       showDiff: false,
       isEnhancing: false,
+      enhancementError: null,
     });
   },
 

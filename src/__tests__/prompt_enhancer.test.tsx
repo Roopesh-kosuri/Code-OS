@@ -336,32 +336,137 @@ describe("Phase 5 & 5.1: Prompt Enhancement Engine UI Tests", () => {
     expect(screen.queryByText("+ Added verification criteria")).toBeNull();
   });
 
-  it("test_pass_through_and_fail_open_results_do_not_pop_card", async () => {
-    // 1. Pass-through result
+  it("test_pass_through_results_do_not_pop_card", async () => {
+    // Conversational queries pass through without popping diff card or showing error
     vi.spyOn(api, "post").mockResolvedValueOnce({
       enhanced: "hi how are you?",
       original: "hi how are you?",
       changes: [],
       model_used: "pass-through",
+      error: null,
     });
 
-    const res1 = await useIntelligenceStore.getState().enhance("hi how are you?");
-    expect(res1).toBe("hi how are you?");
+    const res = await useIntelligenceStore.getState().enhance("hi how are you?");
+    expect(res).toBe("hi how are you?");
     expect(useIntelligenceStore.getState().showDiff).toBe(false);
     expect(useIntelligenceStore.getState().showBar).toBe(false);
+    expect(useIntelligenceStore.getState().enhancementError).toBeNull();
+  });
 
-    // 2. Fail-open result
+  it("test_enhance_action_updates_store_state", async () => {
+    // 1. Success case: updates showDiff=true, showBar=true, error=null
     vi.spyOn(api, "post").mockResolvedValueOnce({
-      enhanced: "do something",
-      original: "do something",
+      enhanced: "Fix authentication handler in src/auth.py",
+      original: "fix it",
+      changes: ["Identified target file"],
+      model_used: "groq/llama-3.1-8b-instant",
+      error: null,
+    });
+
+    await useIntelligenceStore.getState().enhance("fix it", "src/auth.py");
+    const stateSuccess = useIntelligenceStore.getState();
+    expect(stateSuccess.showDiff).toBe(true);
+    expect(stateSuccess.showBar).toBe(true);
+    expect(stateSuccess.enhancedPrompt).toBe("Fix authentication handler in src/auth.py");
+    expect(stateSuccess.enhancementError).toBeNull();
+
+    // 2. Fail case: sets showDiff=false, showBar=true (never silently disappears), error message set
+    vi.spyOn(api, "post").mockResolvedValueOnce({
+      enhanced: "fix it",
+      original: "fix it",
       changes: [],
       model_used: "fail-open",
+      error: "Enhancement model returned an empty or invalid response",
     });
 
-    const res2 = await useIntelligenceStore.getState().enhance("do something");
-    expect(res2).toBe("do something");
-    expect(useIntelligenceStore.getState().showDiff).toBe(false);
+    await useIntelligenceStore.getState().enhance("fix it", "src/auth.py");
+    const stateFail = useIntelligenceStore.getState();
+    expect(stateFail.showDiff).toBe(false);
+    expect(stateFail.showBar).toBe(true); // Must remain visible per UX contract!
+    expect(stateFail.enhancementError).toBe("Enhancement model returned an empty or invalid response");
+  });
+
+  it("test_enhance_timeout_shows_error_not_disappear", async () => {
+    vi.spyOn(api, "post").mockRejectedValueOnce(new Error("Network timeout after 3000ms"));
+
+    act(() => {
+      useIntelligenceStore.setState({
+        showBar: true,
+        showDiff: false,
+        originalPrompt: "fix it",
+        quality: { quality: "weak", issues: ["Too brief"], score: 0.2 },
+      });
+    });
+
+    const mockApply = vi.fn();
+    const { rerender } = render(
+      <PromptEnhancerBar currentPrompt="fix it" onApplyEnhanced={mockApply} />
+    );
+
+    // Click Enhance
+    const enhanceBtn = screen.getByTestId("prompt-enhance-button");
+    await act(async () => {
+      fireEvent.click(enhanceBtn);
+    });
+
+    // Re-render component with new store state
+    rerender(<PromptEnhancerBar currentPrompt="fix it" onApplyEnhanced={mockApply} />);
+
+    // Card NEVER disappears silently! Error card is shown.
+    const errorCard = screen.getByTestId("prompt-enhancer-error-card");
+    expect(errorCard).toBeTruthy();
+    expect(screen.getByText(/Enhancement unavailable/i)).toBeTruthy();
+
+    // Explicit actions available: [Use Original], [Retry], [Dismiss]
+    const useOrigBtn = screen.getByTestId("prompt-use-original-button");
+    const retryBtn = screen.getByTestId("prompt-retry-button");
+    const dismissBtn = screen.getByTestId("prompt-dismiss-button");
+    expect(useOrigBtn).toBeTruthy();
+    expect(retryBtn).toBeTruthy();
+    expect(dismissBtn).toBeTruthy();
+
+    // Clicking [Use Original] preserves original prompt and dismisses error
+    await act(async () => {
+      fireEvent.click(useOrigBtn);
+    });
     expect(useIntelligenceStore.getState().showBar).toBe(false);
+    expect(useIntelligenceStore.getState().enhancementError).toBeNull();
+    // Textarea was not overwritten with garbage
+    expect(mockApply).not.toHaveBeenCalled();
+  });
+
+  it("test_enhance_model_unreachable_shows_clear_error", async () => {
+    vi.spyOn(api, "post").mockResolvedValueOnce({
+      enhanced: "improve performance",
+      original: "improve performance",
+      changes: [],
+      model_used: "fallback",
+      error: "Enhancement unavailable (model server unreachable)",
+    });
+
+    act(() => {
+      useIntelligenceStore.setState({
+        showBar: true,
+        showDiff: false,
+        originalPrompt: "improve performance",
+        quality: { quality: "weak", issues: ["Too brief"], score: 0.2 },
+      });
+    });
+
+    const mockApply = vi.fn();
+    render(<PromptEnhancerBar currentPrompt="improve performance" onApplyEnhanced={mockApply} />);
+
+    // Trigger enhance
+    await act(async () => {
+      await useIntelligenceStore.getState().enhance("improve performance");
+    });
+
+    // Error card appears with clear message
+    expect(screen.getByTestId("prompt-enhancer-error-card")).toBeTruthy();
+    expect(screen.getByText("Enhancement unavailable (model server unreachable)")).toBeTruthy();
+    expect(screen.getByTestId("prompt-retry-button")).toBeTruthy();
+    expect(screen.getByTestId("prompt-use-original-button")).toBeTruthy();
   });
 });
+
 

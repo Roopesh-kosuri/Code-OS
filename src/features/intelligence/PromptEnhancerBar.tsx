@@ -1,5 +1,5 @@
 import React from "react";
-import { Sparkles, Check, RotateCcw, Edit3, X, Loader2 } from "lucide-react";
+import { Sparkles, Check, RotateCcw, Edit3, X, Loader2, AlertCircle } from "lucide-react";
 import { useIntelligenceStore } from "../../stores/intelligenceStore";
 import { useAIStore } from "../../stores/aiStore";
 
@@ -26,6 +26,7 @@ export const PromptEnhancerBar: React.FC<PromptEnhancerBarProps> = ({
     showBar,
     showDiff,
     isEnhancing,
+    enhancementError,
     enhance,
     accept,
     revert,
@@ -37,8 +38,66 @@ export const PromptEnhancerBar: React.FC<PromptEnhancerBarProps> = ({
     return null;
   }
 
-  if (!showDiff && !isEnhancing && (!showBar || quality?.quality === "good")) {
+  if (!showDiff && !isEnhancing && !enhancementError && (!showBar || quality?.quality === "good")) {
     return null;
+  }
+
+  // State 3: Error state when enhancement fails, times out, or model is unreachable
+  if (enhancementError) {
+    return (
+      <div
+        data-testid="prompt-enhancer-error-card"
+        className="mx-2 mb-1.5 px-3 py-2 bg-[#1a1b21]/95 border border-amber-500/40 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs shadow-md animate-fade-in backdrop-blur-xs text-on-surface"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <AlertCircle size={14} className="text-amber-400 shrink-0" />
+          <span className="text-on-surface text-xs font-medium truncate" title={enhancementError}>
+            {enhancementError}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-1.5 shrink-0 justify-end">
+          <button
+            type="button"
+            data-testid="prompt-retry-button"
+            onClick={() => void enhance(currentPrompt || originalPrompt, activeFile, workspace)}
+            disabled={isEnhancing}
+            className="flex items-center gap-1 px-2.5 py-1 rounded bg-surface-variant/80 hover:bg-surface-variant text-on-surface border border-white/10 text-xs font-medium transition-colors cursor-pointer disabled:opacity-50"
+          >
+            {isEnhancing ? (
+              <>
+                <Loader2 size={12} className="animate-spin" />
+                <span>Retrying…</span>
+              </>
+            ) : (
+              <>
+                <RotateCcw size={12} />
+                <span>Retry</span>
+              </>
+            )}
+          </button>
+
+          <button
+            type="button"
+            data-testid="prompt-use-original-button"
+            onClick={dismiss}
+            className="flex items-center gap-1 px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-medium transition-colors cursor-pointer"
+          >
+            <span>Use Original</span>
+          </button>
+
+          <button
+            type="button"
+            data-testid="prompt-dismiss-button"
+            onClick={dismiss}
+            className="p-1 text-on-surface-variant/70 hover:text-on-surface hover:bg-white/5 rounded transition-colors cursor-pointer"
+            title="Dismiss error"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // State 1: Subtle inline suggestion hint

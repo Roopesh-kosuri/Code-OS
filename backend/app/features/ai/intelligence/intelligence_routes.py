@@ -50,6 +50,7 @@ class PromptEnhanceResponse(BaseModel):
     original: str = Field(..., description="Original user prompt")
     changes: list[str] = Field(default_factory=list, description="Summary of enhancements made")
     model_used: str = Field(..., description="Identifier of model used")
+    error: Optional[str] = Field(default=None, description="Error message if enhancement failed or was unavailable")
 
 
 class PromptActionRequest(BaseModel):
