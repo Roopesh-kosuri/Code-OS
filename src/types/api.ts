@@ -19,6 +19,8 @@ export type OpenFile = {
   content: string;
   language: string;
   dirty: boolean;
+  hasDiskConflict?: boolean;
+  diskContent?: string;
 };
 
 export type ChatMessage = {

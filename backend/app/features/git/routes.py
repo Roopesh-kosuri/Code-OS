@@ -35,9 +35,13 @@ async def git_status(workspace: str = Query(...)) -> GitStatusResponse:
 
 
 @router.get("/diff", response_model=DiffResponse)
-async def git_diff(workspace: str = Query(...), path: str | None = Query(default=None)) -> DiffResponse:
+async def git_diff(
+    workspace: str = Query(...),
+    path: str | None = Query(default=None),
+    commit: str | None = Query(default=None),
+) -> DiffResponse:
     await _ensure_trusted(workspace)
-    return DiffResponse(diff=diff(workspace, path))
+    return DiffResponse(diff=diff(workspace, path, commit=commit))
 
 
 @router.post("/commit")

@@ -273,6 +273,11 @@ async def _discover_and_run_test_snapshot(workspace: str, touched_files: list[st
         if test_file:
             break
 
+    # Determine primary language of touched files
+    from .verifier_selector import detect_language, select_verifier
+    has_python = any(detect_language(tf) == "python" for tf in touched_files)
+    has_compiled = any(detect_language(tf) in ("cpp", "c", "rust", "go") for tf in touched_files)
+
     # If no specific test file matched, check if general test suite exists
     test_cmd: list[str] = []
     if test_file:
@@ -286,9 +291,12 @@ async def _discover_and_run_test_snapshot(workspace: str, touched_files: list[st
             npm_bin = "npm.cmd" if sys.platform == "win32" else "npm"
             test_cmd = [npm_bin, "test", "--", rel_test]
     else:
-        # Check if tests directory exists with pytest
-        if (ws_path / "tests").is_dir() or (ws_path / "test").is_dir():
-            test_cmd = [sys.executable, "-m", "pytest", "-q", "--tb=no"]
+        # Check if general python test suite exists ONLY if python files were touched AND python tests exist
+        if has_python and not has_compiled:
+            # Check if actual python test files exist in tests directory or workspace
+            py_tests = list(ws_path.glob("tests/**/test_*.py")) or list(ws_path.glob("tests/**/*_test.py")) or list(ws_path.glob("**/test_*.py"))
+            if py_tests and ((ws_path / "tests").is_dir() or (ws_path / "test").is_dir()):
+                test_cmd = [sys.executable, "-m", "pytest", "-q", "--tb=no"]
 
     if not test_cmd:
         return False, 0, 0, ""

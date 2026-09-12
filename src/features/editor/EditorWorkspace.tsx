@@ -17,6 +17,7 @@ import {
   Bug,
   Eye,
   GitBranch,
+  AlertTriangle,
 } from "lucide-react";
 import * as monaco from "monaco-editor";
 import Editor, { loader } from "@monaco-editor/react";
@@ -711,6 +712,14 @@ export function EditorWorkspace() {
                   <div className="w-1.5 h-1.5 rounded-full bg-primary ml-0.5 shrink-0" />
                 )}
 
+                {file.hasDiskConflict && (
+                  <span
+                    data-testid="disk-conflict-tab-badge"
+                    title="File changed on disk with unsaved changes"
+                    className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ml-0.5 shrink-0"
+                  />
+                )}
+
                 <span
                   role="button"
                   aria-label="Close tab"
@@ -830,6 +839,37 @@ export function EditorWorkspace() {
           </button>
         </div>
       </div>
+
+      {/* File Changed on Disk Conflict Banner (Phase 6.5 E2) */}
+      {activeFile?.hasDiskConflict && (
+        <div
+          data-testid="disk-conflict-indicator"
+          className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-2 flex items-center justify-between text-xs text-amber-200 z-30 animate-fade-in"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={15} className="text-amber-400 shrink-0" />
+            <span className="font-semibold">File changed on disk. You have unsaved changes.</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="reload-disk-btn"
+              onClick={() => void useEditorStore.getState().reloadFromDisk(activeFile.path)}
+              className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 font-medium text-[11px] border border-amber-500/40 cursor-pointer transition-colors"
+            >
+              Reload
+            </button>
+            <button
+              type="button"
+              data-testid="keep-mine-btn"
+              onClick={() => useEditorStore.getState().keepMine(activeFile.path)}
+              className="px-2.5 py-1 rounded bg-white/5 hover:bg-white/10 text-on-surface font-medium text-[11px] border border-white/10 cursor-pointer transition-colors"
+            >
+              Keep mine
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Editor Canvas Area (with Markdown Preview Split Support) */}
       <div

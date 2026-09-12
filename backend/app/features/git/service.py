@@ -44,10 +44,22 @@ def status(workspace: str) -> dict[str, object]:
     }
 
 
-def diff(workspace: str, path: str | None = None) -> str:
+def diff(workspace: str, path: str | None = None, commit: str | None = None) -> str:
     repo = repo_for(workspace)
+    if commit:
+        try:
+            args = [f"{commit}^!"]
+            if path:
+                args.extend(["--", path])
+            return repo.git.diff(*args)
+        except Exception:
+            try:
+                return repo.git.show(commit, "--format=", *(["--", path] if path else []))
+            except Exception:
+                return ""
     args = ["--", path] if path else []
     return repo.git.diff(*args)
+
 
 
 DANGEROUS_PATTERNS = [

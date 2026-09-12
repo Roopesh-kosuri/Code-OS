@@ -28,6 +28,9 @@ type EditorState = {
   markerStats: { errors: number; warnings: number };
   setCursorPosition: (pos: { line: number; col: number }) => void;
   setMarkerStats: (stats: { errors: number; warnings: number }) => void;
+  handleDiskFileChange: (filePath: string, newContent?: string) => Promise<void>;
+  reloadFromDisk: (filePath: string) => Promise<void>;
+  keepMine: (filePath: string) => void;
 };
 
 function filename(filePath: string): string {
@@ -221,9 +224,145 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       console.error("Failed to load editor settings:", error);
     }
   },
-  toggleSplit: (filePath) => set({ splitPath: filePath })
+  toggleSplit: (filePath) => set({ splitPath: filePath }),
+
+  handleDiskFileChange: async (filePath: string, newContent?: string) => {
+    const norm = (p: string) => p.replace(/\\/g, "/");
+    const targetNorm = norm(filePath);
+    const targetName = filePath.split(/[\\/]/).pop();
+
+    const file = get().openFiles.find((f) => {
+      const fNorm = norm(f.path);
+      return (
+        fNorm === targetNorm ||
+        fNorm.endsWith("/" + targetNorm) ||
+        targetNorm.endsWith("/" + fNorm) ||
+        (targetName && f.name === targetName)
+      );
+    });
+    if (!file) return;
+
+    let content = newContent;
+    if (content === undefined) {
+      const workspace = useWorkspaceStore.getState().currentWorkspace;
+      if (!workspace) return;
+      try {
+        const res = await api.get<{ path: string; content: string; language: string }>("/api/files/read", {
+          workspace: workspace.path,
+          path: file.path,
+        });
+        content = res.content;
+      } catch {
+        return;
+      }
+    }
+
+    if (content === file.content) {
+      if (file.hasDiskConflict) {
+        set((state) => ({
+          openFiles: state.openFiles.map((f) =>
+            f.path === file.path ? { ...f, hasDiskConflict: false, diskContent: undefined } : f
+          ),
+        }));
+      }
+      return;
+    }
+
+    // Dirty-state reconciliation (Phase 6.5 E2)
+    if (!file.dirty) {
+      // Tab is clean -> live update buffer within ~1s without close/reopen
+      set((state) => ({
+        openFiles: state.openFiles.map((f) =>
+          f.path === file.path
+            ? { ...f, content: content!, dirty: false, hasDiskConflict: false, diskContent: undefined }
+            : f
+        ),
+      }));
+    } else {
+      // Tab has unsaved user changes -> DO NOT CLOBBER buffer; set conflict flag
+      set((state) => ({
+        openFiles: state.openFiles.map((f) =>
+          f.path === file.path
+            ? { ...f, hasDiskConflict: true, diskContent: content }
+            : f
+        ),
+      }));
+    }
+  },
+
+  reloadFromDisk: async (filePath: string) => {
+    const norm = (p: string) => p.replace(/\\/g, "/");
+    const targetNorm = norm(filePath);
+    const file = get().openFiles.find((f) => norm(f.path) === targetNorm || f.path === filePath);
+    if (!file) return;
+
+    if (file.diskContent !== undefined) {
+      set((state) => ({
+        openFiles: state.openFiles.map((f) =>
+          f.path === file.path
+            ? { ...f, content: file.diskContent!, dirty: false, hasDiskConflict: false, diskContent: undefined }
+            : f
+        ),
+      }));
+      return;
+    }
+
+    const workspace = useWorkspaceStore.getState().currentWorkspace;
+    if (!workspace) return;
+    try {
+      const res = await api.get<{ path: string; content: string; language: string }>("/api/files/read", {
+        workspace: workspace.path,
+        path: file.path,
+      });
+      set((state) => ({
+        openFiles: state.openFiles.map((f) =>
+          f.path === file.path
+            ? { ...f, content: res.content, dirty: false, hasDiskConflict: false, diskContent: undefined }
+            : f
+        ),
+      }));
+    } catch (err) {
+      console.error("Failed to reload file from disk:", err);
+    }
+  },
+
+  keepMine: (filePath: string) => {
+    const norm = (p: string) => p.replace(/\\/g, "/");
+    const targetNorm = norm(filePath);
+    set((state) => ({
+      openFiles: state.openFiles.map((f) =>
+        norm(f.path) === targetNorm || f.path === filePath
+          ? { ...f, hasDiskConflict: false, diskContent: undefined }
+          : f
+      ),
+    }));
+  },
 }));
 
 if (typeof window !== "undefined") {
   (window as any).useEditorStore = useEditorStore;
+
+  const onFileChange = (e: any) => {
+    const detail = e.detail;
+    if (!detail) return;
+    if (typeof detail === "string") {
+      void useEditorStore.getState().handleDiskFileChange(detail);
+    } else if (typeof detail === "object" && detail.path) {
+      void useEditorStore.getState().handleDiskFileChange(detail.path, detail.content);
+    }
+  };
+
+  window.addEventListener("code-os:file-changed", onFileChange);
+  window.addEventListener("code-os:file-watcher-event", onFileChange);
+  window.addEventListener("code-os:proposal-applied", (e: any) => {
+    const detail = e.detail;
+    if (typeof detail === "string") {
+      void useEditorStore.getState().handleDiskFileChange(detail);
+    } else if (detail && detail.path) {
+      void useEditorStore.getState().handleDiskFileChange(detail.path);
+    } else if (detail && Array.isArray(detail.paths)) {
+      detail.paths.forEach((p: string) => void useEditorStore.getState().handleDiskFileChange(p));
+    }
+  });
 }
+

@@ -21,6 +21,7 @@ import {
 import { api } from "../../lib/api";
 import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { useBackendStore } from "../../stores/backendStore";
+import { MonacoDiffViewer, getLanguageFromPath } from "../editor/MonacoDiffModal";
 
 
 type FileChange = {
@@ -448,15 +449,13 @@ export function DiffViewer() {
                             <pre className="whitespace-pre text-on-surface">{change.updated}</pre>
                           </div>
                         ) : (
-                          <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-surface-variant font-code-sm text-code-sm font-mono">
-                            <div className="p-4 bg-error/5 max-h-72 overflow-y-auto">
-                              <div className="text-error font-bold uppercase tracking-wider text-[10px] mb-2">Original Code</div>
-                              <pre className="whitespace-pre text-on-surface-variant">{change.original}</pre>
-                            </div>
-                            <div className="p-4 bg-primary-container/5 max-h-72 overflow-y-auto">
-                              <div className="text-primary-container font-bold uppercase tracking-wider text-[10px] mb-2">Proposed Changes</div>
-                              <pre className="whitespace-pre text-on-surface">{change.updated}</pre>
-                            </div>
+                          <div className="h-72 p-1.5 bg-[#0d0e11]">
+                            <MonacoDiffViewer
+                              original={change.original}
+                              modified={change.updated}
+                              language={getLanguageFromPath(change.path)}
+                              height="100%"
+                            />
                           </div>
                         )}
                       </div>

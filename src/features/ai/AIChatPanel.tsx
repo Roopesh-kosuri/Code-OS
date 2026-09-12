@@ -40,6 +40,7 @@ import { DockedApprovalCard } from "./DockedApprovalCard";
 import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink, AlertTriangle, Globe } from "lucide-react";
 import { PromptEnhancerBar } from "../intelligence/PromptEnhancerBar";
 import { useIntelligenceStore } from "../../stores/intelligenceStore";
+import { MonacoDiffModal, type DiffData } from "../editor/MonacoDiffModal";
 
 function parseProposals(text: string) {
   const proposals: { path: string; original: string; updated: string }[] = [];
@@ -106,7 +107,16 @@ function ProposalCard({ path, original, updated }: { path: string; original: str
   };
 
   const handleOpenDiff = () => {
-    window.dispatchEvent(new CustomEvent("code-os:switch-top-view", { detail: "proposals" }));
+    window.dispatchEvent(
+      new CustomEvent("code-os:open-diff", {
+        detail: {
+          path,
+          original,
+          updated,
+          title: `Proposal: ${path.split(/[\\/]/).pop() ?? path}`,
+        },
+      })
+    );
   };
 
   return (
@@ -222,6 +232,17 @@ export function AIChatPanel() {
   const [isListening, setIsListening] = useState(false);
   const [clarificationInput, setClarificationInput] = useState("");
   const [isVerifyingBrowser, setIsVerifyingBrowser] = useState(false);
+  const [diffModalData, setDiffModalData] = useState<DiffData | null>(null);
+
+  useEffect(() => {
+    const handleOpenDiffEvent = (e: any) => {
+      if (e.detail) {
+        setDiffModalData(e.detail);
+      }
+    };
+    window.addEventListener("code-os:open-diff", handleOpenDiffEvent);
+    return () => window.removeEventListener("code-os:open-diff", handleOpenDiffEvent);
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -1048,11 +1069,23 @@ export function AIChatPanel() {
                             {cmd.success && (
                               <button
                                 type="button"
-                                onClick={() =>
+                                data-testid="diff-link"
+                                onClick={() => {
+                                  const orig = (cmd as any).original ?? "";
+                                  const upd = (cmd as any).updated ?? "";
+                                  const diffText = (cmd as any).diff ?? "";
                                   window.dispatchEvent(
-                                    new CustomEvent("code-os:switch-top-view", { detail: "proposals" })
-                                  )
-                                }
+                                    new CustomEvent("code-os:open-diff", {
+                                      detail: {
+                                        path: filePath,
+                                        original: orig,
+                                        updated: upd,
+                                        diff: diffText,
+                                        title: `Approved Edit: ${filePath}`,
+                                      },
+                                    })
+                                  );
+                                }}
                                 className="text-[10.5px] text-primary hover:underline flex items-center gap-1 cursor-pointer shrink-0 ml-2 font-sans font-medium interactive-scale"
                               >
                                 <ExternalLink size={11} /> Diff
@@ -1128,22 +1161,59 @@ export function AIChatPanel() {
                       </span>
                     </div>
 
-                    {message.checkpoint.undone || undoFeedback[message.checkpoint.commit_hash]?.startsWith("✓") ? (
-                      <span className="text-[10.5px] text-emerald-300 font-semibold flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                        <Check size={11} /> Turn Undone
-                      </span>
-                    ) : (
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        disabled={undoingHash === message.checkpoint.commit_hash}
-                        onClick={() => handleUndoTurn(message.checkpoint!)}
-                        className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-500/40 text-on-surface hover:text-amber-200 text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 interactive-scale"
-                        title="Revert only the files modified during this turn back to pre-turn state"
+                        data-testid="checkpoint-diff-btn"
+                        onClick={async () => {
+                          const cp = message.checkpoint!;
+                          const workspace = useWorkspaceStore.getState().currentWorkspace;
+                          let diffText = "";
+                          if (workspace && cp.commit_hash) {
+                            try {
+                              const res = await api.get<{ diff: string }>("/api/git/diff", {
+                                workspace: workspace.path,
+                                commit: cp.commit_hash,
+                              });
+                              diffText = res.diff || "";
+                            } catch {}
+                          }
+                          window.dispatchEvent(
+                            new CustomEvent("code-os:open-diff", {
+                              detail: {
+                                path: cp.touched_files[0] || "checkpoint",
+                                original: "",
+                                updated: "",
+                                diff: diffText,
+                                title: `Checkpoint ${cp.commit_hash.slice(0, 7)} Diff (${cp.touched_files.length} file${cp.touched_files.length > 1 ? "s" : ""})`,
+                              },
+                            })
+                          );
+                        }}
+                        className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 hover:border-primary/40 text-on-surface hover:text-primary text-[11px] font-medium transition-all flex items-center gap-1 cursor-pointer interactive-scale"
+                        title="Inspect the before/after diff for files changed in this turn"
                       >
-                        <RotateCcw size={11} className={undoingHash === message.checkpoint.commit_hash ? "animate-spin text-amber-400" : "text-amber-400"} />
-                        <span>{undoingHash === message.checkpoint.commit_hash ? "Reverting..." : "Undo turn"}</span>
+                        <ExternalLink size={11} />
+                        <span>Diff</span>
                       </button>
-                    )}
+
+                      {message.checkpoint.undone || undoFeedback[message.checkpoint.commit_hash]?.startsWith("✓") ? (
+                        <span className="text-[10.5px] text-emerald-300 font-semibold flex items-center gap-1 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                          <Check size={11} /> Turn Undone
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={undoingHash === message.checkpoint.commit_hash}
+                          onClick={() => handleUndoTurn(message.checkpoint!)}
+                          className="px-2.5 py-1 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-500/40 text-on-surface hover:text-amber-200 text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50 interactive-scale"
+                          title="Revert only the files modified during this turn back to pre-turn state"
+                        >
+                          <RotateCcw size={11} className={undoingHash === message.checkpoint.commit_hash ? "animate-spin text-amber-400" : "text-amber-400"} />
+                          <span>{undoingHash === message.checkpoint.commit_hash ? "Reverting..." : "Undo turn"}</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1454,6 +1524,9 @@ export function AIChatPanel() {
           <span className="font-caption text-[10px] text-outline-variant">AI generated code may contain errors.</span>
         </div>
       </div>
+
+      {/* Monaco Side-by-Side Diff Modal (Phase 6.5 E1) */}
+      <MonacoDiffModal data={diffModalData} onClose={() => setDiffModalData(null)} />
     </section>
   );
 }

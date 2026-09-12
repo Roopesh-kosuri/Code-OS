@@ -245,11 +245,23 @@ def _handle_edit_file(workspace: str, arguments: dict, staged_changes: list) -> 
         logger.debug("Ghost text emit_diff_chunks: %s", exc)
 
     action = "create new file" if not original else "edit"
+    
+    # Language-aware verifier selection & activity logging (Phase 6.5)
+    verifier_hint = ""
+    try:
+        from ..harness.verifier_selector import select_verifier
+        chosen = select_verifier(workspace, rel_path, log_choice=True)
+        if chosen:
+            verifier_hint = f"\n[Verifier Guidance]: For {rel_path} ({chosen['language']}), verify via {chosen['tool']} ({chosen['verifier']}): {chosen['reason']}"
+    except Exception as v_err:
+        logger.debug("verifier_selector failed in edit_file: %s", v_err)
+
     return ToolResult(
         tool_name="edit_file",
         success=True,
-        output=f"✓ Staged {action}: {rel_path} ({len(updated)} chars)"
+        output=f"✓ Staged {action}: {rel_path} ({len(updated)} chars){verifier_hint}"
     )
+
 
 
 def _handle_run_command(workspace: str, arguments: dict[str, Any]) -> ToolResult:
@@ -718,6 +730,11 @@ IMPORTANT RULES:
 - To inspect visual layout, UI designs, or test if generated web pages look right, use take_screenshot with a specific question.
 - Do NOT guess or hallucinate file contents or module paths — read them with read_file.
 {rules_edit}
+- VERIFICATION PER LANGUAGE:
+  * For Python files with existing test suites, verify using run_test (pytest).
+  * NEVER run pytest on non-Python (C/C++, Rust, Go, etc.) or test-less projects!
+  * For C/C++, use get_diagnostics or syntax check (g++ -fsyntax-only).
+  * Always follow the [Verifier Guidance] provided after edit_file.
 - When you are finished (all changes made, no more tools needed), output [DONE] on its own line.
 - You can make multiple tool calls in a single response.
 - Maximum 5 tool calls per response, maximum 6 rounds of tool use."""

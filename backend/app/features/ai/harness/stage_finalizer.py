@@ -233,7 +233,17 @@ async def _finalize_staged_changes(
                 apply_proposal_fn = _get_apply_proposal()
                 await apply_proposal_fn(proposal_id)
                 yield _sse_status("tool", f"Approved: Applied changes to {summary_paths}", tool="edit_file", detail=summary_paths)
-                yield _sse_command_result(f"edit {summary_paths}", f"Successfully applied changes to {summary_paths} (Proposal: {proposal_id})", 0, True)
+                yield _sse_command_result(
+                    f"edit {summary_paths}",
+                    f"Successfully applied changes to {summary_paths} (Proposal: {proposal_id})",
+                    0,
+                    True,
+                    proposal_id=proposal_id,
+                    diff=diff_text,
+                    changes=[{"path": c.path, "original": c.original, "updated": c.updated} for c in staged_changes],
+                    original=staged_changes[0].original if staged_changes else "",
+                    updated=staged_changes[0].updated if staged_changes else "",
+                )
 
                 # Regression Guard: Post-apply test snapshot
                 if ran_test_before:
