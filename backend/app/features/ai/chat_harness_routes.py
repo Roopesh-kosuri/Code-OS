@@ -222,9 +222,16 @@ async def respond_to_agent_question(action_id: str, payload: UserAnswerRequest) 
 @router.post("/chat-agent/undo-turn", response_model=UndoTurnResponse)
 async def undo_turn_checkpoint(payload: UndoTurnRequest) -> UndoTurnResponse:
     """Restore ONLY the agent-touched files from a pre-turn checkpoint commit."""
-    from .chat_harness import undo_turn_files
+    from .chat_harness import undo_turn_files, _append_activity_log
     
     success, message, restored = undo_turn_files(payload.workspace, payload.commit_hash, payload.touched_files)
+    _append_activity_log(payload.workspace, {
+        "action_type": "undo_turn",
+        "commit_hash": payload.commit_hash,
+        "restored_files": restored,
+        "success": success,
+        "message": message,
+    })
     if not success:
         raise HTTPException(status_code=400, detail=message)
     return UndoTurnResponse(success=True, message=message, restored_files=restored)

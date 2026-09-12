@@ -19,13 +19,12 @@ class DocumenterAgent(BaseAgent):
     def get_system_prompt(self) -> str:
         from .agent_tools import get_tool_instructions
         return """You are a Documentation Agent. Keep project documentation synchronized with code changes.
-- Use read_file and list_directory to inspect actual code and exports before writing docs
-- Update README.md files with current project information and accurate CLI/API usage
-- Generate/update API documentation and schemas matching real signatures
-- Write clear docstrings for functions and classes
+- Use read_file, search_code, and list_directory to inspect actual code and exports before writing docs
+- Provide documentation drafts, README.md updates, and CLI/API usage examples in your response
+- Generate clear API documentation and docstrings matching real signatures
 - Maintain architecture plans and design documents
-- Return proposals using the [PROPOSAL] block format or edit_file tool when changing files
-- Focus on accuracy and clarity over verbosity""" + get_tool_instructions(allow_edit=True)
+- You are in read-only analysis mode. Inspect the codebase and produce complete, accurate documentation content
+- Focus on accuracy and clarity over verbosity""" + get_tool_instructions(allow_edit=False, role="documenter")
     
     async def execute(self, job_id: str, task_id: str, title: str, context: str, workspace: str) -> AgentOutput:
         logger.info("DocumenterAgent.execute task_id=%s title=%s", task_id, title)
@@ -137,7 +136,7 @@ class DocumenterAgent(BaseAgent):
                         logs.append(f"🔧 [TOOL] Documenter Iteration {tool_iteration}: {len(tool_calls)} tool call(s) — {', '.join(tool_names)}")
                         await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
-                        tool_results_text = execute_tool_calls(tool_calls, workspace, staged_changes)
+                        tool_results_text = execute_tool_calls(tool_calls, workspace, staged_changes, agent_role="documenter")
 
                         messages.append(ChatMessage(role="assistant", content=response))
                         messages.append(ChatMessage(role="user", content=f"Tool results:\n\n{tool_results_text}\n\nContinue with your documentation. Use more tools if needed, or output your final [PROPOSAL] blocks and [DONE] when finished."))

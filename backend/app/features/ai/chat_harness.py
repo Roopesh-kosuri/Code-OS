@@ -611,16 +611,42 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "ask_user"]
                 if memory_write_disabled:
                     active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "memory_write"]
+
+                # Intent-based dynamic tool shrinking (Phase 6.3)
+                try:
+                    from .harness.intent_tool_selector import detect_task_intent, filter_tools_by_intent
+                    active_file = (request.attached_paths[0] if request.attached_paths else None)
+                    task_intent = detect_task_intent(user_query, active_file=active_file, rag_context=rag_snippets if 'rag_snippets' in locals() else None)
+                    if task_intent != "general":
+                        tools_before_count = len(active_tools)
+                        active_tools = filter_tools_by_intent(active_tools, task_intent)
+                        _append_activity_log(workspace, {
+                            "action_type": "intent_tool_selection",
+                            "intent": task_intent,
+                            "tools_before": tools_before_count,
+                            "tools_after": len(active_tools),
+                        })
+                except Exception as exc:
+                    logger.debug("chat_harness: intent-based tool selection exception: %s", exc)
             else:
                 active_tools = None
 
             # Pre-flight payload governance (protect against Groq 8.8k TPM limits, etc.)
-            effective_messages, active_tools, was_governed, gov_reason = govern_payload(
+            gov_res = govern_payload(
                 effective_messages,
                 active_tools,
                 provider=effective_prov_key,
                 model=chat_request.model,
+                workspace=workspace,
             )
+            effective_messages, active_tools, was_governed, gov_reason = gov_res
+            if getattr(gov_res, "failed_closed", False) or "fail_closed" in gov_reason:
+                err_msg = f"Payload governance fail-closed: {gov_reason}"
+                logger.error("chat_harness: %s", err_msg)
+                yield _sse_error(err_msg)
+                yield _sse_done(False, err_msg)
+                return
+
             if was_governed:
                 logger.info(
                     "chat_harness: Pre-flight payload governed for provider=%s model=%s: %s",

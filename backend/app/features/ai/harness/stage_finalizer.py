@@ -213,9 +213,11 @@ async def _finalize_staged_changes(
                 # Pre-apply checkpoint commit
                 touched_paths = [c.path for c in staged_changes]
                 new_init, commit_h, err = _ensure_git_checkpoint(workspace, turn_number, touched_files=touched_paths)
-                if err and "sensitive file" in err.lower():
-                    yield _sse_error(err)
-                    yield _sse_done(False, err)
+                if not commit_h or err:
+                    chk_err = f"Cannot apply edit_file: Checkpoint creation failed: {err or 'Missing git checkpoint commit'}"
+                    logger.error("stage_finalizer: %s", chk_err)
+                    yield _sse_error(chk_err)
+                    yield _sse_done(False, chk_err)
                     yield _sse_event("finalization", {"success": False, "reason": "checkpoint_failed"})
                     return
                 if new_init:

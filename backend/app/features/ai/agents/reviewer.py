@@ -44,7 +44,7 @@ Output format:
   ],
   "approved": false,
   "summary": "Overall assessment"
-}""" + get_tool_instructions(allow_edit=False)
+}""" + get_tool_instructions(allow_edit=False, role="reviewer")
     
     async def execute(self, job_id: str, task_id: str, title: str, context: str, workspace: str) -> AgentOutput:
         logger.info("ReviewerAgent.execute task_id=%s title=%s", task_id, title)
@@ -186,7 +186,7 @@ Output format:
                         logs.append(f"🔧 [TOOL] Reviewer Iteration {tool_iteration}: {len(tool_calls)} tool call(s) — {', '.join(tool_names)}")
                         await event_bus.publish("agent_log", {"job_id": job_id, "task_id": task_id, "message": logs[-1]})
 
-                        tool_results_text = execute_tool_calls(tool_calls, workspace, [])
+                        tool_results_text = execute_tool_calls(tool_calls, workspace, [], agent_role="reviewer")
 
                         # Compact older tool messages to prevent quadratic token growth
                         if len(messages) > 4:

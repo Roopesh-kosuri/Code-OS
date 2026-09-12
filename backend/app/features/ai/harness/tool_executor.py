@@ -591,6 +591,49 @@ CORE_CODING_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_diagnostics",
+            "description": "Retrieve compiler, linter, syntax, and type diagnostics for a specific file in the workspace without running the full test suite.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "Relative path to the workspace file to inspect for diagnostics.",
+                    },
+                },
+                "required": ["file_path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "server_session",
+            "description": "Manage background server processes and perform live HTTP requests for full-stack API verification.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["start", "request", "stop", "list"],
+                        "description": "Action to perform: 'start', 'request', 'stop', or 'list'.",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Server startup command (e.g. 'python -m uvicorn app.main:app --port 8000').",
+                    },
+                    "port": {
+                        "type": "integer",
+                        "description": "Port to bind or hit.",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
 
 # Slim coding tools for strict TPM budgets (e.g. Groq on_demand)
@@ -867,6 +910,30 @@ COMPUTER_TOOLS = [
 # Combined backwards-compatible tools list
 OPENAI_HARNESS_TOOLS = CORE_CODING_TOOLS + BROWSER_TOOLS + COMPUTER_TOOLS
 
+# Heavy tools reserved strictly for Tier 2+
+HEAVY_TOOLS = {
+    "find_references",
+    "go_to_definition",
+    "get_diagnostics",
+    "server_session",
+    "browser_open",
+    "browser_screenshot",
+    "browser_console_logs",
+    "browser_network_errors",
+    "browser_click",
+    "browser_type",
+    "browser_wait_for",
+    "browser_scroll",
+    "browser_close",
+    "screen_screenshot",
+    "mouse_click",
+    "keyboard_type",
+    "hotkey",
+    "open_app",
+    "list_windows",
+    "focus_window",
+}
+
 
 def get_tools_for_tier(
     tier: int,
@@ -877,10 +944,13 @@ def get_tools_for_tier(
 ) -> list[dict[str, Any]]:
     """Return filtered tool definitions appropriate for the effort tier and provider budget.
 
-    Chat tier excludes browser and desktop computer tools by default to save ~1,450 tokens
-    and prevent weak models from hallucinating desktop/browser interactions on document tasks.
+    Tier 0: Pure chat, zero tools.
+    Tier 1: Quick Task — strictly excludes heavy tools (browser_*, computer_*,
+            deep refactoring tools like find_references, go_to_definition, get_diagnostics).
+    Tier 2+: Code generation / deep tasks — includes deep refactoring and diagnostics,
+             and browser/computer tools if explicitly enabled.
     """
-    if tier == 0:
+    if tier <= 0:
         return []
 
     is_groq = str(provider).lower() == "groq"
@@ -889,12 +959,32 @@ def get_tools_for_tier(
     else:
         tools = list(CORE_CODING_TOOLS)
 
+    if tier == 1:
+        # Tier 1 strictly excludes heavy tools (deep refactoring tools, server session, computer tools)
+        tools = [
+            t for t in tools
+            if t.get("function", {}).get("name") not in HEAVY_TOOLS
+            and not t.get("function", {}).get("name", "").startswith("computer_")
+            and not t.get("function", {}).get("name", "").startswith("screen_")
+            and t.get("function", {}).get("name") not in ("mouse_click", "keyboard_type", "hotkey", "open_app", "list_windows", "focus_window")
+        ]
+        if enable_browser:
+            tools.extend(BROWSER_TOOLS)
+        return tools
+
+    # Tier 2+ allows heavy tools and optional browser / desktop computer tools
     if enable_browser:
         tools.extend(BROWSER_TOOLS)
     if enable_computer:
         tools.extend(COMPUTER_TOOLS)
 
     return tools
+
+
+def _handle_get_diagnostics(workspace: str, arguments: dict) -> ToolResult:
+    """Retrieve compiler, syntax, and type diagnostics for a specific file."""
+    from app.features.ai.agents.agent_tools import _handle_get_diagnostics as _agt_get_diagnostics
+    return _agt_get_diagnostics(workspace, arguments)
 
 def _is_command_malicious(command: str) -> bool:
     """Detect injection / remote code execution payloads in terminal commands."""

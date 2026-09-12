@@ -39,6 +39,7 @@ from .tool_executor import (
     EDIT_APPROVAL_TIMEOUT_SECONDS, APPROVAL_TIMEOUT_SECONDS, COMPACTION_THRESHOLD_TURNS,
     _clean_rel_path, _read_file_cached, _find_mismatch_context, _validate_smart_edit,
     _handle_append_file, _handle_list_tests, _handle_run_single_test,
+    _handle_get_diagnostics, HEAVY_TOOLS,
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
@@ -58,7 +59,10 @@ from .stage_finalizer import _finalize_staged_changes
 from .duo_escalator import _escalate_to_duo
 from .payload_governor import (
     govern_payload, estimate_request_tokens, _truncate_attachment_in_text,
+    estimate_payload_breakdown, GovernanceResult,
 )
+from .diagnostics_service import DiagnosticsService, run_diagnostics
+from .intent_tool_selector import detect_task_intent, filter_tools_by_intent
 
 __all__ = [
     "is_conversational_turn",

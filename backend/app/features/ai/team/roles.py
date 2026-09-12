@@ -175,7 +175,7 @@ class BaseTeamRole(ABC):
 class ArchitectRole(BaseTeamRole):
     """Architect Role: Read-only workspace inspection and planning ONLY."""
     role = TeamRole.ARCHITECT
-    allowed_tools = {"read_file", "list_directory", "search_code"}
+    allowed_tools = {"read_file", "list_directory", "search_code", "semantic_search"}
 
 
 class CoderRole(BaseTeamRole):
@@ -187,7 +187,13 @@ class CoderRole(BaseTeamRole):
 class ReviewerRole(BaseTeamRole):
     """Reviewer Role: Read-only audits using file reading, searching, git diff, and git log."""
     role = TeamRole.REVIEWER
-    allowed_tools = {"read_file", "list_directory", "search_code", "git_diff", "git_log"}
+    allowed_tools = {"read_file", "list_directory", "search_code", "semantic_search", "git_diff", "git_log"}
+
+
+class DocumenterRole(BaseTeamRole):
+    """Documenter Role: Read-only workspace inspection and documentation generation."""
+    role = TeamRole.DOCUMENTER
+    allowed_tools = {"read_file", "list_directory", "search_code", "semantic_search"}
 
 
 class TesterRole(BaseTeamRole):
@@ -424,6 +430,7 @@ ROLE_REGISTRY: dict[TeamRole, type[BaseTeamRole]] = {
     TeamRole.REVIEWER: ReviewerRole,
     TeamRole.TESTER: TesterRole,
     TeamRole.DEVOPS: DevOpsRole,
+    TeamRole.DOCUMENTER: DocumenterRole,
 }
 
 _CUSTOM_ROLE_REGISTRY: dict[str, CustomTeamRole] = {}

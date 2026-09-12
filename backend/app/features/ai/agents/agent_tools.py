@@ -305,6 +305,23 @@ def _handle_run_command(workspace: str, arguments: dict[str, Any]) -> ToolResult
         return ToolResult(tool_name="run_command", success=False, output="", error=str(exc))
 
 
+def _handle_get_diagnostics(workspace: str, arguments: dict[str, Any]) -> ToolResult:
+    """Retrieve compiler, syntax, and type diagnostics for a specific file."""
+    file_path = arguments.get("file_path") or arguments.get("path") or ""
+    if not file_path:
+        return ToolResult(tool_name="get_diagnostics", success=False, output="", error="Missing required parameter: file_path")
+
+    try:
+        from ..harness.diagnostics_service import DiagnosticsService
+        issues, msg = DiagnosticsService.get_diagnostics(workspace, file_path)
+        if issues:
+            return ToolResult(tool_name="get_diagnostics", success=True, output=json.dumps(issues, indent=2))
+        else:
+            return ToolResult(tool_name="get_diagnostics", success=True, output=msg or "Diagnostics unavailable")
+    except Exception as exc:
+        return ToolResult(tool_name="get_diagnostics", success=False, output="", error=f"Diagnostics error: {exc}")
+
+
 
 def summarize_test_output(raw_output: str, max_chars: int = 1000) -> str:
     """
@@ -485,7 +502,49 @@ AGENT_TOOLS = {
             "question": "Specific visual question to inspect.",
         },
     },
+    "get_diagnostics": {
+        "description": "Retrieve compiler, linter, syntax, and type diagnostics for a specific file in the workspace without running the full test suite.",
+        "parameters": {
+            "file_path": "Relative path to the workspace file to inspect for compiler/type errors.",
+        },
+    },
 }
+
+# ── Role-based manifests & tool permissions (Phase 6.3) ───────────────────────
+ROLE_MANIFESTS: dict[str, list[str]] = {
+    "reviewer": ["read_file", "search_code", "semantic_search", "list_directory"],
+    "documenter": ["read_file", "search_code", "semantic_search", "list_directory"],
+    "planner": ["read_file", "search_code", "semantic_search", "list_directory"],
+    "architect": ["read_file", "search_code", "semantic_search", "list_directory"],
+    "tester": ["read_file", "search_code", "semantic_search", "list_directory", "run_test", "list_tests", "run_single_test"],
+    "coder": [
+        "read_file", "search_code", "semantic_search", "list_directory",
+        "edit_file", "append_file", "run_command", "run_test", "list_tests",
+        "run_single_test", "get_diagnostics", "take_screenshot", "inspect_visuals",
+    ],
+}
+
+
+def get_role_manifest(role: str) -> list[str]:
+    """Retrieve allowed tool names for a specific agent role."""
+    r = (role or "").strip().lower()
+    if any(alias in r for alias in ("review", "reviewer")):
+        return list(ROLE_MANIFESTS["reviewer"])
+    if any(alias in r for alias in ("document", "documenter", "documentation")):
+        return list(ROLE_MANIFESTS["documenter"])
+    if any(alias in r for alias in ("planner", "architect", "lead task planner")):
+        return list(ROLE_MANIFESTS["planner"])
+    if any(alias in r for alias in ("tester", "test")):
+        return list(ROLE_MANIFESTS["tester"])
+    if any(alias in r for alias in ("coder", "coding", "developer")):
+        return list(ROLE_MANIFESTS["coder"])
+    return list(ROLE_MANIFESTS["coder"])
+
+
+def is_tool_allowed_for_role(tool_name: str, role: str) -> bool:
+    """Check if tool is permitted for a given role."""
+    allowed = get_role_manifest(role)
+    return tool_name in allowed
 
 
 # ── Parser ───────────────────────────────────────────────────────────────────
@@ -550,10 +609,12 @@ def execute_tool_calls(
     calls: list[ToolCall],
     workspace: str,
     staged_changes: list,
+    agent_role: str | None = None,
 ) -> str:
     """Execute parsed tool calls and return formatted results for LLM injection.
 
     *staged_changes* is a mutable list that edit_file appends FileChange objects to.
+    *agent_role* if specified enforces role-level tool permissions (e.g. read-only for reviewer/documenter).
     """
     if not calls:
         return ""
@@ -561,7 +622,18 @@ def execute_tool_calls(
     results: list[str] = []
 
     for call in calls:
-        logger.info("agent_tools: executing %s(%s)", call.name, list(call.arguments.keys()))
+        logger.info("agent_tools: executing %s(%s) [role=%s]", call.name, list(call.arguments.keys()), agent_role)
+
+        # Enforce role tool permissions if role is specified
+        if agent_role and not is_tool_allowed_for_role(call.name, agent_role):
+            allowed = get_role_manifest(agent_role)
+            err_msg = (
+                f"Permission denied: role '{agent_role}' is not allowed to use tool '{call.name}'. "
+                f"This role is restricted to read-only tools: {sorted(allowed)}"
+            )
+            logger.warning("agent_tools permission denied: %s", err_msg)
+            results.append(f"[TOOL_RESULT: {call.name}]\nERROR: {err_msg}\n[/TOOL_RESULT]")
+            continue
 
         if call.name == "read_file":
             result = _handle_read_file(workspace, call.arguments)
@@ -575,6 +647,8 @@ def execute_tool_calls(
             result = _handle_edit_file(workspace, call.arguments, staged_changes)
         elif call.name == "run_command":
             result = _handle_run_command(workspace, call.arguments)
+        elif call.name == "get_diagnostics":
+            result = _handle_get_diagnostics(workspace, call.arguments)
         else:
             result = ToolResult(tool_name=call.name, success=False, output="", error=f"Unknown tool: {call.name}")
 
@@ -588,16 +662,26 @@ def execute_tool_calls(
 
 # ── Prompt Builder ───────────────────────────────────────────────────────────
 
-def get_tool_instructions(allow_edit: bool = True) -> str:
+def get_tool_instructions(allow_edit: bool = True, role: str | None = None) -> str:
     """Return the tool-use instructions to append to the agent system prompt."""
+    is_read_only = (not allow_edit) or (role and role.lower() in ("reviewer", "documenter", "planner", "architect"))
+    effective_allow_edit = not is_read_only
+
     edit_doc = """
 **edit_file** — Stage a file edit (same as [PROPOSAL] blocks):
 [TOOL_CALL: edit_file]
 {"path": "src/main.py", "original": "exact original code", "updated": "new replacement code"}
 [/TOOL_CALL]
-""" if allow_edit else ""
+""" if effective_allow_edit else ""
 
-    rules_edit = "- You can use either edit_file tool calls OR traditional [PROPOSAL] blocks for your changes. Both work.\n- For new files, set \"original\" to \"\" (empty string)." if allow_edit else "- You are in read-only analysis mode."
+    rules_edit = "- You can use either edit_file tool calls OR traditional [PROPOSAL] blocks for your changes. Both work.\n- For new files, set \"original\" to \"\" (empty string)." if effective_allow_edit else "- You are in read-only analysis mode. Write tools (edit_file, run_command) are disabled."
+
+    diagnostics_doc = """
+**get_diagnostics** — Check compiler, syntax, and type diagnostics for a file:
+[TOOL_CALL: get_diagnostics]
+{"file_path": "src/main.py"}
+[/TOOL_CALL]
+""" if effective_allow_edit else ""
 
     return f"""
 
@@ -628,7 +712,7 @@ You have access to workspace tools to explore, read, test, and edit files:
 [TOOL_CALL: take_screenshot]
 {{"mode": "preview", "target": "hello.html", "question": "Does the navigation render properly, are sections visible, and is any text overlapping?"}}
 [/TOOL_CALL]
-{edit_doc}
+{edit_doc}{diagnostics_doc}
 IMPORTANT RULES:
 - When you need to understand existing code or match interfaces before writing changes, use read_file and list_directory FIRST.
 - To inspect visual layout, UI designs, or test if generated web pages look right, use take_screenshot with a specific question.

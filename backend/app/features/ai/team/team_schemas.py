@@ -8,12 +8,13 @@ from pydantic import BaseModel, Field
 
 
 class TeamRole(str, Enum):
-    """The 5 primary agent roles in Team Mode + operator & system."""
+    """The primary agent roles in Team Mode + operator & system."""
     ARCHITECT = "architect"
     CODER = "coder"
     REVIEWER = "reviewer"
     TESTER = "tester"
     DEVOPS = "devops"
+    DOCUMENTER = "documenter"
     OPERATOR = "operator"
     SYSTEM = "system"
 
