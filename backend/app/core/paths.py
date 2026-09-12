@@ -25,6 +25,11 @@ IGNORED_DIRS = {
     "node_modules",
     "dist",
     "dist-electron",
+    "release",
+    "build",
+    ".code_os",
+    "uploads",
+    "coverage",
     ".next",
     ".turbo",
 }

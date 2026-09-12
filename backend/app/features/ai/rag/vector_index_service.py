@@ -32,8 +32,8 @@ CODE_EXTENSIONS = frozenset({
 # Ignored directory names during scanning
 IGNORED_DIRS = frozenset({
     "node_modules", ".git", ".code_os", "__pycache__", ".pytest_cache",
-    ".venv", "venv", "dist", "build", ".next", ".husky", "coverage", ".turbo",
-    "uploads",
+    ".venv", "venv", "dist", "dist-electron", "build", "release", "out",
+    ".next", ".husky", "coverage", ".turbo", "uploads",
 })
 
 
@@ -41,9 +41,9 @@ def is_ignored_rag_path(file_path: str | Path) -> bool:
     """Check if a path belongs to an excluded or polluted directory."""
     norm = str(file_path).replace("\\", "/").strip().lower()
     parts = [p.lower() for p in Path(norm).parts]
-    if any(p in IGNORED_DIRS or p in (".code_os", "uploads", ".git", "node_modules", ".pytest_cache") for p in parts):
+    if any(p in IGNORED_DIRS or p in (".code_os", "uploads", ".git", "node_modules", ".pytest_cache", "release", "dist-electron") for p in parts):
         return True
-    if ".code_os" in norm or "/uploads/" in norm or norm.startswith("uploads/") or norm.endswith("/uploads") or norm == "uploads":
+    if ".code_os" in norm or "/uploads/" in norm or norm.startswith("uploads/") or norm.endswith("/uploads") or norm == "uploads" or "/release/" in norm or norm.startswith("release/"):
         return True
     return False
 
@@ -151,11 +151,28 @@ def init_vector_store(workspace: str, collection_name: str = "codebase_rag") -> 
     _clients[norm_ws] = client
 
     ef = _get_embedding_function()
-    collection = client.get_or_create_collection(
-        name=collection_name,
-        embedding_function=ef,
-        metadata={"hnsw:space": "cosine"},
-    )
+    try:
+        collection = client.get_or_create_collection(
+            name=collection_name,
+            embedding_function=ef,
+            metadata={"hnsw:space": "cosine"},
+        )
+        # Smoke test collection health to catch corrupt HNSW segments early
+        collection.count()
+    except Exception as exc:
+        logger.warning(
+            "Corrupted or unreadable vector collection '%s' at %s: %s. Recreating.",
+            collection_name, persist_dir, exc
+        )
+        try:
+            client.delete_collection(collection_name)
+        except Exception:
+            pass
+        collection = client.create_collection(
+            name=collection_name,
+            embedding_function=ef,
+            metadata={"hnsw:space": "cosine"},
+        )
     _collections[cache_key] = collection
     return collection
 
@@ -833,6 +850,8 @@ async def reconcile_workspace_index(workspace: str, loop: Optional[asyncio.Abstr
                 total_new_chunks += chunks
         except Exception as exc:
             logger.warning("reconcile_workspace_index: failed to index %s: %s", rel_p, exc)
+        # Cooperatively yield to event loop so HTTP endpoints (e.g. /health) are never starved
+        await asyncio.sleep(0.01)
 
     chunk_cnt = collection.count()
     now_iso = datetime.now(timezone.utc).isoformat()

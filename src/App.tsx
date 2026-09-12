@@ -27,6 +27,16 @@ function BootOverlay() {
     }
   }, [bootPhase]);
 
+  // Safety fallback: dismiss overlay after 8s so app never gets stuck on black screen
+  useEffect(() => {
+    const safetyTimer = setTimeout(() => {
+      if (useBackendStore.getState().bootPhase === "booting") {
+        useBackendStore.getState().setBootPhase("failed");
+      }
+    }, 8000);
+    return () => clearTimeout(safetyTimer);
+  }, []);
+
   if (!visible) return null;
 
   return (
