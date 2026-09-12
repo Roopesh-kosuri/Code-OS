@@ -526,6 +526,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         retrieval_tools_executed_count: int = 0
         MAX_CLARIFICATIONS_PER_TURN = 2
         last_raw_tool_call: str | None = None
+        rejected_memory_facts: dict[str, int] = {}
+        memory_write_disabled: bool = False
 
         iteration = 0
         while iteration < max_iterations:
@@ -607,6 +609,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 is_review_turn = _is_document_review_turn(user_query, attached_filenames, request.attached_paths)
                 if is_review_turn or ask_user_count >= MAX_CLARIFICATIONS_PER_TURN:
                     active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "ask_user"]
+                if memory_write_disabled:
+                    active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "memory_write"]
             else:
                 active_tools = None
 
@@ -1148,11 +1152,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 continue
 
             # Substantive Answer Completion Gate (S6):
-            # If the model produced substantive answer prose after a prior clarification,
+            # If the model produced substantive answer prose,
             # and the only emitted tool call is another ask_user, finalize and complete.
             clean_prose = _clean_response_text(response_text)
             is_only_ask_user = bool(tool_calls and all(tc.name == "ask_user" for tc in tool_calls))
-            if is_only_ask_user and len(clean_prose) >= 50 and ask_user_count >= 1:
+            if is_only_ask_user and len(clean_prose) >= 50:
                 logger.info("chat_harness: response contains substantive answer after clarification; completing turn instead of re-prompting ask_user")
                 finalization_ok = not staged_changes
                 async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
@@ -1194,7 +1198,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     tool_sig = f"{tc.name}:{args_sig}"
 
                     # Repeat-failure breaker
-                    if consecutive_tool_failures.get(tool_sig, 0) >= 2:
+                    if consecutive_tool_failures.get(tool_sig, 0) >= 2 and tc.name != "memory_write":
                         skip_msg = f"Skipped after 2 failed attempts: {tc.name} ({detail})" if detail else f"Skipped after 2 failed attempts: {tc.name}"
                         yield _sse_status("tool_skipped", skip_msg, tool=tc.name, detail=detail, reason="consecutive_failures")
                         skip_desc = f"{tc.name} ({detail})" if detail else tc.name
@@ -1280,10 +1284,36 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     elif tc.name == "run_single_test":
                         result = _handle_run_single_test(workspace, tc.arguments)
                     elif tc.name == "memory_write":
-                        success_m, msg_m = _handle_memory_write(workspace, tc.arguments)
-                        result = ToolResult(tool_name="memory_write", success=success_m, output=msg_m if success_m else "", error="" if success_m else msg_m)
-                        if success_m:
-                            yield _sse_memory_updated(tc.arguments.get("fact") or tc.arguments.get("memory") or "")
+                        fact_text = str(tc.arguments.get("fact") or tc.arguments.get("memory") or "").strip()
+                        if memory_write_disabled:
+                            result = ToolResult(
+                                tool_name="memory_write",
+                                success=False,
+                                output="",
+                                error="Tool disabled: memory_write has been disabled for this turn after repeated rejected attempts.",
+                                failure_reason="tool_disabled",
+                            )
+                        else:
+                            success_m, msg_m = _handle_memory_write(workspace, tc.arguments)
+                            if not success_m:
+                                fact_key = fact_text.lower()
+                                rejected_memory_facts[fact_key] = rejected_memory_facts.get(fact_key, 0) + 1
+                                if rejected_memory_facts[fact_key] > 2:
+                                    memory_write_disabled = True
+                                    if active_tools:
+                                        active_tools = [t for t in active_tools if t.get("function", {}).get("name") != "memory_write"]
+                                    logger.warning(
+                                        "chat_harness: memory_write disabled for this turn (identical rejected fact repeated %d times: %r)",
+                                        rejected_memory_facts[fact_key], fact_text
+                                    )
+                            result = ToolResult(
+                                tool_name="memory_write",
+                                success=success_m,
+                                output=msg_m if success_m else "",
+                                error="" if success_m else msg_m,
+                            )
+                            if success_m:
+                                yield _sse_memory_updated(fact_text)
                     elif tc.name == "find_references":
                         result = _handle_find_references(workspace, tc.arguments)
                     elif tc.name == "go_to_definition":

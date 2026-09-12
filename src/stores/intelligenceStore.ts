@@ -123,6 +123,26 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         workspace: workspace ?? null,
       });
 
+      const isPassThrough =
+        res.model_used === "pass-through" ||
+        res.model_used === "fail-open" ||
+        res.model_used === "fallback" ||
+        !res.enhanced ||
+        res.enhanced.trim() === textToEnhance.trim() ||
+        res.enhanced.trim() === (res.original || "").trim();
+
+      if (isPassThrough) {
+        set({
+          enhancedPrompt: res.enhanced || textToEnhance,
+          changes: [],
+          modelUsed: res.model_used,
+          showDiff: false,
+          showBar: false,
+          isEnhancing: false,
+        });
+        return res.enhanced || textToEnhance;
+      }
+
       set({
         enhancedPrompt: res.enhanced,
         changes: res.changes,
@@ -140,6 +160,7 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
         changes: [],
         modelUsed: "fallback",
         showDiff: false,
+        showBar: false,
         isEnhancing: false,
       });
       return textToEnhance;

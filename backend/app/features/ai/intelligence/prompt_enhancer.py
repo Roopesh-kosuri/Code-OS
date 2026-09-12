@@ -15,6 +15,7 @@ import httpx
 
 from ..smart_router.model_router import DEFAULT_MODEL_TIERS
 from app.features.settings.service import list_settings
+from app.features.ai.harness.plan_parser import is_conversational_turn
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,34 @@ PRONOUN_TARGET_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_ASSISTANT_META_PATTERNS = [
+    re.compile(r"^(what|how)\s+can\s+you\s+(do|help|assist)\b", re.IGNORECASE),
+    re.compile(r"^(who|what)\s+are\s+you\b", re.IGNORECASE),
+    re.compile(r"^what('s| is)\s+your\s+(name|role|purpose|job|model|capability|capabilities)\b", re.IGNORECASE),
+    re.compile(r"^tell\s+me\s+about\s+yourself\b", re.IGNORECASE),
+    re.compile(r"^how\s+do\s+you\s+work\b", re.IGNORECASE),
+    re.compile(r"^(can|could)\s+you\s+help\s+me(\s+with\s+anything)?\??$", re.IGNORECASE),
+]
+
+
+def is_assistant_meta_or_well_formed_question(clean_p: str) -> bool:
+    """Check if query is an inquiry directed at the assistant or a well-formed informational question."""
+    if not clean_p:
+        return False
+    lower = clean_p.strip().lower()
+    for pat in _ASSISTANT_META_PATTERNS:
+        if pat.search(lower):
+            return True
+    question_starters = (
+        "how", "what", "why", "where", "when", "who", "which",
+        "can", "could", "would", "is", "are", "do", "does", "should", "explain"
+    )
+    if lower.endswith("?") and any(lower.startswith(w + " ") for w in question_starters):
+        if any(vague in lower for vague in ("fix it", "make better", "clean up", "do the thing", "make it work")):
+            return False
+        return True
+    return False
+
 
 def classify_prompt_quality(prompt: str, active_file: Optional[str] = None) -> dict[str, Any]:
     """
@@ -112,6 +141,18 @@ def classify_prompt_quality(prompt: str, active_file: Optional[str] = None) -> d
             "score": 0.0,
         }
 
+    never_rescue = clean_p.lower() in (
+        "fix it", "make better", "make it better", "do it", "help", "clean up", "do the thing", "make it work"
+    )
+
+    # Conversational turns, assistant inquiries, and well-formed questions are always 'good' (no bar)
+    if not never_rescue and (is_conversational_turn(clean_p) or is_assistant_meta_or_well_formed_question(clean_p)):
+        return {
+            "quality": "good",
+            "issues": [],
+            "score": 1.0,
+        }
+
     # 1. Check Active File Rescue
     # If user has an active file open and prompt references it via deictic pronoun ('this') or pointer
     # e.g. 'fix this' + active_file='src/login/handler.py' -> good
@@ -119,9 +160,6 @@ def classify_prompt_quality(prompt: str, active_file: Optional[str] = None) -> d
     has_active_file = bool(active_file and active_file.strip())
     is_pronoun_command = bool(PRONOUN_TARGET_PATTERN.match(clean_p)) or clean_p.lower() in (
         "fix this", "clean this", "test this", "debug this", "improve this", "update this"
-    )
-    never_rescue = clean_p.lower() in (
-        "fix it", "make better", "make it better", "do it", "help", "clean up", "do the thing", "make it work"
     )
 
     if has_active_file and not never_rescue and (is_pronoun_command or "this file" in clean_p.lower() or "this function" in clean_p.lower()):
@@ -319,6 +357,17 @@ async def enhance_prompt(
         logger.debug("enhance_prompt: returning session cached result for prompt")
         return dict(_SESSION_ENHANCE_CACHE[clean_p])
 
+    # If prompt is conversational or an assistant question, pass through untouched (zero token waste, no diff)
+    if is_conversational_turn(clean_p) or is_assistant_meta_or_well_formed_question(clean_p):
+        result = {
+            "enhanced": clean_p,
+            "original": clean_p,
+            "changes": [],
+            "model_used": "pass-through",
+        }
+        _SESSION_ENHANCE_CACHE[clean_p] = result
+        return result
+
     # If prompt is already good, pass through untouched (zero token waste)
     q = quality or classify_prompt_quality(clean_p, (workspace_context or {}).get("active_file"))
     if q.get("quality") == "good":
@@ -411,11 +460,16 @@ async def enhance_prompt(
 
         is_conversational_canned = any(
             phrase in enhanced_clean.lower()
-            for phrase in ("how can i assist", "how can i help", "hello.", "hi there", "[truncated")
+            for phrase in ("how can i assist", "how can i help", "hello.", "hi there", "[truncated", "investigate and fix")
         )
         if not enhanced_clean or is_conversational_canned:
-            target = f"in {ctx.get('active_file')}" if ctx.get("active_file") else "in the active file"
-            enhanced_clean = f"Investigate and fix the issue {target}, ensure edge cases are handled, and verify with tests."
+            logger.info("enhance_prompt: rejected empty or canned LLM output, failing open to original prompt")
+            return {
+                "enhanced": clean_p,
+                "original": clean_p,
+                "changes": [],
+                "model_used": "fail-open",
+            }
 
         changes = _compute_prompt_changes(clean_p, enhanced_clean)
         _STATS["enhanced_count"] += 1

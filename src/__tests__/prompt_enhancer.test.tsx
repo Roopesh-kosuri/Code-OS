@@ -312,4 +312,56 @@ describe("Phase 5 & 5.1: Prompt Enhancement Engine UI Tests", () => {
     expect(screen.getByTestId("prompt-enhancer-hint-bar")).toBeTruthy();
     expect(screen.queryByTestId("prompt-enhancer-diff-card")).toBeNull();
   });
+
+  it("test_diff_card_header_only_title_and_badge_no_pseudo_buttons", () => {
+    act(() => {
+      useIntelligenceStore.setState({
+        showBar: true,
+        showDiff: true,
+        originalPrompt: "fix it",
+        enhancedPrompt: "Fix bug in main.py",
+        changes: ["Identified specific target file", "Added verification criteria"],
+        modelUsed: "groq/openai/gpt-oss-20b",
+      });
+    });
+
+    const mockApply = vi.fn();
+    render(<PromptEnhancerBar currentPrompt="fix it" onApplyEnhanced={mockApply} />);
+
+    // Header has title and badge
+    expect(screen.getByText("Enhanced Prompt Preview")).toBeTruthy();
+    expect(screen.getByText("groq/openai/gpt-oss-20b")).toBeTruthy();
+    // Truncated pseudo buttons are removed
+    expect(screen.queryByText("+ Identified specific target file")).toBeNull();
+    expect(screen.queryByText("+ Added verification criteria")).toBeNull();
+  });
+
+  it("test_pass_through_and_fail_open_results_do_not_pop_card", async () => {
+    // 1. Pass-through result
+    vi.spyOn(api, "post").mockResolvedValueOnce({
+      enhanced: "hi how are you?",
+      original: "hi how are you?",
+      changes: [],
+      model_used: "pass-through",
+    });
+
+    const res1 = await useIntelligenceStore.getState().enhance("hi how are you?");
+    expect(res1).toBe("hi how are you?");
+    expect(useIntelligenceStore.getState().showDiff).toBe(false);
+    expect(useIntelligenceStore.getState().showBar).toBe(false);
+
+    // 2. Fail-open result
+    vi.spyOn(api, "post").mockResolvedValueOnce({
+      enhanced: "do something",
+      original: "do something",
+      changes: [],
+      model_used: "fail-open",
+    });
+
+    const res2 = await useIntelligenceStore.getState().enhance("do something");
+    expect(res2).toBe("do something");
+    expect(useIntelligenceStore.getState().showDiff).toBe(false);
+    expect(useIntelligenceStore.getState().showBar).toBe(false);
+  });
 });
+

@@ -210,3 +210,38 @@ async def test_classify_prompt_route_registered(async_client):
     assert data_good["quality"] == "good"
     assert data_good["score"] >= 0.80
 
+
+def test_conversational_and_assistant_questions_classified_good():
+    """Verify greetings, pleasantries, and questions directed at assistant are classified 'good' with zero defects."""
+    conversational_inputs = [
+        "hi",
+        "hello",
+        "hey there",
+        "how are you?",
+        "how are you doing today?",
+        "who are you?",
+        "what can you do?",
+        "what models do you support?",
+        "tell me about yourself",
+        "good morning!",
+        "thanks!",
+    ]
+    for inp in conversational_inputs:
+        res = classify_prompt_quality(inp)
+        assert res["quality"] == "good", f"Expected 'good' for conversational query '{inp}', got {res}"
+        assert res["score"] == 1.0
+        assert len(res["issues"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_conversational_passes_through_enhancer_untouched():
+    """Verify conversational inputs pass through enhance_prompt without calling LLM or modifying text."""
+    conversational_inputs = ["hi", "how are you?", "who are you?"]
+    for inp in conversational_inputs:
+        res = await enhance_prompt(inp)
+        assert res["enhanced"] == inp
+        assert res["original"] == inp
+        assert res["changes"] == []
+        assert res["model_used"] == "pass-through"
+
+

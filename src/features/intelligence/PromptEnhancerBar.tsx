@@ -111,19 +111,6 @@ export const PromptEnhancerBar: React.FC<PromptEnhancerBarProps> = ({
             </span>
           )}
         </div>
-
-        {changes.length > 0 && (
-          <div className="flex items-center gap-1 overflow-hidden">
-            {changes.slice(0, 2).map((ch, idx) => (
-              <span
-                key={`ch-${idx}`}
-                className="text-[10px] px-1.5 py-0.5 rounded bg-primary/10 text-primary-container border border-primary/20 truncate max-w-[150px]"
-              >
-                + {ch}
-              </span>
-            ))}
-          </div>
-        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">

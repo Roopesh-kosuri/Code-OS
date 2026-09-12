@@ -143,9 +143,38 @@ async def _deferred_startup_tasks() -> None:
     except Exception as exc:
         logger.warning("Deferred startup RAG reconciliation: %s", exc)
 
+def _get_git_sha_and_build_time() -> tuple[str, str]:
+    """Retrieve git commit SHA and build/start timestamp for operational traceability."""
+    import subprocess
+    from datetime import datetime, timezone
+
+    git_sha = os.getenv("GIT_SHA", "").strip()
+    if not git_sha:
+        try:
+            res = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                git_sha = res.stdout.strip()
+        except Exception:
+            pass
+    if not git_sha:
+        git_sha = "unknown"
+
+    build_time = os.getenv("BUILD_TIME", "").strip()
+    if not build_time:
+        build_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return git_sha, build_time
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("backend starting up")
+    git_sha, build_time = _get_git_sha_and_build_time()
+    logger.info("backend starting up - git_sha: %s, build_time: %s", git_sha, build_time)
     # Startup: Initialize shared DB and run schema migrations
     await init_db()
     db = await get_db()

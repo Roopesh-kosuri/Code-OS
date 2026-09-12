@@ -86,7 +86,7 @@ _CONVERSATIONAL_PATTERNS = [
 ]
 
 _TASK_VERB_PATTERNS = [
-    re.compile(r"\b(fix|add|change|create|update|refactor|remove|implement|write|edit|rename|delete|improve|build|compile|test|run|debug|modify|replace|overwrite|patch)\b", re.IGNORECASE)
+    re.compile(r"\b(fix|add|change|create|update|refactor|remove|implement|write|edit|rename|delete|improve|build|compile|test|run|debug|modify|replace|overwrite|patch|set|configure|enable|disable|make|put|insert|generate)\b", re.IGNORECASE)
 ]
 
 
@@ -123,7 +123,7 @@ def has_explicit_change_intent(query: str) -> bool:
         return True
 
     has_verb = bool(re.search(
-        r"\b(edit|modify|update|change|replace|rewrite|fix|patch|write|create|add|append|delete|remove|refactor|rename|implement)\b",
+        r"\b(edit|modify|update|change|replace|rewrite|fix|patch|write|create|add|append|delete|remove|refactor|rename|implement|set|configure|enable|disable|make|put|insert|generate)\b",
         clean,
         re.IGNORECASE,
     ))
