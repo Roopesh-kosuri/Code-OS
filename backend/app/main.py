@@ -134,7 +134,16 @@ async def _deferred_startup_tasks() -> None:
     try:
         from app.features.ai.rag import reconcile_workspace_index
         db = await get_db()
-        cursor = await db.execute("SELECT path FROM workspaces")
+        # Clean up any leftover temporary/pytest workspaces from db
+        await db.execute(
+            "DELETE FROM workspaces WHERE path LIKE '%temp%' OR path LIKE '%pytest%'"
+        )
+        await db.commit()
+
+        # Reconcile only active or most recently opened valid workspaces (max 3)
+        cursor = await db.execute(
+            "SELECT path FROM workspaces ORDER BY is_active DESC, last_opened_at DESC LIMIT 3"
+        )
         rows = await cursor.fetchall()
         for r in rows:
             ws_path = r[0] if isinstance(r, (list, tuple)) else r["path"]
