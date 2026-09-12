@@ -28,6 +28,10 @@ export type ChatMessage = {
   content: string;
   file_ids?: string[];
   attached_files?: any[];
+  escalation_recommended?: boolean;
+  escalation_reasoning?: string;
+  escalation_confidence?: number;
+  escalation_job_id?: string;
 };
 
 export type ModelDto = {

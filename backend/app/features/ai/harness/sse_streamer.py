@@ -41,6 +41,15 @@ def _sse_tier_routing(tier: int, label: str, reason: str = "") -> str:
     })
 
 
+def _sse_escalation_recommendation(recommended: bool, reasoning: str, confidence: float) -> str:
+    return _sse_event("escalation_recommendation", {
+        "recommended": recommended,
+        "reasoning": reasoning,
+        "confidence": confidence,
+    })
+
+
+
 def _sse_ask_user(action_id: str, question: str, options: list[str]) -> str:
     return _sse_event("ask_user", {
         "action_id": action_id,

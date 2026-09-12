@@ -1,9 +1,6 @@
 import pytest
 from pathlib import Path
-from fastapi.testclient import TestClient
 
-from app.main import app
-from app.core.auth import get_token
 from app.db.database import init_db
 from app.features.workspaces.trust_service import set_workspace_trust
 from app.features.search.service import is_binary_file
@@ -15,20 +12,8 @@ async def setup_test_database():
     yield
 
 
-@pytest.fixture
-def auth_headers():
-    return {"Authorization": f"Bearer {get_token()}"}
-
-
-@pytest.fixture
-def client(auth_headers):
-    with TestClient(app) as test_client:
-        test_client.headers.update(auth_headers)
-        yield test_client
-
-
 @pytest.mark.asyncio
-async def test_multifile_replace_works(tmp_path: Path, client: TestClient):
+async def test_multifile_replace_works(tmp_path: Path, async_client):
     """Verify replace works across multiple text files in a workspace."""
     ws = tmp_path / "replace_ws"
     ws.mkdir()
@@ -43,7 +28,7 @@ async def test_multifile_replace_works(tmp_path: Path, client: TestClient):
     await set_workspace_trust(str(ws), True)
 
     # 1. Preview replace
-    resp_preview = client.post("/api/search/replace", json={
+    resp_preview = await async_client.post("/api/search/replace", json={
         "workspace": str(ws),
         "query": "World",
         "replacement": "Universe",
@@ -56,7 +41,7 @@ async def test_multifile_replace_works(tmp_path: Path, client: TestClient):
     assert "World" in file1.read_text(encoding="utf-8")
 
     # 2. Apply replace
-    resp_apply = client.post("/api/search/replace", json={
+    resp_apply = await async_client.post("/api/search/replace", json={
         "workspace": str(ws),
         "query": "World",
         "replacement": "Universe",
@@ -68,7 +53,7 @@ async def test_multifile_replace_works(tmp_path: Path, client: TestClient):
 
 
 @pytest.mark.asyncio
-async def test_regex_timeout_and_backtracking_rejected(tmp_path: Path, client: TestClient):
+async def test_regex_timeout_and_backtracking_rejected(tmp_path: Path, async_client):
     """Verify regexes with nested quantifiers (ReDoS) or timeouts are rejected with HTTP 400."""
     ws = tmp_path / "regex_ws"
     ws.mkdir()
@@ -76,7 +61,7 @@ async def test_regex_timeout_and_backtracking_rejected(tmp_path: Path, client: T
     await set_workspace_trust(str(ws), True)
 
     # 1. Static catastrophic backtracking pattern rejection
-    resp_evil = client.post("/api/search/replace", json={
+    resp_evil = await async_client.post("/api/search/replace", json={
         "workspace": str(ws),
         "query": r"(a+)+$",
         "replacement": "b",
@@ -87,7 +72,7 @@ async def test_regex_timeout_and_backtracking_rejected(tmp_path: Path, client: T
     assert "backtracking" in resp_evil.json()["detail"].lower()
 
     # 2. Search endpoint also rejects evil pattern
-    resp_search = client.get("/api/search/text", params={
+    resp_search = await async_client.get("/api/search/text", params={
         "workspace": str(ws),
         "query": r"(x+)+$",
         "regex": "true",
@@ -97,7 +82,7 @@ async def test_regex_timeout_and_backtracking_rejected(tmp_path: Path, client: T
 
 
 @pytest.mark.asyncio
-async def test_restricted_mode_blocks_replace(tmp_path: Path, client: TestClient):
+async def test_restricted_mode_blocks_replace(tmp_path: Path, async_client):
     """Verify replace with apply=True is strictly blocked in Restricted Mode (HTTP 403)."""
     ws = tmp_path / "restricted_ws"
     ws.mkdir()
@@ -108,7 +93,7 @@ async def test_restricted_mode_blocks_replace(tmp_path: Path, client: TestClient
     await set_workspace_trust(str(ws), False)
 
     # Attempt to apply replacement in untrusted workspace
-    resp = client.post("/api/search/replace", json={
+    resp = await async_client.post("/api/search/replace", json={
         "workspace": str(ws),
         "query": "sensitive",
         "replacement": "corrupted",
@@ -121,7 +106,7 @@ async def test_restricted_mode_blocks_replace(tmp_path: Path, client: TestClient
 
 
 @pytest.mark.asyncio
-async def test_binary_files_untouched(tmp_path: Path, client: TestClient):
+async def test_binary_files_untouched(tmp_path: Path, async_client):
     """Verify binary files and ignored directories are untouched during find & replace."""
     ws = tmp_path / "binary_ws"
     ws.mkdir()
@@ -145,7 +130,7 @@ async def test_binary_files_untouched(tmp_path: Path, client: TestClient):
     # Mark workspace as trusted
     await set_workspace_trust(str(ws), True)
 
-    resp = client.post("/api/search/replace", json={
+    resp = await async_client.post("/api/search/replace", json={
         "workspace": str(ws),
         "query": "World",
         "replacement": "Earth",

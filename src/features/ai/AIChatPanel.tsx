@@ -283,6 +283,14 @@ export function AIChatPanel() {
   const approveAction = useAIStore((s) => s.approveAction);
   const rejectAction = useAIStore((s) => s.rejectAction);
   const undoTurn = useAIStore((s) => s.undoTurn);
+  const escalationRecommended = useAIStore((s) => s.escalationRecommended);
+  const escalationReasoning = useAIStore((s) => s.escalationReasoning);
+  const escalationConfidence = useAIStore((s) => s.escalationConfidence);
+  const escalationInProgress = useAIStore((s) => s.escalationInProgress);
+  const escalationJobId = useAIStore((s) => s.escalationJobId);
+  const escalationError = useAIStore((s) => s.escalationError);
+  const escalateToTeam = useAIStore((s) => s.escalateToTeam);
+  const declineEscalation = useAIStore((s) => s.declineEscalation);
   const workspace = useWorkspaceStore((s) => s.currentWorkspace);
   const activePath = useEditorStore((s) => s.activePath);
   const classifyOnInput = useIntelligenceStore((s) => s.classifyOnInput);
@@ -1150,6 +1158,113 @@ export function AIChatPanel() {
                 {proposals.map((p, pIdx) => (
                   <ProposalCard key={pIdx} path={p.path} original={p.original} updated={p.updated} />
                 ))}
+
+                {/* Adaptive Escalation Card (5-Agent Team Handoff) */}
+                {(message.escalation_job_id || (index === messages.length - 1 && escalationJobId)) ? (
+                  <div className="pt-2 mt-1 border-t border-white/10 flex items-center justify-between">
+                    <div
+                      data-testid="escalated-badge"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 cursor-pointer hover:bg-emerald-500/25 transition-all"
+                      onClick={() => {
+                        window.dispatchEvent(
+                          new CustomEvent("code-os:menu-action", {
+                            detail: "view.switchTopView:agent",
+                          })
+                        );
+                      }}
+                      title="Click to view job in Agent Console"
+                    >
+                      <CheckCircle2 size={12} className="text-emerald-400" />
+                      <span>Escalated to Agent Console</span>
+                      <ExternalLink size={11} className="opacity-70 ml-0.5" />
+                    </div>
+                  </div>
+                ) : (message.escalation_recommended || (index === messages.length - 1 && escalationRecommended)) ? (
+                  <div
+                    data-testid="escalation-card"
+                    className="rounded-xl border border-primary/40 bg-[#16171d] p-3.5 text-xs text-on-surface space-y-2.5 shadow-lg my-2 w-full animate-in fade-in slide-in-from-bottom-2 duration-200"
+                  >
+                    <div className="flex items-center gap-2 font-semibold text-primary text-[12.5px]">
+                      <span className="text-base">🎯</span>
+                      <span>Complex Task Detected</span>
+                    </div>
+
+                    <p className="text-[11.5px] text-[#c9d1d9] leading-relaxed">
+                      This task involves{" "}
+                      <span className="text-cyan-300 font-medium">
+                        {message.escalation_reasoning || escalationReasoning || "architectural changes and multi-file refactoring"}
+                      </span>{" "}
+                      and may benefit from the full 5-agent team:
+                    </p>
+
+                    <ul className="space-y-1 text-[11px] text-on-surface-variant font-mono pl-1">
+                      <li className="flex items-center gap-1.5">
+                        <span className="text-primary">•</span>
+                        <span><strong className="text-white">Planner:</strong> decompose into subtasks</span>
+                      </li>
+                      <li className="flex items-center gap-1.5">
+                        <span className="text-primary">•</span>
+                        <span><strong className="text-white">Coder:</strong> implement changes</span>
+                      </li>
+                      <li className="flex items-center gap-1.5">
+                        <span className="text-primary">•</span>
+                        <span><strong className="text-white">Tester:</strong> verify with tests</span>
+                      </li>
+                      <li className="flex items-center gap-1.5">
+                        <span className="text-primary">•</span>
+                        <span><strong className="text-white">Reviewer:</strong> code quality + security</span>
+                      </li>
+                      <li className="flex items-center gap-1.5">
+                        <span className="text-primary">•</span>
+                        <span><strong className="text-white">Documenter:</strong> update docs</span>
+                      </li>
+                    </ul>
+
+                    {escalationError && (
+                      <div className="rounded-lg bg-rose-500/10 border border-rose-500/20 p-2 text-rose-300 text-[11px]">
+                        {escalationError}
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                      <button
+                        type="button"
+                        data-testid="escalate-btn"
+                        disabled={escalationInProgress}
+                        onClick={async () => {
+                          const lastUser = [...messages].reverse().find((m) => m.role === "user");
+                          await escalateToTeam(lastUser?.content);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-primary hover:bg-primary/90 text-on-primary font-medium text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-md disabled:opacity-60 interactive-scale"
+                      >
+                        {escalationInProgress ? (
+                          <>
+                            <Loader2 size={13} className="animate-spin" />
+                            <span>Escalating...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Zap size={13} />
+                            <span>Escalate to Agent Console</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        data-testid="continue-rony-btn"
+                        disabled={escalationInProgress}
+                        onClick={async () => {
+                          const lastUser = [...messages].reverse().find((m) => m.role === "user");
+                          await declineEscalation(lastUser?.content);
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-on-surface hover:text-white text-xs font-medium transition-all cursor-pointer disabled:opacity-50 interactive-scale"
+                      >
+                        Continue with Rony
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
                 {/* Turn Checkpoint & Undo Action */}
                 {message.checkpoint && message.checkpoint.touched_files?.length > 0 && (

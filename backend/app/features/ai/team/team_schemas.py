@@ -59,6 +59,8 @@ class TeamConfig(BaseModel):
     auto_verify: bool = True
     auto_model_selection: bool = False
     smart_router_enabled: bool = False
+    priority: str = "normal"  # "normal" | "high"
+    is_escalated: bool = False
     custom_roles: list[dict[str, Any]] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)

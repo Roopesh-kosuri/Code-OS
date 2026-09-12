@@ -190,6 +190,10 @@ class TeamOrchestrator:
         all_task_ids = set(tasks_by_id.keys())
         running_tasks: dict[str, asyncio.Task] = {}
 
+        # Escalated jobs enforce full verification gate (all 5 agents, no shortcuts)
+        if getattr(self.team_config, "is_escalated", False) or getattr(self.team_config, "priority", "") == "high":
+            self.team_config.auto_verify = True
+
         self.emit_event("team_status", {
             "job_id": effective_job_id,
             "status": "running",
@@ -346,6 +350,14 @@ class TeamOrchestrator:
                 "failed_tasks": list(self.failed_task_ids),
                 "duration": duration,
             })
+
+        # Record outcome in escalation feedback loop
+        if getattr(self.team_config, "is_escalated", False) or getattr(self.team_config, "priority", "") == "high":
+            try:
+                from app.features.ai.intelligence.escalation_tracker import record_escalation_completed
+                record_escalation_completed(effective_job_id, duration, success=(final_status == "completed"))
+            except Exception as exc:
+                logger.debug("Failed to record escalation completed in tracker: %s", exc)
 
         return {
             "job_id": effective_job_id,
@@ -518,6 +530,25 @@ class TeamOrchestrator:
                 task_title=task.title,
                 task_context=task.context,
             )
+
+        # 2.5 Check escalated job priority (C4: HARD-tier models for Planner + Coder, 2x token budget)
+        is_escalated = bool(
+            (task.context and task.context.get("is_escalated"))
+            or (task.context and task.context.get("priority") == "high")
+            or getattr(self.team_config, "is_escalated", False)
+            or getattr(self.team_config, "priority", "") == "high"
+        )
+        if is_escalated:
+            role_clean = (task.role.value if isinstance(task.role, TeamRole) else str(task.role)).lower()
+            if role_clean in ("architect", "planner"):
+                provider_config = {"provider": "openai", "model": "gpt-4o"}
+            elif role_clean in ("coder",):
+                provider_config = {"provider": "anthropic", "model": "claude-3-5-sonnet-latest"}
+            if task.context is None:
+                task.context = {}
+            task.context["token_multiplier"] = 2.0
+            task.context["priority"] = "high"
+            task.context["is_escalated"] = True
 
         # 3. Format prior handoff context for agent
         handoff_prompt = ""

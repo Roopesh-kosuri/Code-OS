@@ -102,8 +102,9 @@ async def enhance_prompt_endpoint(payload: PromptEnhanceRequest) -> PromptEnhanc
 
 
 @router.post("/record-action")
+@router.post("/prompt-action")
 async def record_action_endpoint(payload: PromptActionRequest) -> dict[str, bool]:
-    """Record user interaction with prompt enhancer (accept, revert, dismiss)."""
+    """Record user interaction with prompt enhancer (accept, revert, dismiss) or escalation decision."""
     record_enhancement_action(payload.action)
     return {"success": True}
 
@@ -113,3 +114,11 @@ async def get_enhancement_stats_endpoint() -> EnhancementStatsResponse:
     """Retrieve prompt enhancement usage and token savings statistics."""
     stats = get_enhancement_stats()
     return EnhancementStatsResponse(**stats)
+
+
+@router.get("/escalation-stats")
+async def get_escalation_stats_endpoint() -> dict[str, Any]:
+    """Retrieve adaptive orchestration escalation statistics."""
+    from app.features.ai.intelligence.escalation_tracker import get_escalation_stats
+    return get_escalation_stats()
+

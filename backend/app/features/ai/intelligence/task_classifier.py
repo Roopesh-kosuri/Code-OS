@@ -74,10 +74,134 @@ def reset_llm_classifier_fn() -> None:
     _global_llm_classifier = None
 
 
+ESCALATION_KEYWORDS = frozenset({
+    "team", "multi-agent", "5-agent", "full stack", "end-to-end", "architectural",
+    "full-stack", "fullstack", "multi agent", "5 agent", "team approach",
+})
+
+
+def escalation_classifier(
+    task_description: str,
+    context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Classify whether a task exceeds single-agent capability and warrants
+    escalation to the 5-agent DAG team (Planner, Coder, Tester, Reviewer, Documenter).
+
+    Triggers (any 2+ = escalate):
+    1. Multi-file refactor (>5 files, architectural change)
+    2. New feature spanning multiple layers (DB + API + UI + tests)
+    3. Performance optimization requiring profiling
+    4. Security audit / hardening task
+    5. Complex algorithm implementation (>500 LOC estimate)
+    6. Migration (DB schema, API version, framework upgrade)
+    7. User explicitly asks for "team" or "multi-agent" approach
+
+    Confidence Scoring:
+    - 0-1 triggers: confidence <0.3 -> no escalation
+    - 2-3 triggers: confidence 0.5-0.75 -> suggest escalation
+    - 4+ triggers: confidence >0.8 -> strongly recommend
+    """
+    text = (task_description or "").lower()
+    ctx = context or {}
+    matched_triggers: list[str] = []
+    reasons: list[str] = []
+
+    # 1. Multi-file refactor (>5 files, architectural change)
+    file_list = ctx.get("file_list") or ctx.get("files") or []
+    file_count = len(file_list) if isinstance(file_list, (list, tuple)) else 0
+    refactor_detected = bool(re.search(r"\b(?:refactor|restructure|redesign|rewrite|overhaul)\b", text))
+    across_multiple = bool(re.search(r"across\s+[\w\s,]+(?:,|\band\b)[\w\s,]+", text))
+    has_arch_kw = "architectural" in text or "architecture" in text
+
+    if (refactor_detected and (file_count > 5 or ">5 files" in text or "5+ files" in text or across_multiple or has_arch_kw)) or (file_count > 5 and has_arch_kw):
+        matched_triggers.append("multi_file_refactor")
+        reasons.append("Multi-file refactor or architectural restructuring across multiple components")
+
+    # 2. New feature spanning multiple layers (DB + API + UI + tests)
+    has_full_stack = bool(re.search(r"\b(?:full-stack|full\s+stack|fullstack|end-to-end|end\s+to\s+end|cross-cutting|all layers|multiple layers)\b", text))
+    layers_detected = 0
+    if re.search(r"\b(?:db|database|sql|sqlite|postgres|mongo|schema|migration|models|orm|tables?|session|sessions|cache|store)\b", text):
+        layers_detected += 1
+    if re.search(r"\b(?:api|endpoint|routes?|controller|handler|backend|rest|graphql|fastapi)\b", text):
+        layers_detected += 1
+    if re.search(r"\b(?:ui|frontend|react|view|component|css|html|dialog|modal|client)\b", text):
+        layers_detected += 1
+    if re.search(r"\b(?:test|tests|testing|e2e|integration|unit\s+tests?|coverage|validators?)\b", text):
+        layers_detected += 1
+
+    if has_full_stack or layers_detected >= 2 or (refactor_detected and across_multiple):
+        matched_triggers.append("cross_layer_feature")
+        reasons.append("Feature spans multiple codebase layers (data, API, UI, or test suite)")
+
+    # 3. Performance optimization requiring profiling
+    if re.search(r"\b(?:profiling|profiler|profile|benchmark|benchmarking|optimize\s+latency|latency\s+optimization|bottleneck|memory\s+leak|cpu\s+profiling|load\s+test|stress\s+test|throughput|p99)\b", text):
+        matched_triggers.append("performance_profiling")
+        reasons.append("Performance optimization requiring profiling or benchmarking")
+
+    # 4. Security audit / hardening task
+    if re.search(r"\b(?:security\s+audit|hardening|vulnerability|penetration\s+test|pen\s+test|cve|auth\s+hardening|security\s+review|threat\s+model|authentication\s+system|oauth2?|rate\s+limit(?:er|ing)|session\s+management|sanitiz(?:e|ation)|zero\s+trust)\b", text):
+        matched_triggers.append("security_hardening")
+        reasons.append("Security audit or system hardening across sensitive surfaces")
+
+    # 5. Complex algorithm implementation (>500 LOC estimate)
+    if re.search(r"\b(?:>500\s*loc|500\+\s*loc|500\s+lines\s+of\s+code|complex\s+algorithm|distributed\s+consensus|raft|paxos|compiler|ast\s+parser|bytecode|custom\s+parser|graph\s+algorithm|dynamic\s+programming|b-tree|red-black\s+tree)\b", text):
+        matched_triggers.append("complex_algorithm")
+        reasons.append("Complex algorithm implementation or high estimated LOC (>500)")
+
+    # 6. Migration (DB schema, API version, framework upgrade)
+    if re.search(r"\b(?:schema\s+migration|db\s+migration|database\s+migration|api\s+version|framework\s+upgrade|upgrade\s+from|v1\s+to\s+v2|breaking\s+changes\s+migration)\b", text) or ("migration" in text and ("schema" in text or "version" in text or "db" in text or "framework" in text)):
+        matched_triggers.append("migration")
+        reasons.append("Migration spanning database schemas, API versions, or frameworks")
+
+    # 7. User explicitly asks for "team" or "multi-agent" approach
+    if re.search(r"\b(?:team|multi-agent|multi\s+agent|5-agent|5\s+agent|agent\s+team|team\s+approach|swarm|orchestrator)\b", text):
+        matched_triggers.append("explicit_team_request")
+        reasons.append("User explicitly requested a team or multi-agent orchestration approach")
+
+    count = len(matched_triggers)
+    should_escalate = count >= 2
+
+    # Confidence scoring per spec:
+    # 0-1 triggers: <0.3
+    # 2-3 triggers: 0.5-0.75
+    # 4+ triggers: >0.8
+    if count == 0:
+        confidence = 0.10
+    elif count == 1:
+        confidence = 0.25
+    elif count == 2:
+        confidence = 0.65
+    elif count == 3:
+        confidence = 0.75
+    elif count == 4:
+        confidence = 0.85
+    else:
+        confidence = min(0.95, 0.85 + (count - 4) * 0.03)
+
+    # Adaptive modifier from feedback loop
+    try:
+        from app.features.ai.intelligence.escalation_tracker import get_confidence_modifier
+        confidence = max(0.05, min(0.99, confidence + get_confidence_modifier()))
+    except Exception:
+        pass
+
+    confidence = round(confidence, 2)
+    reasoning = "; ".join(reasons) if reasons else "Task is within single-agent capability scope"
+
+    return {
+        "should_escalate": should_escalate,
+        "reasoning": reasoning,
+        "confidence": confidence,
+        "triggers": matched_triggers,
+    }
+
+
 def extract_task_features(
     task_description: str,
     file_list: Optional[list[str]] = None,
     context: Optional[dict] = None,
+
 ) -> dict[str, Any]:
     """Extract quantitative and qualitative features from task and codebase context."""
     text = task_description or ""
@@ -439,6 +563,11 @@ def classify_task(
         fallback = verified[0] if verified else DEFAULT_MODEL_TIERS["EASY"][0]
         recommended_model = f"{norm_p}/{fallback}"
 
+    # 6. Adaptive Escalation Classifier
+    esc_res = escalation_classifier(task_description, context=context)
+    escalation_recommended = bool(esc_res["should_escalate"] and esc_res["confidence"] > 0.6)
+    escalation_reasoning = esc_res["reasoning"] if escalation_recommended else esc_res.get("reasoning", "")
+
     reasoning_str = "; ".join(reasons)
 
     return {
@@ -454,4 +583,9 @@ def classify_task(
         "method": method,
         "budget_downgraded": budget_downgraded,
         "context_window_tier": context_window_tier,
+        "escalation_recommended": escalation_recommended,
+        "escalation_reasoning": escalation_reasoning,
+        "escalation_confidence": esc_res.get("confidence", 0.0),
+        "escalation_triggers": esc_res.get("triggers", []),
     }
+

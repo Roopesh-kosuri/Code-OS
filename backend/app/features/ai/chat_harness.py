@@ -325,6 +325,25 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
         yield _sse_tier_routing(tier, tier_label, reason=tier_reason)
         yield _sse_status("tier_routing", f"Routing: {tier_reason}", tier=tier, label=tier_label)
+
+        # Check adaptive escalation recommendation
+        try:
+            from app.features.ai.intelligence.task_classifier import classify_task
+            task_cls = classify_task(
+                user_query,
+                context={"workspace": workspace, "file_list": request.attached_paths},
+                file_list=request.attached_paths,
+                use_llm=False,
+            )
+            if task_cls.get("escalation_recommended"):
+                yield _sse_escalation_recommendation(
+                    recommended=True,
+                    reasoning=task_cls.get("escalation_reasoning", ""),
+                    confidence=float(task_cls.get("escalation_confidence", 0.8)),
+                )
+        except Exception as exc:
+            logger.debug("Escalation check in harness stream error: %s", exc)
+
         _append_activity_log(workspace, {
             "action_type": "routing",
             "target": user_query[:100],

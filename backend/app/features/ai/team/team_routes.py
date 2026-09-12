@@ -52,11 +52,24 @@ router = APIRouter()
 
 
 class SubmitTeamJobRequest(BaseModel):
-    workspace: str
-    user_request: str
+    workspace: str = ""
+    user_request: str = ""
+    task: Optional[str] = None
+    context: Optional[Any] = None
+    files: Optional[Any] = None
+    escalation_reason: Optional[str] = None
     team_config: Optional[TeamConfig] = None
     tasks: Optional[list[dict[str, Any]]] = None
     file_ids: list[str] = Field(default_factory=list)
+
+
+class RonyEscalationJobRequest(BaseModel):
+    task: str = Field(..., description="User prompt or task to execute")
+    conversation_context: list[dict[str, Any]] = Field(default_factory=list, description="Recent conversation turns from Rony")
+    active_files: list[str] = Field(default_factory=list, description="Active files in editor for grounding")
+    workspace: str = Field(default="", description="Workspace directory")
+    escalation_reason: str = Field(default="", description="Reason for escalation")
+    user_preferences: dict[str, Any] = Field(default_factory=dict, description="Preferences (model tier, budget)")
 
 
 class InjectPromptRequest(BaseModel):
@@ -137,9 +150,186 @@ async def get_job_snapshot_data(job_id: str) -> dict[str, Any]:
 
 # ── Route Endpoints ──────────────────────────────────────────────────────────
 
+@router.post("/jobs/from-rony")
+async def submit_job_from_rony(payload: RonyEscalationJobRequest) -> dict[str, Any]:
+    """
+    Seamless handoff from Rony to the 5-Agent Team DAG (Planner, Coder, Tester, Reviewer, Documenter).
+    Creates an enriched high-priority team job and returns job_id and websocket URL.
+    """
+    workspace = payload.workspace or "."
+    job_id = f"team_{uuid.uuid4().hex[:12]}"
+
+    # 1. Enrich context with conversation summary and active files
+    conv_lines = []
+    for turn in payload.conversation_context[-6:]:
+        r = turn.get("role", "user").capitalize()
+        c = str(turn.get("content", ""))[:300]
+        conv_lines.append(f"{r}: {c}")
+    conv_summary = "\n".join(conv_lines)
+
+    reason = payload.escalation_reason or "Task complexity exceeded single-agent capability"
+    enriched_description = (
+        f"### ESCALATED FROM RONY (Adaptive Orchestration)\n"
+        f"**Reason**: {reason}\n\n"
+        f"**Task Objective**:\n{payload.task}\n\n"
+    )
+    if payload.active_files:
+        files_str = "\n".join(f"- `{f}`" for f in payload.active_files)
+        enriched_description += f"**Priority Grounding Files**:\n{files_str}\n\n"
+    if conv_summary:
+        enriched_description += f"**Recent Conversation Context**:\n{conv_summary}\n\n"
+
+    # 2. Team configuration with High Priority and Hard-tier models
+    config = TeamConfig(workspace=workspace)
+    config.priority = "high"
+    config.is_escalated = True
+    config.auto_verify = True
+    config.architect_model = "gpt-4o"
+    config.architect_provider = "openai"
+    config.coder_model = "claude-3-5-sonnet-latest"
+    config.coder_provider = "anthropic"
+
+    if payload.user_preferences:
+        if "model" in payload.user_preferences:
+            config.coder_model = str(payload.user_preferences["model"])
+
+    await save_team_config(config.model_dump())
+
+    # 3. Create job in DB with enriched metadata
+    await create_job(job_id, workspace, "team_mode", user_request=enriched_description)
+
+    # 4. Build the full 5-Agent DAG: Planner -> Coder -> Tester -> Reviewer -> Documenter
+    task_context_base = {
+        "active_files": payload.active_files,
+        "priority_files": payload.active_files,
+        "is_escalated": True,
+        "priority": "high",
+        "escalation_reason": reason,
+    }
+
+    t_plan = TeamTask(
+        task_id=f"{job_id}_plan",
+        job_id=job_id,
+        title="Planner: Decompose Specification & Task Graph",
+        role=TeamRole.ARCHITECT,
+        dependencies=[],
+        context={**task_context_base, "stage": "planning"},
+    )
+    t_code = TeamTask(
+        task_id=f"{job_id}_code",
+        job_id=job_id,
+        title="Coder: Implement Cross-Cutting Solution",
+        role=TeamRole.CODER,
+        dependencies=[t_plan.task_id],
+        context={**task_context_base, "stage": "coding"},
+    )
+    t_test = TeamTask(
+        task_id=f"{job_id}_test",
+        job_id=job_id,
+        title="Tester: Verify with Automated Tests",
+        role=TeamRole.TESTER,
+        dependencies=[t_code.task_id],
+        context={**task_context_base, "stage": "testing"},
+    )
+    t_rev = TeamTask(
+        task_id=f"{job_id}_rev",
+        job_id=job_id,
+        title="Reviewer: Code Quality & Security Audit",
+        role=TeamRole.REVIEWER,
+        dependencies=[t_test.task_id],
+        context={**task_context_base, "stage": "review"},
+    )
+    t_doc = TeamTask(
+        task_id=f"{job_id}_doc",
+        job_id=job_id,
+        title="Documenter: Update Documentation & Architecture",
+        role=TeamRole.DOCUMENTER,
+        dependencies=[t_rev.task_id],
+        context={**task_context_base, "stage": "documentation"},
+    )
+    dag_tasks = [t_plan, t_code, t_test, t_rev, t_doc]
+
+    for t in dag_tasks:
+        r_val = t.role.value if isinstance(t.role, TeamRole) else str(t.role)
+        await create_task(t.task_id, job_id, t.title, r_val, dependencies=t.dependencies)
+
+    # 5. Launch Orchestrator
+    orchestrator = TeamOrchestrator(team_config=config, workspace=workspace)
+    active_job = get_or_create_active_job(job_id, workspace=workspace, orchestrator=orchestrator)
+    active_job.status = "running"
+
+    def _on_orchestrator_event(evt: TeamSSEEvent) -> None:
+        active_job.broadcast(evt.event, evt.data)
+        try:
+            loop = asyncio.get_running_loop()
+            if evt.event == "team_status":
+                st = evt.data.get("status", "")
+                if st:
+                    active_job.status = st
+                    db_st = "paused" if st == "paused_attention" else st
+                    loop.create_task(update_job_status(job_id, db_st))
+                if evt.data.get("final_report"):
+                    loop.create_task(save_final_report(job_id, evt.data["final_report"]))
+            elif evt.event == "team_step_update":
+                tid = evt.data.get("task_id")
+                st = evt.data.get("status")
+                err = evt.data.get("error", "")
+                if tid and st:
+                    loop.create_task(update_task_status(tid, st, errors=err))
+            elif evt.event == "team_message":
+                loop.create_task(add_team_message(
+                    job_id=job_id,
+                    sender_role=evt.data.get("sender_role", "system"),
+                    recipient_role=evt.data.get("recipient_role", "all"),
+                    content=evt.data.get("content", ""),
+                    message_type=evt.data.get("message_type", "chat"),
+                    details=evt.data.get("details"),
+                ))
+        except Exception:
+            pass
+
+    orchestrator.subscribe(_on_orchestrator_event)
+
+    async def _run_bg() -> None:
+        try:
+            await update_job_status(job_id, "running")
+            await orchestrator.execute_dag(dag_tasks, job_id=job_id)
+        except Exception as exc:
+            logger.error("Escalated team job %s failed: %s", job_id, exc)
+            active_job.status = "failed"
+            await update_job_status(job_id, "failed")
+
+    asyncio.create_task(_run_bg())
+
+    # 6. Record initiation in escalation tracker
+    try:
+        from app.features.ai.intelligence.escalation_tracker import record_escalation_initiated
+        record_escalation_initiated(job_id, payload.task, reason)
+    except Exception as exc:
+        logger.debug("Failed to record escalation initiation in tracker: %s", exc)
+
+    return {
+        "job_id": job_id,
+        "ws_url": f"/ws/team/jobs/{job_id}",
+        "status": "queued",
+        "priority": "high",
+        "task_count": len(dag_tasks),
+    }
+
+
 @router.post("/jobs")
 async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
     """Submit a multi-agent team workflow with workspace trust check and DAG orchestration."""
+    if not payload.user_request and payload.task:
+        payload.user_request = payload.task
+    if payload.files and not payload.file_ids:
+        if isinstance(payload.files, list):
+            payload.file_ids = [str(f) for f in payload.files]
+        elif isinstance(payload.files, str):
+            payload.file_ids = [payload.files]
+    if payload.escalation_reason and not payload.team_config:
+        payload.team_config = TeamConfig(workspace=payload.workspace, priority="high", is_escalated=True)
+
     trust = await get_workspace_trust(payload.workspace)
     if not trust.get("trusted", False):
         raise HTTPException(
@@ -150,6 +340,7 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
     job_id = f"team_{uuid.uuid4().hex[:12]}"
     config = payload.team_config or TeamConfig(workspace=payload.workspace)
     config.workspace = payload.workspace
+
 
     # Snapshot workspace custom roles into job configuration (Refinement R1)
     custom_roles = await get_custom_roles(payload.workspace)

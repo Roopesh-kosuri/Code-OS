@@ -262,6 +262,17 @@ type AIState = {
   streamStartTimestamp: number | null;
   lastTokenTimestamp: number | null;
 
+  // Adaptive Orchestration (Rony <-> 5-Agent Team)
+  escalationRecommended: boolean;
+  escalationReasoning: string;
+  escalationConfidence: number;
+  escalationInProgress: boolean;
+  escalationJobId: string | null;
+  escalationError: string | null;
+  setEscalation: (recommended: boolean, reasoning?: string, confidence?: number) => void;
+  escalateToTeam: (taskOverride?: string) => Promise<string | null>;
+  declineEscalation: (taskOverride?: string) => Promise<void>;
+
   // Multi-thread state
   currentThreadId: string | null;
   threads: ChatThread[];
@@ -594,6 +605,28 @@ export function createSSEStreamHandler(
           retryStatus: null,
         };
       });
+    } else if (eventType === "escalation_recommendation" || eventType === "escalation_recommended") {
+      const recommended = Boolean(data.recommended ?? data.should_escalate ?? true);
+      const reasoning = data.reasoning || data.escalation_reasoning || "";
+      const confidence = Number(data.confidence ?? data.escalation_confidence ?? 0.8);
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = {
+            ...last,
+            escalation_recommended: recommended,
+            escalation_reasoning: reasoning,
+            escalation_confidence: confidence,
+          };
+        }
+        return {
+          messages,
+          escalationRecommended: recommended,
+          escalationReasoning: reasoning,
+          escalationConfidence: confidence,
+        };
+      });
     } else if (eventType === "done") {
       const isSuccess = data.success !== false;
       const doneMsg = data.message || (isSuccess ? "Task completed" : "Task stopped");
@@ -704,6 +737,14 @@ export const useAIStore = create<AIState>((set, get) => ({
   streamStartTimestamp: null,
   lastTokenTimestamp: null,
 
+  // Adaptive Orchestration
+  escalationRecommended: false,
+  escalationReasoning: "",
+  escalationConfidence: 0.0,
+  escalationInProgress: false,
+  escalationJobId: null,
+  escalationError: null,
+
   currentThreadId: null,
   threads: [],
 
@@ -734,6 +775,111 @@ export const useAIStore = create<AIState>((set, get) => ({
 
   clearPendingUserResponse: () => {
     set({ pendingUserResponse: null });
+  },
+
+  setEscalation: (recommended: boolean, reasoning = "", confidence = 0.8) => {
+    set((state) => {
+      const msgs = [...state.messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "assistant") {
+        msgs[msgs.length - 1] = {
+          ...last,
+          escalation_recommended: recommended,
+          escalation_reasoning: reasoning,
+          escalation_confidence: confidence,
+        };
+      }
+      return {
+        messages: msgs,
+        escalationRecommended: recommended,
+        escalationReasoning: reasoning,
+        escalationConfidence: confidence,
+      };
+    });
+  },
+
+  escalateToTeam: async (taskOverride?: string) => {
+    const state = get();
+    const workspace = useWorkspaceStore.getState().currentWorkspace?.path || "";
+    const activePath = useEditorStore.getState().activePath;
+    const activeFiles = activePath ? [activePath] : [];
+
+    const lastUserMsg = [...state.messages].reverse().find((m) => m.role === "user");
+    const task = taskOverride || lastUserMsg?.content || "Complex development task";
+    const context = state.messages.map((m) => ({ role: m.role, content: m.content }));
+    const reason = state.escalationReasoning || "Task complexity exceeded single-agent threshold";
+
+    set({ escalationInProgress: true, escalationError: null });
+
+    try {
+      const res = await api.post<{ job_id: string; ws_url: string; priority: string; status: string }>(
+        "/api/team/jobs/from-rony",
+        {
+          task,
+          conversation_context: context,
+          active_files: activeFiles,
+          workspace,
+          escalation_reason: reason,
+          user_preferences: { model: state.model },
+        }
+      );
+
+      const jobId = res.job_id;
+      set((s) => {
+        const msgs = [...s.messages];
+        const last = msgs[msgs.length - 1];
+        if (last && last.role === "assistant") {
+          msgs[msgs.length - 1] = {
+            ...last,
+            escalation_recommended: false,
+            escalation_job_id: jobId,
+          };
+        }
+        return {
+          messages: msgs,
+          escalationRecommended: false,
+          escalationInProgress: false,
+          escalationJobId: jobId,
+          escalationError: null,
+        };
+      });
+
+      return jobId;
+    } catch (err: any) {
+      const errMsg = err?.message || "Failed to escalate to Agent Console";
+      set({ escalationInProgress: false, escalationError: errMsg });
+      return null;
+    }
+  },
+
+  declineEscalation: async (taskOverride?: string) => {
+    const state = get();
+    const lastUserMsg = [...state.messages].reverse().find((m) => m.role === "user");
+    const task = taskOverride || lastUserMsg?.content || "";
+
+    try {
+      await api.post("/api/intelligence/record-action", {
+        action: "escalation_declined",
+        task,
+      });
+    } catch (err) {
+      console.debug("Failed to record escalation decline:", err);
+    }
+
+    set((s) => {
+      const msgs = [...s.messages];
+      const last = msgs[msgs.length - 1];
+      if (last && last.role === "assistant") {
+        msgs[msgs.length - 1] = {
+          ...last,
+          escalation_recommended: false,
+        };
+      }
+      return {
+        messages: msgs,
+        escalationRecommended: false,
+      };
+    });
   },
 
   checkInterruptedState: async (workspace) => {

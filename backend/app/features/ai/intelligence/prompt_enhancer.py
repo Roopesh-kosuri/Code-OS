@@ -52,7 +52,7 @@ def get_enhancement_stats() -> dict[str, int]:
 
 
 def record_enhancement_action(action: str) -> None:
-    """Record user interaction with enhanced prompt (accept, revert, dismiss)."""
+    """Record user interaction with enhanced prompt (accept, revert, dismiss) or escalation decision."""
     action_clean = action.lower().strip()
     if action_clean == "accept":
         _STATS["accepted_count"] += 1
@@ -60,6 +60,13 @@ def record_enhancement_action(action: str) -> None:
         _STATS["tokens_saved_estimate"] += 450
     elif action_clean in ("revert", "keep_original", "reject"):
         _STATS["reverted_count"] += 1
+    elif action_clean == "escalation_declined":
+        try:
+            from app.features.ai.intelligence.escalation_tracker import record_escalation_declined
+            record_escalation_declined()
+        except Exception as err:
+            logger.debug("Failed to record escalation decline in tracker: %s", err)
+
 
 
 def clear_enhancer_session_cache() -> None:
