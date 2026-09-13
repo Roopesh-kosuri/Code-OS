@@ -301,7 +301,13 @@ async def submit_job_from_rony(payload: RonyEscalationJobRequest) -> dict[str, A
 
     asyncio.create_task(_run_bg())
 
-    # 6. Record initiation in escalation tracker
+    # 6. Record initiation in escalation tracker and resolve pending escalation gate
+    try:
+        from app.features.ai.harness.approval_coordinator import resolve_escalation
+        resolve_escalation(decision="escalate", workspace=workspace, task=payload.task)
+    except Exception as exc:
+        logger.debug("Failed to resolve pending escalation on team job creation: %s", exc)
+
     try:
         from app.features.ai.intelligence.escalation_tracker import record_escalation_initiated
         record_escalation_initiated(job_id, payload.task, reason)

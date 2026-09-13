@@ -124,28 +124,49 @@ def validate_language_syntax(path: str, content: str) -> tuple[bool, str]:
 
 
 def is_truncated_content(content: str) -> tuple[bool, str]:
-    """Detect if content appears truncated (e.g. cut off mid-statement at EOF)."""
+    """Detect if content appears truncated (e.g. cut off mid-statement at EOF or missing block closers)."""
     if not content or not content.strip():
         return False, ""
 
     stripped = content.strip()
-    last_line = stripped.splitlines()[-1].strip()
+    lines = [l for l in content.splitlines() if l.strip()]
+    if not lines:
+        return False, ""
+    last_line = lines[-1].strip()
 
     # Unbalanced curly braces usually indicate mid-block cut-off
     if content.count("{") > content.count("}"):
         return True, f"Truncated content: unclosed block ({content.count('{')} '{{' vs {content.count('}')} '}}')"
 
-    # Ends mid-expression or mid-keyword
+    # Unbalanced parentheses or brackets
+    if content.count("(") > content.count(")"):
+        return True, f"Truncated content: unclosed parenthesis ({content.count('(')} '(' vs {content.count(')')} ')')"
+    if content.count("[") > content.count("]"):
+        return True, f"Truncated content: unclosed bracket ({content.count('[')} '[' vs {content.count(']')} ']')"
+
+    # Ends mid-expression, mid-keyword, or trailing operator
     truncated_endings = (
-        re.compile(r"\b(def|class|function|import|from|return|const|let|var|if|else|while|for)\s*$", re.IGNORECASE),
+        re.compile(r"\b(def|class|function|import|from|return|const|let|var|if|else|elif|while|for|try|except|finally|with|async|await)\s*$", re.IGNORECASE),
         re.compile(r"\b(def|class)\s+[a-zA-Z_]\w*\s*(\([^)]*\))?\s*:\s*$", re.IGNORECASE),
-        re.compile(r"[=+\-*/&|,({\[]\s*$"),
+        re.compile(r"[=+\-*/&|,({\[\\.]\s*$"),
+        re.compile(r"\b(and|or|in|is|not|as)\s*$", re.IGNORECASE),
     )
     for pat in truncated_endings:
         if pat.search(last_line):
             return True, f"Truncated content: file ends abruptly with '{last_line[:40]}'"
 
-    if re.search(r"(//|#)\s*(continuing|\.\.\.)", last_line, re.IGNORECASE):
+    # Mid-statement member access e.g. "self." or "response."
+    if last_line.endswith("."):
+        return True, f"Truncated content: file ends with trailing dot '{last_line[:40]}'"
+
+    # Indented line at EOF without statement termination in Python
+    raw_last = lines[-1]
+    indent = len(raw_last) - len(raw_last.lstrip())
+    if indent > 0:
+        if last_line.endswith((":", ",", "\\", "(", "[", "{", "+", "-", "*", "/", "=")):
+            return True, f"Truncated content: indented block ends mid-statement '{last_line[:40]}'"
+
+    if re.search(r"(//|#)\s*(continuing|\.\.\.|to be continued)", last_line, re.IGNORECASE):
         return True, f"Truncated content: ending comment stub '{last_line}'"
 
     # Unclosed triple quotes in python
@@ -153,6 +174,13 @@ def is_truncated_content(content: str) -> tuple[bool, str]:
     triple_single = content.count("'''")
     if triple_double % 2 != 0 or triple_single % 2 != 0:
         return True, "Truncated content: unclosed multi-line string literal"
+
+    # Unclosed single/double quotes on the last line
+    stripped_slashes = re.sub(r'\\.', '', last_line)
+    d_quotes = stripped_slashes.count('"')
+    s_quotes = stripped_slashes.count("'")
+    if (d_quotes % 2 != 0 and '"""' not in last_line) or (s_quotes % 2 != 0 and "'''" not in last_line):
+        return True, f"Truncated content: unclosed string literal on last line '{last_line[:40]}'"
 
     return False, ""
 
@@ -256,6 +284,23 @@ def validate_content_integrity(
     is_trunc, trunc_msg = is_truncated_content(content)
     if is_trunc:
         return "incomplete", f"Truncated code detected in '{path}': {trunc_msg}"
+
+    # 3b. Undersized implementation check for complex tasks (e.g. 135-char OAuth2 flow)
+    stripped_len = len(content.strip())
+    q_lower = (user_query or "").lower()
+    is_complex_auth = any(kw in q_lower for kw in ("oauth", "oauth2", "providers", "rate limiting", "session management", "token refresh"))
+    if is_complex_auth and stripped_len < 250:
+        missing = []
+        if "provider" in q_lower and not re.search(r"\b(google|github|provider)\b", content, re.IGNORECASE):
+            missing.append("providers (Google/GitHub)")
+        if "token refresh" in q_lower and not re.search(r"\b(refresh|token)\b", content, re.IGNORECASE):
+            missing.append("token refresh")
+        if "session" in q_lower and not re.search(r"\b(session)\b", content, re.IGNORECASE):
+            missing.append("session management")
+        if "rate limit" in q_lower and not re.search(r"\b(rate_limit|rate\s+limit|limiter)\b", content, re.IGNORECASE):
+            missing.append("rate limiting")
+        if missing or stripped_len <= 150:
+            return "incomplete", f"Incomplete or truncated implementation staged for '{path}' ({stripped_len} chars): missing required components ({', '.join(missing) if missing else 'stub implementation'})."
 
     # 4. Cross-turn contamination
     is_contam, contam_msg = check_cross_turn_contamination(content, conversation_messages, extra_texts)

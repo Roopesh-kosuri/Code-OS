@@ -60,8 +60,67 @@ class PendingUserResponse:
     created_at: float = field(default_factory=time.time)
 
 
+@dataclass
+class PendingEscalation:
+    """An adaptive escalation recommendation awaiting user choice ([Escalate] vs [Continue with Rony])."""
+    action_id: str
+    task: str
+    reasoning: str
+    confidence: float
+    workspace: str = ""
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    decision: str = ""  # "escalate" | "continue"
+    created_at: float = field(default_factory=time.time)
+
+
 _pending_approvals: dict[str, PendingApproval] = {}
 _pending_user_responses: dict[str, PendingUserResponse] = {}
+_pending_escalations: dict[str, PendingEscalation] = {}
+
+
+def register_pending_escalation(escalation: PendingEscalation) -> None:
+    """Register a pending escalation recommendation."""
+    _pending_escalations[escalation.action_id] = escalation
+
+
+def resolve_escalation(action_id: str = "", decision: str = "continue", workspace: str = "", task: str = "") -> bool:
+    """Resolve a pending escalation decision ('continue' or 'escalate')."""
+    if action_id and action_id in _pending_escalations:
+        pending = _pending_escalations[action_id]
+        pending.decision = decision
+        pending.event.set()
+        return True
+
+    # If action_id not provided or not found, match by workspace or task
+    for aid, pending in list(_pending_escalations.items()):
+        if not pending.event.is_set():
+            if workspace and pending.workspace and (workspace in pending.workspace or pending.workspace in workspace):
+                pending.decision = decision
+                pending.event.set()
+                return True
+            if task and pending.task and (task[:40].lower() in pending.task.lower() or pending.task[:40].lower() in task.lower()):
+                pending.decision = decision
+                pending.event.set()
+                return True
+
+    # Fallback to resolving the most recent pending escalation
+    for aid, pending in reversed(list(_pending_escalations.items())):
+        if not pending.event.is_set():
+            pending.decision = decision
+            pending.event.set()
+            return True
+
+    return False
+
+
+def get_pending_escalation(action_id: str) -> Optional[PendingEscalation]:
+    """Retrieve pending escalation by action_id."""
+    return _pending_escalations.get(action_id)
+
+
+def remove_pending_escalation(action_id: str) -> None:
+    """Clean up pending escalation."""
+    _pending_escalations.pop(action_id, None)
 
 def _get_trusted_commands_path(workspace: str) -> Path:
     base = Path(workspace) if workspace else Path.cwd()
@@ -472,7 +531,7 @@ def respond_to_user_question(action_id: str, answer: str) -> bool:
 
 
 def clear_all_pending() -> int:
-    """Clear and reject all pending approvals and user responses when run is cancelled."""
+    """Clear and reject all pending approvals, user responses, and escalations when run is cancelled."""
     cleared = 0
     for action_id, pending in list(_pending_approvals.items()):
         pending.approved = False
@@ -483,6 +542,11 @@ def clear_all_pending() -> int:
         user_resp.selected_option = "Cancelled"
         user_resp.event.set()
         _pending_user_responses.pop(action_id, None)
+        cleared += 1
+    for action_id, esc in list(_pending_escalations.items()):
+        esc.decision = "continue"
+        esc.event.set()
+        _pending_escalations.pop(action_id, None)
         cleared += 1
     return cleared
 

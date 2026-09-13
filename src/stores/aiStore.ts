@@ -268,6 +268,7 @@ type AIState = {
   escalationConfidence: number;
   escalationInProgress: boolean;
   escalationJobId: string | null;
+  escalationActionId: string | null;
   escalationError: string | null;
   setEscalation: (recommended: boolean, reasoning?: string, confidence?: number) => void;
   escalateToTeam: (taskOverride?: string) => Promise<string | null>;
@@ -609,6 +610,7 @@ export function createSSEStreamHandler(
       const recommended = Boolean(data.recommended ?? data.should_escalate ?? true);
       const reasoning = data.reasoning || data.escalation_reasoning || "";
       const confidence = Number(data.confidence ?? data.escalation_confidence ?? 0.8);
+      const actionId = data.action_id || data.actionId || null;
       set((state) => {
         const messages = [...state.messages];
         const last = messages[messages.length - 1];
@@ -625,6 +627,7 @@ export function createSSEStreamHandler(
           escalationRecommended: recommended,
           escalationReasoning: reasoning,
           escalationConfidence: confidence,
+          escalationActionId: actionId,
         };
       });
     } else if (eventType === "done") {
@@ -743,6 +746,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   escalationConfidence: 0.0,
   escalationInProgress: false,
   escalationJobId: null,
+  escalationActionId: null,
   escalationError: null,
 
   currentThreadId: null,
@@ -812,6 +816,19 @@ export const useAIStore = create<AIState>((set, get) => ({
     set({ escalationInProgress: true, escalationError: null });
 
     try {
+      if (state.escalationActionId) {
+        try {
+          await api.post("/api/ai/chat-agent/escalation-decision", {
+            action_id: state.escalationActionId,
+            decision: "escalate",
+            workspace,
+            task,
+          });
+        } catch (e) {
+          console.debug("Failed to notify escalation-decision endpoint:", e);
+        }
+      }
+
       const res = await api.post<{ job_id: string; ws_url: string; priority: string; status: string }>(
         "/api/team/jobs/from-rony",
         {
@@ -840,6 +857,7 @@ export const useAIStore = create<AIState>((set, get) => ({
           escalationRecommended: false,
           escalationInProgress: false,
           escalationJobId: jobId,
+          escalationActionId: null,
           escalationError: null,
         };
       });
@@ -856,11 +874,26 @@ export const useAIStore = create<AIState>((set, get) => ({
     const state = get();
     const lastUserMsg = [...state.messages].reverse().find((m) => m.role === "user");
     const task = taskOverride || lastUserMsg?.content || "";
+    const workspace = useWorkspaceStore.getState().currentWorkspace?.path || "";
 
     try {
+      if (state.escalationActionId) {
+        try {
+          await api.post("/api/ai/chat-agent/escalation-decision", {
+            action_id: state.escalationActionId,
+            decision: "continue",
+            workspace,
+            task,
+          });
+        } catch (e) {
+          console.debug("Failed to notify escalation-decision endpoint:", e);
+        }
+      }
+
       await api.post("/api/intelligence/record-action", {
         action: "escalation_declined",
         task,
+        action_id: state.escalationActionId,
       });
     } catch (err) {
       console.debug("Failed to record escalation decline:", err);
@@ -878,6 +911,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       return {
         messages: msgs,
         escalationRecommended: false,
+        escalationActionId: null,
       };
     });
   },

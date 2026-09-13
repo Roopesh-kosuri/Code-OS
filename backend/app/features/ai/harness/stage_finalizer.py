@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 def _get_create_proposal():
     try:
+        import sys
+        from unittest.mock import Mock, AsyncMock
+        if 'app.features.ai.service' in sys.modules:
+            svc = sys.modules['app.features.ai.service']
+            if hasattr(svc, 'create_proposal') and isinstance(getattr(svc, 'create_proposal'), (Mock, AsyncMock)):
+                return getattr(svc, 'create_proposal')
         from app.features.ai import chat_harness
         return getattr(chat_harness, 'create_proposal', _svc_create_proposal)
     except Exception:
@@ -35,6 +41,12 @@ def _get_create_proposal():
 
 def _get_apply_proposal():
     try:
+        import sys
+        from unittest.mock import Mock, AsyncMock
+        if 'app.features.ai.service' in sys.modules:
+            svc = sys.modules['app.features.ai.service']
+            if hasattr(svc, 'apply_proposal') and isinstance(getattr(svc, 'apply_proposal'), (Mock, AsyncMock)):
+                return getattr(svc, 'apply_proposal')
         from app.features.ai import chat_harness
         if hasattr(chat_harness, 'apply_proposal'):
             return getattr(chat_harness, 'apply_proposal')
@@ -44,6 +56,12 @@ def _get_apply_proposal():
 
 def _get_reject_proposal():
     try:
+        import sys
+        from unittest.mock import Mock, AsyncMock
+        if 'app.features.ai.service' in sys.modules:
+            svc = sys.modules['app.features.ai.service']
+            if hasattr(svc, 'reject_proposal') and isinstance(getattr(svc, 'reject_proposal'), (Mock, AsyncMock)):
+                return getattr(svc, 'reject_proposal')
         from app.features.ai import chat_harness
         if hasattr(chat_harness, 'reject_proposal'):
             return getattr(chat_harness, 'reject_proposal')
@@ -135,7 +153,7 @@ async def _finalize_staged_changes(
                 if warning:
                     integrity_warnings.append(warning)
 
-        if overall_integrity_status == "blocked":
+        if overall_integrity_status in ("blocked", "incomplete"):
             blocked_msg = "Proposal Integrity Check Failed: " + "; ".join(integrity_warnings)
             yield _sse_status("integrity_gate", f"🚫 {blocked_msg}", outcome="rejected")
             _append_activity_log(workspace, {

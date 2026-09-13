@@ -130,7 +130,7 @@ from .harness import (
     _extract_heuristic_tool_calls, _parse_tool_calls_extended, _has_tool_calls_extended,
     step_matches_work,
     _clean_rel_path, _read_file_cached, _find_mismatch_context, _validate_smart_edit,
-    _handle_append_file, _handle_list_tests, _handle_run_single_test,
+    _handle_append_file, _handle_list_tests, _handle_run_single_test, _handle_get_diagnostics,
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
@@ -326,7 +326,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         yield _sse_tier_routing(tier, tier_label, reason=tier_reason)
         yield _sse_status("tier_routing", f"Routing: {tier_reason}", tier=tier, label=tier_label)
 
-        # Check adaptive escalation recommendation
+        # Check adaptive escalation recommendation and gate the turn (E1)
         try:
             from app.features.ai.intelligence.task_classifier import classify_task
             task_cls = classify_task(
@@ -335,12 +335,70 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 file_list=request.attached_paths,
                 use_llm=False,
             )
-            if task_cls.get("escalation_recommended"):
+            rec = task_cls.get("escalation_recommended")
+            conf = float(task_cls.get("escalation_confidence", 0.8))
+            reasoning = task_cls.get("escalation_reasoning", "")
+            if rec and conf > 0.6:
+                from .harness.approval_coordinator import (
+                    PendingEscalation,
+                    register_pending_escalation,
+                    remove_pending_escalation,
+                )
+                action_id = f"esc_{uuid.uuid4().hex[:12]}"
+                pending_esc = PendingEscalation(
+                    action_id=action_id,
+                    task=user_query,
+                    reasoning=reasoning,
+                    confidence=conf,
+                    workspace=workspace,
+                )
+                register_pending_escalation(pending_esc)
+
                 yield _sse_escalation_recommendation(
                     recommended=True,
-                    reasoning=task_cls.get("escalation_reasoning", ""),
-                    confidence=float(task_cls.get("escalation_confidence", 0.8)),
+                    reasoning=reasoning,
+                    confidence=conf,
+                    action_id=action_id,
                 )
+                yield _sse_status(
+                    "escalation_gate",
+                    "Complex task detected: Escalation recommended. Pausing before tool execution awaiting user decision...",
+                    action_id=action_id,
+                    confidence=conf,
+                )
+
+                try:
+                    # Gating: wait for user decision ([Escalate] vs [Continue with Rony])
+                    await asyncio.wait_for(pending_esc.event.wait(), timeout=300.0)
+                except asyncio.TimeoutError:
+                    logger.info("chat_harness: escalation gate timed out, defaulting to continue with Rony")
+                    pending_esc.decision = "continue"
+                finally:
+                    remove_pending_escalation(action_id)
+
+                if pending_esc.decision == "escalate":
+                    logger.info("chat_harness: turn escalated to 5-agent team; halting single-agent execution without tools")
+                    handoff_msg = (
+                        f"🎯 **Task Escalated to Agent Console**\n\n"
+                        f"This complex task exceeds single-agent capability and has been handed off to the 5-Agent Team (Planner, Coder, Tester, Reviewer, Documenter).\n\n"
+                        f"**Reasoning**: {reasoning}\n\n"
+                        f"Monitor real-time progress and DAG execution in the Agent Console."
+                    )
+                    yield _sse_token(handoff_msg)
+                    yield _sse_status("escalation_handoff", "Task successfully escalated to 5-Agent Team DAG.", status="escalated")
+                    _append_activity_log(workspace, {
+                        "action_type": "escalation_handoff",
+                        "target": user_query[:100],
+                        "outcome": "escalated",
+                        "tier": tier,
+                        "token_count": 0,
+                        "details": f"Escalated to 5-agent team: {reasoning}",
+                    })
+                    yield _sse_done(True, "Task escalated to Agent Console. 5-Agent Team has assumed execution.")
+                    return
+                else:
+                    logger.info("chat_harness: user chose to continue with Rony; proceeding with execution")
+                    yield _sse_status("escalation_resumed", "Resuming task execution with Rony Agent...")
         except Exception as exc:
             logger.debug("Escalation check in harness stream error: %s", exc)
 
@@ -526,6 +584,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         current_step = 0
         consecutive_failures = 0
         consecutive_tool_failures: dict[str, int] = {}
+        consecutive_failed_edits_per_path: dict[str, int] = {}
+        path_last_verification_failure: dict[str, str] = {}
+        repeat_edit_breaker_tripped_paths: set[str] = set()
+        edit_cuts_per_path: dict[str, int] = {}
+        MAX_TOOL_CALLS_PER_TURN = 25
         skipped_items: list[str] = []
         attempted_providers: set[str] = {effective_prov_key}
         prev_response_prefix: str = ""
@@ -971,25 +1034,42 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             if incomplete_native_tool_call or (stream_finish_reason == "length" and not native_tool_calls):
                 if response_text.strip():
                     messages.append(ChatMessage(role="assistant", content=_clean_response_text(response_text)))
-                if truncation_retries < 3:
-                    truncation_retries += 1
+                truncation_retries += 1
+                if truncation_retries == 1:
                     yield _sse_status(
                         "thinking",
-                        "Tool call was truncated — requesting one complete structured call before continuing...",
+                        "Tool call was truncated by token limit — requesting complete continuation chunk...",
                     )
                     messages.append(ChatMessage(
                         role="user",
                         content=(
-                            "Your previous structured tool call was incomplete and was NOT executed. "
+                            "Your previous structured tool call was incomplete and was NOT executed due to length truncation. "
                             "Emit ONE tool call only, with complete valid JSON arguments. For a large file, "
                             "use the next sequential write_file/edit_file or append_file chunk; do not repeat prior chunks."
                         ),
                     ))
                     iteration += 1
                     continue
-                yield _sse_error("Tool call remained incomplete after continuation attempts; no partial action was executed.")
-                yield _sse_done(False, "Task stopped: provider repeatedly truncated a structured tool call.")
-                return
+                elif truncation_retries == 2:
+                    yield _sse_status(
+                        "thinking",
+                        "Tool call was truncated twice — auto-splitting into per-function edits...",
+                    )
+                    messages.append(ChatMessage(
+                        role="user",
+                        content=(
+                            "Your output was truncated twice due to length limits. "
+                            "AUTO-SPLIT REQUIRED: Do NOT write or edit the whole file or module at once. "
+                            "Split your implementation into small, per-function or per-section edits using sequential "
+                            "`edit_file` or `append_file` calls. Focus on the first function now."
+                        ),
+                    ))
+                    iteration += 1
+                    continue
+                else:
+                    yield _sse_error("Tool call remained incomplete after continuation and auto-split attempts; no partial action was executed.")
+                    yield _sse_done(False, "Task stopped: provider repeatedly truncated a structured tool call.")
+                    return
             # Strip status retries, reasoning blocks, and think tags before saving to history
             clean_hist = re.sub(r"\[STATUS_RETRY:[^\]]*\]\n?", "", response_text)
             clean_hist = re.sub(r"<reasoning>[\s\S]*?</reasoning>", "", clean_hist, flags=re.IGNORECASE)
@@ -1143,10 +1223,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             prev_response_prefix = curr_prefix
 
             # ── Truncation / Timeout Detection & Recovery Guard ────────────────
-            if _is_response_truncated(response_text) or "[TRUNCATED" in response_text:
-                if truncation_retries < 3:
-                    truncation_retries += 1
-                    yield _sse_status("thinking", "Response was cut off or timed out — instructing agent to chunk and requesting continuation...")
+            if _is_response_truncated(response_text) or "[TRUNCATED" in response_text or stream_finish_reason == "length":
+                truncation_retries += 1
+                if truncation_retries == 1:
+                    yield _sse_status("thinking", "Response was cut off or timed out (truncated by token limit) — requesting structured continuation...")
                     messages.append(ChatMessage(
                         role="user",
                         content=(
@@ -1157,9 +1237,20 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     ))
                     iteration += 1
                     continue
+                elif truncation_retries == 2:
+                    yield _sse_status("thinking", "Output cut off twice — auto-splitting into per-function edits...")
+                    messages.append(ChatMessage(
+                        role="user",
+                        content=(
+                            "Output was cut off twice. AUTO-SPLIT REQUIRED: Do not attempt to write the entire file or large blocks at once. "
+                            "Split the implementation into smaller per-function edits. Stage the first function or component only."
+                        )
+                    ))
+                    iteration += 1
+                    continue
                 else:
                     yield _sse_error("output too large for one response — chunking required")
-                    yield _sse_done(False, "Task stopped: Output exceeded provider limit.")
+                    yield _sse_done(False, "Task stopped: Output repeatedly exceeded provider limit.")
                     return
 
             # ── Plan Parsing & Dynamic Tracking ──────────────────────────────
@@ -1235,6 +1326,61 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 executed_tools_this_turn: list[dict[str, Any]] = []
 
                 for tc in tool_calls[:MAX_TOOL_CALLS_PER_ITERATION]:
+                    # E7: Visible per-turn tool cap
+                    if total_tools_executed >= MAX_TOOL_CALLS_PER_TURN:
+                        logger.warning("chat_harness: visible per-turn tool cap reached (%d/%d)", total_tools_executed, MAX_TOOL_CALLS_PER_TURN)
+                        cap_report = (
+                            f"⚠️ **Per-Turn Tool Cap Reached ({total_tools_executed}/{MAX_TOOL_CALLS_PER_TURN} tool calls)**\n\n"
+                            f"### Honest Partial Report\n"
+                            f"- **Status**: Execution halted by per-turn tool cap to prevent runaway loops.\n"
+                            f"- **Tools Executed**: {total_tools_executed}\n"
+                            f"- **Staged Changes**: {', '.join(c.path for c in staged_changes) if staged_changes else 'None'}\n"
+                            f"- **Summary**: Successfully completed partial steps. Staged changes require review or approval before proceeding."
+                        )
+                        yield _sse_status("tool_cap_reached", f"Tool cap reached ({total_tools_executed}/{MAX_TOOL_CALLS_PER_TURN}). Emitting honest partial report...", tools=total_tools_executed)
+                        yield _sse_token(cap_report)
+                        if staged_changes:
+                            async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                                yield event
+                        _append_activity_log(workspace, {
+                            "action_type": "tool_cap_reached",
+                            "target": user_query[:100],
+                            "outcome": "cap_reached",
+                            "tier": tier,
+                            "token_count": 0,
+                            "details": f"Tool cap reached ({total_tools_executed} tool calls). Partial report emitted.",
+                        })
+                        yield _sse_done(True, "Turn completed: tool cap reached with honest partial report.")
+                        return
+
+                    # E2: Termination signal in ANY tool argument
+                    args_text = json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments)
+                    raw_full = f"{args_text} {tc.raw_text or ''}"
+                    if any(tok in raw_full for tok in ("[DONE]", "[COMPLETE]", "[TASK_DONE]")):
+                        logger.info("chat_harness: termination token [DONE] detected in tool arguments (%s): %s", tc.name, args_text[:100])
+                        yield _sse_status("termination_signal", "Termination token [DONE] detected in tool arguments. Finalizing turn...", tool=tc.name)
+                        finalization_ok = not staged_changes
+                        if staged_changes:
+                            async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                                yield event
+                                outcome = _finalization_succeeded(event)
+                                if outcome is not None:
+                                    finalization_ok = outcome
+                        duration_ms = (time.time() - start_time) * 1000.0
+                        tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+                        _clear_interrupted_state(workspace)
+                        _append_activity_log(workspace, {
+                            "action_type": "session_done",
+                            "target": user_query[:100],
+                            "outcome": "success" if finalization_ok else "rejected",
+                            "tier": tier,
+                            "token_count": tokens_used,
+                            "details": f"Completed via tool argument termination signal in {iteration + 1} iterations, {total_tools_executed} tools",
+                        })
+                        yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+                        yield _sse_done(finalization_ok, "Task completed and verified successfully." if finalization_ok else "Task completed with staged changes requiring resolution.")
+                        return
+
                     detail = tc.arguments.get("path") or tc.arguments.get("command") or tc.arguments.get("query") or tc.arguments.get("question") or tc.arguments.get("fact") or tc.arguments.get("target") or ""
                     try:
                         args_sig = json.dumps(tc.arguments, sort_keys=True)
@@ -1328,6 +1474,25 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         result = _handle_list_tests(workspace, tc.arguments)
                     elif tc.name == "run_single_test":
                         result = _handle_run_single_test(workspace, tc.arguments)
+                        if result.success:
+                            consecutive_failed_edits_per_path.clear()
+                            repeat_edit_breaker_tripped_paths.clear()
+                        else:
+                            test_target = _clean_rel_path(str(tc.arguments.get("test_path") or tc.arguments.get("path") or "")).lower()
+                            if test_target:
+                                path_last_verification_failure[test_target] = result.error or result.output
+                    elif tc.name == "get_diagnostics":
+                        result = _handle_get_diagnostics(workspace, tc.arguments)
+                        diag_target = _clean_rel_path(str(tc.arguments.get("file_path") or tc.arguments.get("path") or "")).lower()
+                        if result.success:
+                            diag_out = (result.output or "").lower()
+                            has_errors = "error" in diag_out or '"severity": 1' in diag_out or '"severity": "error"' in diag_out
+                            if not has_errors:
+                                consecutive_failed_edits_per_path.pop(diag_target, None)
+                                repeat_edit_breaker_tripped_paths.discard(diag_target)
+                        else:
+                            if diag_target:
+                                path_last_verification_failure[diag_target] = result.error or result.output
                     elif tc.name == "memory_write":
                         fact_text = str(tc.arguments.get("fact") or tc.arguments.get("memory") or "").strip()
                         if memory_write_disabled:
@@ -1662,7 +1827,28 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             phrase in q_text.lower() and phrase in user_query.lower()
                             for phrase in ("how are you", "who are you", "what are you", "how is it going")
                         )
-                        if is_conv or is_social_inquiry or is_mirror:
+
+                        # E5: Reject delegating self-review to user
+                        is_self_review = bool(re.search(
+                            r"(?:is\s+(?:(?:this|the|my)\s+(?:code|implementation|change|changes|solution|feature|result|output|work)|this|it|everything)\s+(?:complete|correct|done|good|acceptable|working|fine|ready|ok)\b"
+                            r"|(?:should\s+I|shall\s+I|do\s+you\s+want\s+me\s+to|would\s+you\s+like\s+me\s+to)\s+(?:proceed|continue|finalize|commit|stop|test|apply)\b"
+                            r"|(?:does\s+this|do\s+these(?:\s+changes)?)\s+look\s+(?:good|correct|right|ok|acceptable)\b"
+                            r"|(?:can\s+you|please|could\s+you)\s+(?:verify|review|check|validate)\s+(?:my|this|the)\b"
+                            r"|(?:what\s+do\s+you\s+think\s+of\s+(?:this|my|the)\s+(?:code|change|implementation))\b)",
+                            q_text,
+                            re.IGNORECASE,
+                        ))
+                        if is_self_review:
+                            logger.info("chat_harness: rejected ask_user for self-review delegation: %s", q_text)
+                            self_review_err = (
+                                "Self-review delegation policy: Never delegate verification or self-review to the user. "
+                                "It is your responsibility to verify code correctness using test runners, diagnostics, or code inspection. "
+                                "Provide an honest report of what you completed, what was verified, and conclude with [DONE]."
+                            )
+                            yield _sse_status("tool_error", self_review_err, tool="ask_user")
+                            result = ToolResult(tool_name="ask_user", success=False, output="", error=self_review_err)
+                            turn_all_tools_successful = False
+                        elif is_conv or is_social_inquiry or is_mirror:
                             logger.info("chat_harness: rejected ask_user for conversational/mirrored inquiry: %s", q_text)
                             mirror_err = "Answer the user's question directly in conversational prose instead of asking clarification."
                             yield _sse_status("tool_error", mirror_err, tool="ask_user")
@@ -1751,7 +1937,17 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         )
                         explicit_edit_command = any(kw in user_query.lower() for kw in ("edit", "modify", "update", "rewrite", "replace", "fix", "overwrite", "change"))
                         is_tech_name = target_base in KNOWN_TECH_NAMES
-                        if is_tech_name and not explicit_edit_command:
+                        if target_clean in repeat_edit_breaker_tripped_paths or consecutive_failed_edits_per_path.get(target_clean, 0) >= 3:
+                            repeat_edit_breaker_tripped_paths.add(target_clean)
+                            breaker_err = (
+                                f"Repeat-edit breaker tripped for '{raw_target}': 3 edit attempts on this path without a passing verification "
+                                "(run_single_test, get_diagnostics, or test runner). Edits on this path are halted."
+                            )
+                            logger.warning("chat_harness: %s", breaker_err)
+                            yield _sse_status("breaker_tripped", breaker_err, tool=tc.name, path=target_clean)
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=breaker_err)
+                            turn_all_tools_successful = False
+                        elif is_tech_name and not explicit_edit_command:
                             tech_err = (
                                 f"'{raw_target}' is a recognized technology or library name, not a valid project file to edit. "
                                 "Do not create empty files for technology names. Continue your analysis in prose or output [DONE]."
@@ -1791,27 +1987,59 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             result = ToolResult(tool_name=tc.name, success=False, output="", error=intent_err)
                             turn_all_tools_successful = False
                         elif tc.name == "edit_file":
+                            consecutive_failed_edits_per_path[target_clean] = consecutive_failed_edits_per_path.get(target_clean, 0) + 1
+                            raw_updated = tc.arguments.get("updated", "")
+                            model_emitted_len = len(raw_updated) if isinstance(raw_updated, str) else len(str(raw_updated or ""))
+                            parsed_len = len(str(tc.arguments.get("updated", "")))
                             valid, err, change = _validate_smart_edit(workspace, tc.arguments)
                             if valid and change:
-                                existing_idx = next((i for i, c in enumerate(staged_changes) if c.path == change.path), None)
-                                if existing_idx is not None:
-                                    staged_changes[existing_idx] = change
+                                staged_len = len(change.updated)
+                                applied_len = staged_len
+
+                                if model_emitted_len != parsed_len or parsed_len != staged_len:
+                                    mismatch_err = (
+                                        f"Byte-count fidelity mismatch on '{change.path}': "
+                                        f"model_emitted={model_emitted_len}, parsed={parsed_len}, staged={staged_len}. "
+                                        "Change blocked from staging."
+                                    )
+                                    logger.error("chat_harness: %s", mismatch_err)
+                                    yield _sse_status("fidelity_mismatch", mismatch_err, tool="edit_file", path=change.path)
+                                    result = ToolResult(tool_name="edit_file", success=False, output="", error=mismatch_err)
+                                    turn_all_tools_successful = False
                                 else:
-                                    staged_changes.append(change)
-                                try:
-                                    parent_dir = ensure_within_workspace(workspace, str(Path(change.path).parent))
-                                    parent_dir.mkdir(parents=True, exist_ok=True)
-                                except Exception:
-                                    pass
-                                result = ToolResult(
-                                    tool_name="edit_file",
-                                    success=True,
-                                    output=f"Successfully staged '{change.path}' ({len(change.updated)} chars). Changes are held in staging and will be written to disk on task completion. Proceed to create or edit remaining files.",
-                                    error=""
-                                )
+                                    existing_idx = next((i for i, c in enumerate(staged_changes) if c.path == change.path), None)
+                                    if existing_idx is not None:
+                                        staged_changes[existing_idx] = change
+                                    else:
+                                        staged_changes.append(change)
+                                    try:
+                                        parent_dir = ensure_within_workspace(workspace, str(Path(change.path).parent))
+                                        parent_dir.mkdir(parents=True, exist_ok=True)
+                                    except Exception:
+                                        pass
+                                    _append_activity_log(workspace, {
+                                        "action_type": "edit_byte_count_chain",
+                                        "target": change.path,
+                                        "outcome": "verified",
+                                        "tier": tier,
+                                        "token_count": 0,
+                                        "details": json.dumps({
+                                            "model_emitted": model_emitted_len,
+                                            "parsed": parsed_len,
+                                            "staged": staged_len,
+                                            "applied": applied_len,
+                                        }),
+                                    })
+                                    result = ToolResult(
+                                        tool_name="edit_file",
+                                        success=True,
+                                        output=f"Successfully staged '{change.path}' ({len(change.updated)} chars). Changes are held in staging and will be written to disk on task completion. Proceed to create or edit remaining files.",
+                                        error=""
+                                    )
                             else:
                                 result = ToolResult(tool_name="edit_file", success=False, output="", error=err)
                         else:  # append_file
+                            consecutive_failed_edits_per_path[target_clean] = consecutive_failed_edits_per_path.get(target_clean, 0) + 1
                             valid, err, change = _handle_append_file(workspace, tc.arguments, staged_changes)
                             if valid and change:
                                 result = ToolResult(
@@ -1928,57 +2156,73 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         else:
                             result = ToolResult(tool_name="semantic_search", success=True, output="No semantic matches found.")
 
-                    elif tc.name in ("take_screenshot", "inspect_visuals", "vision_inspect"):
-                        mode = str(tc.arguments.get("mode") or "preview").lower().strip()
-                        target = str(tc.arguments.get("target") or tc.arguments.get("path") or tc.arguments.get("url") or "").strip()
-                        question = str(tc.arguments.get("question") or tc.arguments.get("prompt") or "Describe visual layout, navigation, and any broken or overlapping elements.").strip()
-                        
-                        target_label = target or ("CODE OS App Window" if mode == "app_window" else "HTML Preview")
-                        yield _sse_status("vision", f"Capturing visual rendering ({mode}: {target_label})...", tool="take_screenshot", detail=f"{target_label} | {question[:60]}")
-                        
-                        success_cap, img_data, fmt = await capture_screenshot(mode=mode, target=target, workspace=workspace)
-                        if not success_cap:
-                            result = ToolResult(
-                                tool_name="take_screenshot",
-                                success=False,
-                                output="",
-                                error=f"Screenshot capture failed: {img_data}"
+                    elif tc.name in ("take_screenshot", "inspect_visuals", "vision_inspect", "vision"):
+                        raw_args = tc.arguments if isinstance(tc.arguments, dict) else {}
+                        mode_arg = raw_args.get("mode")
+                        target_arg = raw_args.get("target") or raw_args.get("path") or raw_args.get("url")
+                        has_explicit_target = bool(target_arg and str(target_arg).strip())
+                        has_explicit_mode = bool(mode_arg and str(mode_arg).strip().lower() in ("preview", "app_window", "element", "desktop", "tab"))
+                        has_visual_intent = has_explicit_target or has_explicit_mode or any(kw in str(raw_args).lower() for kw in ("screenshot", "visual", "layout", "render", "ui", "pixel", "canvas", "styling", "css", "preview"))
+
+                        if not has_explicit_target and not has_explicit_mode and not has_visual_intent:
+                            vision_gate_err = (
+                                "Vision tool requires explicit visual capture intent (target path/URL or specific mode). "
+                                "Bare text or code queries cannot be passed to vision tools; answer directly in prose or use search/read tools."
                             )
+                            yield _sse_status("tool_error", vision_gate_err, tool=tc.name)
+                            result = ToolResult(tool_name=tc.name, success=False, output="", error=vision_gate_err)
+                            turn_all_tools_successful = False
                         else:
-                            v_provider = request.vision_provider or request.provider
-                            v_model = request.vision_model or resolve_default_vision_model(v_provider)
-                            v_base_url = request.vision_base_url or request.base_url
-                            v_api_key = (await get_api_key(v_provider)) if v_provider != "ollama" else None
+                            mode = str(tc.arguments.get("mode") or "preview").lower().strip()
+                            target = str(tc.arguments.get("target") or tc.arguments.get("path") or tc.arguments.get("url") or "").strip()
+                            question = str(tc.arguments.get("question") or tc.arguments.get("prompt") or "Describe visual layout, navigation, and any broken or overlapping elements.").strip()
                             
-                            yield _sse_status("vision", f"Inspecting with Vision model ({v_model})...", tool="take_screenshot", detail=f"Question: {question[:60]}")
+                            target_label = target or ("CODE OS App Window" if mode == "app_window" else "HTML Preview")
+                            yield _sse_status("vision", f"Capturing visual rendering ({mode}: {target_label})...", tool=tc.name, detail=f"{target_label} | {question[:60]}")
                             
-                            success_vlm, findings = await analyze_image_with_vlm(
-                                image_base64=img_data,
-                                format_type=fmt,
-                                question=question,
-                                target=target,
-                                mode=mode,
-                                provider=v_provider,
-                                model=v_model,
-                                base_url=v_base_url,
-                                api_key=v_api_key,
-                            )
-                            
-                            if success_vlm:
-                                yield _sse_status("vision", f"Visual analysis complete: {findings[:80]}...", tool="take_screenshot", detail=f"Q: {question} | A: {findings[:120]}")
+                            success_cap, img_data, fmt = await capture_screenshot(mode=mode, target=target, workspace=workspace)
+                            if not success_cap:
                                 result = ToolResult(
-                                    tool_name="take_screenshot",
-                                    success=True,
-                                    output=f"=== VISUAL INSPECTION RESULT ({mode} mode, target: '{target_label}') ===\nQuestion Asked: {question}\n\nVisual Analysis Findings:\n{findings}",
-                                    error=""
-                                )
-                            else:
-                                result = ToolResult(
-                                    tool_name="take_screenshot",
+                                    tool_name=tc.name,
                                     success=False,
                                     output="",
-                                    error=f"Vision model analysis failed: {findings}"
+                                    error=f"Screenshot capture failed: {img_data}"
                                 )
+                            else:
+                                v_provider = request.vision_provider or request.provider
+                                v_model = request.vision_model or resolve_default_vision_model(v_provider)
+                                v_base_url = request.vision_base_url or request.base_url
+                                v_api_key = (await get_api_key(v_provider)) if v_provider != "ollama" else None
+                                
+                                yield _sse_status("vision", f"Inspecting with Vision model ({v_model})...", tool=tc.name, detail=f"Question: {question[:60]}")
+                                
+                                success_vlm, findings = await analyze_image_with_vlm(
+                                    image_base64=img_data,
+                                    format_type=fmt,
+                                    question=question,
+                                    target=target,
+                                    mode=mode,
+                                    provider=v_provider,
+                                    model=v_model,
+                                    base_url=v_base_url,
+                                    api_key=v_api_key,
+                                )
+                                
+                                if success_vlm:
+                                    yield _sse_status("vision", f"Visual analysis complete: {findings[:80]}...", tool=tc.name, detail=f"Q: {question} | A: {findings[:120]}")
+                                    result = ToolResult(
+                                        tool_name=tc.name,
+                                        success=True,
+                                        output=f"=== VISUAL INSPECTION RESULT ({mode} mode, target: '{target_label}') ===\nQuestion Asked: {question}\n\nVisual Analysis Findings:\n{findings}",
+                                        error=""
+                                    )
+                                else:
+                                    result = ToolResult(
+                                        tool_name=tc.name,
+                                        success=False,
+                                        output="",
+                                        error=f"Vision model analysis failed: {findings}"
+                                    )
                     elif tc.name == "run_test":
                         cmd = tc.arguments.get("command") or tc.arguments.get("test_path") or "pytest"
                         from .sandbox.policy import validate_test_command
@@ -2350,6 +2594,12 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
                     if result.success:
                         consecutive_tool_failures.pop(tool_sig, None)
+                        # Reset repeat edit breaker on passing test verification
+                        if tc.name in ("run_test", "run_single_test") or (
+                            tc.name == "run_command" and any(k in str(tc.arguments.get("command", "")).lower() for k in ("test", "pytest", "vitest", "jest", "cargo", "mvn"))
+                        ):
+                            consecutive_failed_edits_per_path.clear()
+                            repeat_edit_breaker_tripped_paths.clear()
                     else:
                         turn_all_tools_successful = False
                         consecutive_tool_failures[tool_sig] = consecutive_tool_failures.get(tool_sig, 0) + 1

@@ -54,7 +54,9 @@ class PromptEnhanceResponse(BaseModel):
 
 
 class PromptActionRequest(BaseModel):
-    action: str = Field(..., description="'accept' | 'revert' | 'dismiss'")
+    action: str = Field(..., description="'accept' | 'revert' | 'dismiss' | 'escalation_declined'")
+    task: Optional[str] = Field(default=None, description="Optional task associated with action")
+    action_id: Optional[str] = Field(default=None, description="Optional action or escalation ID")
 
 
 class EnhancementStatsResponse(BaseModel):
@@ -105,7 +107,17 @@ async def enhance_prompt_endpoint(payload: PromptEnhanceRequest) -> PromptEnhanc
 @router.post("/prompt-action")
 async def record_action_endpoint(payload: PromptActionRequest) -> dict[str, bool]:
     """Record user interaction with prompt enhancer (accept, revert, dismiss) or escalation decision."""
-    record_enhancement_action(payload.action)
+    record_enhancement_action(payload.action, task=payload.task)
+    if payload.action == "escalation_declined" or "escalat" in payload.action:
+        try:
+            from app.features.ai.harness.approval_coordinator import resolve_escalation
+            resolve_escalation(
+                action_id=payload.action_id or "",
+                decision="continue",
+                task=payload.task or "",
+            )
+        except Exception:
+            pass
     return {"success": True}
 
 

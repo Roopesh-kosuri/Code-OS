@@ -107,30 +107,35 @@ def escalation_classifier(
     matched_triggers: list[str] = []
     reasons: list[str] = []
 
-    # 1. Multi-file refactor (>5 files, architectural change)
+    # 1. Multi-file refactor (>5 files, architectural change, or module-wide implementation)
     file_list = ctx.get("file_list") or ctx.get("files") or []
     file_count = len(file_list) if isinstance(file_list, (list, tuple)) else 0
     refactor_detected = bool(re.search(r"\b(?:refactor|restructure|redesign|rewrite|overhaul)\b", text))
-    across_multiple = bool(re.search(r"across\s+[\w\s,]+(?:,|\band\b)[\w\s,]+", text))
+    module_wide_implementation = bool(re.search(r"\b(?:implement|build|create|setup|develop)\b[\s\S]*?\b(?:across\s+(?:the\s+)?entire|throughout\s+(?:the\s+)?entire|across\s+all|across\s+multiple)\b", text))
+    across_multiple = bool(re.search(r"across\s+[\w\s,]+(?:,|\band\b)[\w\s,]+", text)) or bool(re.search(r"\bacross\s+(?:the\s+)?entire\s+[\w\-]+\s+(?:module|system|package|codebase)\b", text))
     has_arch_kw = "architectural" in text or "architecture" in text
 
-    if (refactor_detected and (file_count > 5 or ">5 files" in text or "5+ files" in text or across_multiple or has_arch_kw)) or (file_count > 5 and has_arch_kw):
+    if (
+        (refactor_detected and (file_count > 5 or ">5 files" in text or "5+ files" in text or across_multiple or has_arch_kw))
+        or (file_count > 5 and has_arch_kw)
+        or (module_wide_implementation and across_multiple)
+    ):
         matched_triggers.append("multi_file_refactor")
-        reasons.append("Multi-file refactor or architectural restructuring across multiple components")
+        reasons.append("Multi-file refactor or module-wide architectural implementation across multiple components")
 
     # 2. New feature spanning multiple layers (DB + API + UI + tests)
     has_full_stack = bool(re.search(r"\b(?:full-stack|full\s+stack|fullstack|end-to-end|end\s+to\s+end|cross-cutting|all layers|multiple layers)\b", text))
     layers_detected = 0
-    if re.search(r"\b(?:db|database|sql|sqlite|postgres|mongo|schema|migration|models|orm|tables?|session|sessions|cache|store)\b", text):
+    if re.search(r"\b(?:db|database|sql|sqlite|postgres|mongo|schema|migration|models|orm|tables?|session|sessions|cache|store|token|tokens|refresh)\b", text):
         layers_detected += 1
-    if re.search(r"\b(?:api|endpoint|routes?|controller|handler|backend|rest|graphql|fastapi)\b", text):
+    if re.search(r"\b(?:api|endpoint|routes?|controller|handler|backend|rest|graphql|fastapi|providers?|oauth2?|auth\s+flow|login\s+module)\b", text):
         layers_detected += 1
-    if re.search(r"\b(?:ui|frontend|react|view|component|css|html|dialog|modal|client)\b", text):
+    if re.search(r"\b(?:ui|frontend|react|view|component|css|html|dialog|modal|client|screen)\b", text):
         layers_detected += 1
-    if re.search(r"\b(?:test|tests|testing|e2e|integration|unit\s+tests?|coverage|validators?)\b", text):
+    if re.search(r"\b(?:test|tests|testing|e2e|integration|unit\s+tests?|coverage|validators?|rate\s+limit(?:er|ing)?)\b", text):
         layers_detected += 1
 
-    if has_full_stack or layers_detected >= 2 or (refactor_detected and across_multiple):
+    if has_full_stack or layers_detected >= 2 or (refactor_detected and across_multiple) or (module_wide_implementation and layers_detected >= 2):
         matched_triggers.append("cross_layer_feature")
         reasons.append("Feature spans multiple codebase layers (data, API, UI, or test suite)")
 

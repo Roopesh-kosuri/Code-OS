@@ -630,3 +630,40 @@ async def test_direct_provider_call(payload: DirectProviderCallRequest) -> dict:
         }
 
 
+class EscalationDecisionRequest(BaseModel):
+    action_id: str = Field(default="", description="Escalation action ID")
+    decision: str = Field(default="continue", description="'continue' or 'escalate'")
+    workspace: str = Field(default="", description="Workspace path")
+    task: str = Field(default="", description="Task description")
+
+
+@router.post("/escalation-decision")
+async def handle_escalation_decision(payload: EscalationDecisionRequest) -> dict[str, Any]:
+    """Resolve an escalation decision from the user ('continue' or 'escalate')."""
+    from .harness.approval_coordinator import resolve_escalation
+    dec = (payload.decision or "continue").strip().lower()
+    if dec not in ("continue", "escalate"):
+        dec = "continue"
+
+    success = resolve_escalation(
+        action_id=payload.action_id,
+        decision=dec,
+        workspace=payload.workspace,
+        task=payload.task,
+    )
+
+    if dec == "continue":
+        try:
+            from app.features.ai.intelligence.escalation_tracker import record_escalation_declined
+            record_escalation_declined(payload.task or "User chose to continue with Rony")
+        except Exception:
+            pass
+
+    return {
+        "success": success,
+        "action_id": payload.action_id,
+        "decision": dec,
+    }
+
+
+

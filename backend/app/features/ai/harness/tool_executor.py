@@ -1109,10 +1109,22 @@ def _is_social_or_mood_fact(fact_str: str) -> bool:
     """Check if fact matches social, mood, greeting, or small talk patterns."""
     if not fact_str or not fact_str.strip():
         return False
+_CONTROL_SIGNAL_OR_BOILERPLATE_PATTERNS = [
+    re.compile(r"\[(?:DONE|COMPLETE|TASK_DONE|ESCALATE|ESCALATE_TO_DUO)\]", re.IGNORECASE),
+    re.compile(r"\b(?:staged\s+(?:file|changes|proposal)|staging\s+notification|changes\s+staged)\b", re.IGNORECASE),
+    re.compile(r"\b(?:changes\s+verified|all\s+tests\s+passed?|tests\s+pass|checkpoint\s+created|task\s+completed|finished\s+task|work\s+completed)\b", re.IGNORECASE),
+    re.compile(r"^(?:done|completed|finished|verified|staged|checkpoint|in progress)\b", re.IGNORECASE),
+]
+
+
+def _is_control_signal_or_boilerplate_fact(fact_str: str) -> bool:
+    """Check if fact matches control signals, staging notifications, or narration boilerplate."""
+    if not fact_str or not fact_str.strip():
+        return False
     stripped = fact_str.strip()
     if stripped.startswith(("- ", "* ")):
         stripped = stripped[2:].strip()
-    return any(p.search(stripped) for p in _NON_TECHNICAL_MEMORY_PATTERNS)
+    return any(p.search(stripped) for p in _CONTROL_SIGNAL_OR_BOILERPLATE_PATTERNS)
 
 
 def _handle_memory_write(workspace: str, arguments: dict) -> tuple[bool, str]:
@@ -1124,6 +1136,9 @@ def _handle_memory_write(workspace: str, arguments: dict) -> tuple[bool, str]:
     fact_str = str(fact).strip()
     if fact_str.startswith(("- ", "* ")):
         fact_str = fact_str[2:].strip()
+
+    if _is_control_signal_or_boilerplate_fact(fact_str):
+        return False, "Rejected: memory_write rejects control signals ('[DONE]'), staging notifications, and narration boilerplate ('changes verified'). Only durable technical facts (decisions, constraints, file truths) are storable."
 
     if _is_social_or_mood_fact(fact_str):
         return False, "Rejected: memory_write is restricted to technical project facts, architectural decisions, and coding conventions (social/mood notes are not permitted)."
@@ -1253,10 +1268,13 @@ def _validate_smart_edit(
         return False, f"Cannot edit reference document '{clean_path}'. Attached and uploaded documents are strictly read-only data. Provide your analysis, review, or answer in direct conversation prose.", None
 
     if not original:
-        from .content_integrity import is_placeholder_content, validate_language_syntax
+        from .content_integrity import is_placeholder_content, is_truncated_content, validate_language_syntax
         is_ph, ph_msg = is_placeholder_content(updated)
         if is_ph:
             return False, f"Staging rejected for '{clean_path}': placeholder or stub code detected ({ph_msg}). Provide full, functional implementation.", None
+        is_trunc, trunc_msg = is_truncated_content(updated)
+        if is_trunc:
+            return False, f"Staging rejected for '{clean_path}': truncated code detected ({trunc_msg}). Provide full, untruncated implementation.", None
         syn_ok, syn_msg = validate_language_syntax(clean_path, updated)
         if not syn_ok:
             return False, f"Staging rejected for '{clean_path}': {syn_msg}", None
@@ -1276,10 +1294,14 @@ def _validate_smart_edit(
         )
         return False, err_msg, None
 
-    from .content_integrity import is_placeholder_content, validate_language_syntax
+    from .content_integrity import is_placeholder_content, is_truncated_content, validate_language_syntax
     is_ph, ph_msg = is_placeholder_content(updated)
     if is_ph:
         return False, f"Staging rejected for '{clean_path}': placeholder or stub code detected ({ph_msg}). Provide full, functional implementation.", None
+
+    is_trunc, trunc_msg = is_truncated_content(updated)
+    if is_trunc:
+        return False, f"Staging rejected for '{clean_path}': truncated code detected ({trunc_msg}). Provide full, untruncated implementation.", None
 
     projected_content = current_content.replace(original, updated, 1)
     syn_ok, syn_msg = validate_language_syntax(clean_path, projected_content)
