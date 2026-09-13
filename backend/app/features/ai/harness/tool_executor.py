@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.paths import ensure_within_workspace, normalize_workspace
 from app.features.ai.schemas import FileChange
+from app.features.terminal.service import _build_safe_environment
 from .compaction_manager import _generate_diff_summary
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ from app.features.ai.agents.agent_tools import (
     ToolCall,
     ToolResult,
     summarize_test_output,
+    _test_output_has_failures,
     _clean_rel_path,
     AGENT_TOOLS,
 )
@@ -1433,9 +1435,11 @@ def _handle_run_single_test(workspace: str, arguments: dict) -> ToolResult:
             timeout=30.0,
         )
         raw_output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-        status_str = "PASSED" if proc.returncode == 0 else f"FAILED (exit code {proc.returncode})"
+        output_has_failures = _test_output_has_failures(raw_output)
+        success = proc.returncode == 0 and not output_has_failures
+        status_str = "PASSED" if success else f"FAILED (exit code {proc.returncode})"
 
-        if proc.returncode == 0:
+        if success:
             summary = f"1 test passed: {node_id_clean}"
             lines = [l.strip() for l in raw_output.splitlines() if "passed" in l.lower() or "===" in l]
             if lines:
@@ -1445,8 +1449,13 @@ def _handle_run_single_test(workspace: str, arguments: dict) -> ToolResult:
 
         return ToolResult(
             tool_name="run_single_test",
-            success=True,
+            success=success,
             output=f"=== TEST RUN: pytest {node_id_clean} [{status_str}] ===\n{summary}",
+            error="" if success else (
+                f"Test output reported failures despite exit code 0: {summary}"
+                if proc.returncode == 0
+                else f"Test command failed with exit code {proc.returncode}: {summary}"
+            ),
         )
     except subprocess.TimeoutExpired:
         return ToolResult(tool_name="run_single_test", success=False, output="", error=f"Test timed out after 30s: {node_id_clean}")

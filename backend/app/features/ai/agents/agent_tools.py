@@ -367,6 +367,17 @@ def summarize_test_output(raw_output: str, max_chars: int = 1000) -> str:
     return clean_text[-max_chars:].strip()
 
 
+def _test_output_has_failures(raw_output: str) -> bool:
+    """Return whether pytest/vitest-style output reports one or more failures."""
+    return any(re.search(pattern, raw_output, re.IGNORECASE | re.MULTILINE) for pattern in (
+        r"\b[1-9]\d*\s+(?:failed|errors?)\b",
+        r"^=+\s*(?:FAILURES|ERRORS)\s*=+",
+        r"^\s*FAIL\s+",
+        r"^\s*[✕×]\s+",
+        r"^\s*Test Files\s+\d+\s+failed\b",
+    ))
+
+
 def _handle_run_test(workspace: str, arguments: dict) -> ToolResult:
     """Run tests or verification commands safely in the workspace."""
     import os
@@ -440,18 +451,25 @@ def _handle_run_test(workspace: str, arguments: dict) -> ToolResult:
             timeout=30.0,
         )
         raw_output = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-        status_str = "PASSED" if proc.returncode == 0 else f"FAILED (exit code {proc.returncode})"
+        output_has_failures = _test_output_has_failures(raw_output)
+        success = proc.returncode == 0 and not output_has_failures
+        status_str = "PASSED" if success else f"FAILED (exit code {proc.returncode})"
         
         # When passed, return short confirmation; when failed, extract concise traceback
-        if proc.returncode == 0:
+        if success:
             summary = "All tests passed successfully."
         else:
             summary = summarize_test_output(raw_output, max_chars=1200)
 
         return ToolResult(
             tool_name="run_test",
-            success=True,
-            output=f"=== TEST RUN: {cmd_clean} [{status_str}] ===\n{summary}"
+            success=success,
+            output=f"=== TEST RUN: {cmd_clean} [{status_str}] ===\n{summary}",
+            error="" if success else (
+                f"Test output reported failures despite exit code 0: {summary}"
+                if proc.returncode == 0
+                else f"Test command failed with exit code {proc.returncode}: {summary}"
+            ),
         )
     except subprocess.TimeoutExpired:
         return ToolResult(tool_name="run_test", success=False, output="", error=f"Command timed out after 30 seconds: {cmd_clean}")

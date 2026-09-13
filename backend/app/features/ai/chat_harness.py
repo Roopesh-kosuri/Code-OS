@@ -85,6 +85,7 @@ from .agents.agent_tools import (
     ToolCall,
     ToolResult,
     summarize_test_output,
+    _test_output_has_failures,
     _clean_rel_path,
     AGENT_TOOLS,
 )
@@ -1490,7 +1491,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         result = _handle_list_tests(workspace, tc.arguments)
                     elif tc.name == "run_single_test":
                         result = _handle_run_single_test(workspace, tc.arguments)
-                        if result.success:
+                        if result.success and not _test_output_has_failures(result.output):
                             consecutive_failed_edits_per_path.clear()
                             repeat_edit_breaker_tripped_paths.clear()
                         else:
@@ -2619,9 +2620,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     if result.success:
                         consecutive_tool_failures.pop(tool_sig, None)
                         # Reset repeat edit breaker on passing test verification
-                        if tc.name in ("run_test", "run_single_test") or (
+                        if not _test_output_has_failures(result.output) and (tc.name in ("run_test", "run_single_test") or (
                             tc.name == "run_command" and any(k in str(tc.arguments.get("command", "")).lower() for k in ("test", "pytest", "vitest", "jest", "cargo", "mvn"))
-                        ):
+                        )):
                             consecutive_failed_edits_per_path.clear()
                             repeat_edit_breaker_tripped_paths.clear()
                     else:
