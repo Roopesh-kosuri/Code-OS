@@ -5,6 +5,7 @@ import asyncio
 import logging
 import subprocess
 import time
+from pathlib import Path
 from typing import Any
 
 from .marathon_schemas import (
@@ -142,6 +143,21 @@ class MarathonExecutor:
                 if result.get("success"):
                     # Commit and mark done
                     commit_hash = await self._git_commit(task)
+                    if not commit_hash:
+                        error_msg = "Git commit failed; task changes were rolled back."
+                        task.error_log.append(f"Attempt {attempt}: {error_msg}")
+                        task.retry_count += 1
+                        await self._git_rollback(0, task)
+                        # The current public task-status schema has no FAILED
+                        # value; BLOCKED is the existing terminal failure state.
+                        task.status = SubTaskStatus.BLOCKED
+                        self._emit_update("task_failed", {
+                            "task_id": task.id,
+                            "attempt": attempt,
+                            "error": error_msg,
+                        })
+                        logger.error("Marathon task %s failed: git commit did not succeed", task.id)
+                        return
                     task.git_commit_hash = commit_hash
                     task.status = SubTaskStatus.COMPLETED
                     task.completed_at = time.time()
@@ -216,22 +232,43 @@ class MarathonExecutor:
 
     # ── Git operations ────────────────────────────────────────────────────────
 
-    async def _git_commit(self, task: MarathonSubTask) -> str:
-        """Stage all changes and create a local commit."""
+    def _approved_task_paths(self, task: MarathonSubTask) -> list[str]:
+        """Return task targets as workspace-contained, Git-relative paths."""
+        workspace = Path(self.state.workspace).resolve()
+        approved: list[str] = []
+        for target in task.target_files:
+            candidate = Path(target)
+            full_path = candidate.resolve() if candidate.is_absolute() else (workspace / candidate).resolve()
+            try:
+                relative = full_path.relative_to(workspace).as_posix()
+            except ValueError:
+                logger.error("Marathon task %s target escapes workspace: %s", task.id, target)
+                return []
+            if relative not in approved:
+                approved.append(relative)
+        return approved
+
+    async def _git_commit(self, task: MarathonSubTask) -> str | None:
+        """Stage only this task's approved paths and create a local commit."""
         try:
             commit_msg = f"feat(marathon): {task.title}"
             workspace = self.state.workspace
+            approved_paths = self._approved_task_paths(task)
+            if not approved_paths:
+                logger.error("git commit refused: Marathon task %s has no approved target files", task.id)
+                return None
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(
-                    ["git", "add", "-A"],
+                    ["git", "add", "--", *approved_paths],
                     cwd=workspace, capture_output=True, text=True, timeout=30,
                 ),
             )
             if result.returncode != 0:
-                logger.warning("git add failed: %s", result.stderr)
+                logger.error("git add failed for task %s: %s", task.id, result.stderr)
+                return None
 
             result = await loop.run_in_executor(
                 None,
@@ -240,23 +277,52 @@ class MarathonExecutor:
                     cwd=workspace, capture_output=True, text=True, timeout=30,
                 ),
             )
-            if result.returncode == 0:
-                # Extract commit hash from output
-                for line in result.stdout.splitlines():
-                    if line.startswith("["):
-                        parts = line.split()
-                        if len(parts) >= 2:
-                            return parts[1].strip("]")
-            return "unknown"
+            if result.returncode != 0:
+                logger.error("git commit failed for task %s: %s", task.id, result.stderr)
+                return None
+            hash_result = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=workspace, capture_output=True, text=True, timeout=30,
+                ),
+            )
+            if hash_result.returncode != 0:
+                logger.error("git rev-parse failed after task %s commit: %s", task.id, hash_result.stderr)
+                return None
+            return hash_result.stdout.strip() or None
         except Exception as exc:
             logger.error("git_commit failed: %s", exc)
-            return "error"
+            return None
 
-    async def _git_rollback(self, n_commits: int) -> None:
-        """Soft-reset to undo n failed commits."""
+    async def _git_rollback(self, n_commits: int, task: MarathonSubTask | None = None) -> None:
+        """Roll back a failed task's paths, or retain legacy commit-count rollback."""
         try:
             workspace = self.state.workspace
             loop = asyncio.get_event_loop()
+            if task is not None:
+                approved_paths = self._approved_task_paths(task)
+                if not approved_paths:
+                    return
+                restore = await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["git", "restore", "--source=HEAD", "--staged", "--worktree", "--", *approved_paths],
+                        cwd=workspace, capture_output=True, text=True, timeout=30,
+                    ),
+                )
+                if restore.returncode != 0:
+                    logger.warning("git restore failed for task %s: %s", task.id, restore.stderr)
+                clean = await loop.run_in_executor(
+                    None,
+                    lambda: subprocess.run(
+                        ["git", "clean", "-f", "--", *approved_paths],
+                        cwd=workspace, capture_output=True, text=True, timeout=30,
+                    ),
+                )
+                if clean.returncode != 0:
+                    logger.warning("git clean failed for task %s: %s", task.id, clean.stderr)
+                return
             await loop.run_in_executor(
                 None,
                 lambda: subprocess.run(

@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import time
 import tempfile
 from pathlib import Path
@@ -303,6 +304,57 @@ async def test_blocked_task_is_skipped_not_halted(tmp_workspace: str):
     # Verify ready_tasks still contains t2
     ready = state.ready_tasks
     assert any(t.id == t2.id for t in ready), "t2 should still be ready after t1 is blocked"
+
+
+@pytest.mark.asyncio
+async def test_git_commit_stages_only_approved_task_paths(tmp_workspace: str):
+    """A dirty unrelated file must not enter a Marathon task commit."""
+    from app.features.ai.marathon.marathon_schemas import MarathonState, BudgetConfig, MarathonSubTask
+    from app.features.ai.marathon.marathon_executor import MarathonExecutor
+
+    workspace = Path(tmp_workspace)
+    (workspace / "task.py").write_text("task change\n", encoding="utf-8")
+    (workspace / "unrelated.py").write_text("must remain dirty\n", encoding="utf-8")
+    task = MarathonSubTask(title="Task only", target_files=["task.py"])
+    executor = MarathonExecutor(MarathonState(goal="scope commit", workspace=tmp_workspace, budget=BudgetConfig()))
+
+    commit_hash = await executor._git_commit(task)
+    committed = subprocess.run(
+        ["git", "show", "--format=", "--name-only", "HEAD"],
+        cwd=tmp_workspace, capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    status = subprocess.run(["git", "status", "--short"], cwd=tmp_workspace, capture_output=True, text=True, check=True).stdout
+
+    assert commit_hash
+    assert committed == ["task.py"]
+    assert "unrelated.py" in status
+
+
+@pytest.mark.asyncio
+async def test_git_commit_failure_marks_task_terminal_and_rolls_back(tmp_workspace: str):
+    """A rejected commit never completes the task and restores only its targets."""
+    from app.features.ai.marathon.marathon_schemas import MarathonState, BudgetConfig, MarathonSubTask, SubTaskStatus
+    from app.features.ai.marathon.marathon_executor import MarathonExecutor
+
+    workspace = Path(tmp_workspace)
+    (workspace / "task.py").write_text("task change\n", encoding="utf-8")
+    hooks = workspace / "hooks"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    subprocess.run(["git", "config", "core.hooksPath", str(hooks)], cwd=tmp_workspace, check=True)
+
+    task = MarathonSubTask(title="Commit must fail", target_files=["task.py"])
+    executor = MarathonExecutor(MarathonState(goal="commit failure", workspace=tmp_workspace, budget=BudgetConfig()))
+    executor._dispatch_to_team = AsyncMock(return_value={"success": True, "tokens_used": 0, "cost_usd": 0.0})
+
+    await executor._execute_subtask(task)
+
+    assert task.status == SubTaskStatus.BLOCKED
+    assert task.git_commit_hash is None
+    assert any("Git commit failed" in error for error in task.error_log)
+    assert not (workspace / "task.py").exists()
 
 
 # ── Test F: Marathon resumes after backend restart ────────────────────────────
