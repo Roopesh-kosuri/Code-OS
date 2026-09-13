@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from functools import lru_cache
 from typing import Any, Optional
 
 from app.features.ai.schemas import ChatMessage
@@ -32,7 +33,7 @@ class GovernanceResult(tuple):
     tools: list[dict[str, Any]] | None
     was_adjusted: bool
     summary_reason: str
-    breakdown: dict[str, int]
+    breakdown: dict[str, Any]
     failed_closed: bool
 
     def __new__(
@@ -41,7 +42,7 @@ class GovernanceResult(tuple):
         tools: list[dict[str, Any]] | None,
         was_adjusted: bool,
         summary_reason: str,
-        breakdown: Optional[dict[str, int]] = None,
+        breakdown: Optional[dict[str, Any]] = None,
         failed_closed: bool = False,
     ):
         instance = super().__new__(cls, (messages, tools, was_adjusted, summary_reason))
@@ -54,43 +55,80 @@ class GovernanceResult(tuple):
         return instance
 
 
+def _tokenizer_name(provider: str, model: str) -> str:
+    """Select the OpenAI-compatible BPE family used by the provider/model."""
+    provider_key = (provider or "").lower()
+    model_key = (model or "").lower()
+    if any(marker in model_key for marker in ("gpt-4o", "o1", "o3", "o4", "gpt-5", "chatgpt")):
+        return "o200k_base"
+    # Compatible OpenAI endpoints that do not identify an o200k model use the
+    # cl100k family. This includes the supported Groq/NIM-compatible requests.
+    return "cl100k_base"
+
+
+@lru_cache(maxsize=2)
+def _get_token_encoder(encoding_name: str) -> Any | None:
+    try:
+        import tiktoken  # type: ignore[import-not-found]
+        return tiktoken.get_encoding(encoding_name)
+    except Exception:
+        return None
+
+
+def get_token_count(text: str, provider: str = "", model: str = "") -> int | None:
+    """Return the exact BPE count, or ``None`` when its tokenizer is unavailable."""
+    if not isinstance(text, str):
+        return None
+    encoder = _get_token_encoder(_tokenizer_name(provider, model))
+    if encoder is None:
+        return None
+    try:
+        return len(encoder.encode(text))
+    except Exception:
+        return None
+
+
 def estimate_payload_breakdown(
     messages: list[ChatMessage],
     tools: list[dict[str, Any]] | None = None,
-) -> dict[str, int]:
+    provider: str = "",
+    model: str = "",
+) -> dict[str, int | None]:
     """Calculate token breakdown across all parts of the request payload."""
-    system_chars = 0
-    history_chars = 0
-    rag_chars = 0
-    attachment_chars = 0
+    system_parts: list[str] = []
+    history_parts: list[str] = []
+    rag_parts: list[str] = []
+    attachment_parts: list[str] = []
 
     for m in messages:
         c = getattr(m, "content", None) or ""
         role = getattr(m, "role", "")
         # Heuristic tagging for RAG context blocks
         if any(marker in c for marker in ("Relevant files from codebase:", "## Symbol Definition Locations:", "### Symbol '")):
-            rag_chars += len(c)
+            rag_parts.append(c)
         elif any(marker in c for marker in ("<file ", "<attachment ", "<untrusted_file_content ")):
-            attachment_chars += len(c)
+            attachment_parts.append(c)
         elif role == "system":
-            system_chars += len(c)
+            system_parts.append(c)
         else:
-            history_chars += len(c)
+            history_parts.append(c)
 
-    tool_chars = 0
+    tools_text = ""
     if tools:
         try:
-            tools_json = json.dumps(tools)
-            tool_chars = len(tools_json)
+            tools_text = json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
         except Exception:
-            tool_chars = len(tools) * 320
+            tools_text = None
 
-    system_tokens = system_chars // 4
-    history_tokens = history_chars // 4
-    rag_tokens = rag_chars // 4
-    attachment_tokens = attachment_chars // 4
-    tool_tokens = tool_chars // 4
-    total_tokens = system_tokens + history_tokens + rag_tokens + attachment_tokens + tool_tokens
+    counts = [
+        get_token_count("\n".join(system_parts), provider, model),
+        get_token_count("\n".join(history_parts), provider, model),
+        get_token_count("\n".join(rag_parts), provider, model),
+        get_token_count("\n".join(attachment_parts), provider, model),
+        get_token_count(tools_text, provider, model) if tools_text is not None else None,
+    ]
+    system_tokens, history_tokens, rag_tokens, attachment_tokens, tool_tokens = counts
+    total_tokens = sum(counts) if all(count is not None for count in counts) else None
 
     return {
         "system_tokens": system_tokens,
@@ -102,9 +140,14 @@ def estimate_payload_breakdown(
     }
 
 
-def estimate_request_tokens(messages: list[ChatMessage], tools: list[dict[str, Any]] | None = None) -> int:
+def estimate_request_tokens(
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]] | None = None,
+    provider: str = "",
+    model: str = "",
+) -> int | None:
     """Estimate total token consumption of messages and tool definitions."""
-    breakdown = estimate_payload_breakdown(messages, tools)
+    breakdown = estimate_payload_breakdown(messages, tools, provider, model)
     return breakdown["total_tokens"]
 
 
@@ -201,8 +244,14 @@ def govern_payload(
     prov_key = (provider or "").lower().strip()
     budget = hard_tpm_limit or PROVIDER_TOKEN_BUDGETS.get(prov_key, DEFAULT_MAX_REQUEST_TOKENS)
 
-    breakdown = estimate_payload_breakdown(messages, tools)
+    breakdown = estimate_payload_breakdown(messages, tools, prov_key, model)
     estimated_tokens = breakdown["total_tokens"]
+
+    if estimated_tokens is None:
+        summary = "fail_closed: exact tokenizer unavailable; refusing to estimate request payload."
+        logger.error("payload_governor: %s provider=%s model=%s", summary, prov_key, model)
+        _log_governance_event(workspace, prov_key, budget, breakdown, ["fail_closed_tokenizer_unavailable"], failed_closed=True)
+        return GovernanceResult(messages, tools, False, summary, breakdown, True)
 
     if estimated_tokens <= budget:
         return GovernanceResult(messages, tools, False, "", breakdown, False)
@@ -222,7 +271,9 @@ def govern_payload(
         if len(compacted) < len(adjusted_messages) or sum(len(m.content) for m in compacted) < sum(len(m.content) for m in adjusted_messages):
             adjusted_messages = compacted
             adjustments_applied.append("compacted_history")
-            breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools)
+            breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+            if breakdown["total_tokens"] is None:
+                return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
             if breakdown["total_tokens"] <= budget:
                 _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
                 return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
@@ -254,7 +305,9 @@ def govern_payload(
 
     if rag_or_att_truncated:
         adjusted_messages = new_msgs
-        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools)
+        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+        if breakdown["total_tokens"] is None:
+            return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
         if breakdown["total_tokens"] <= budget:
             _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
             return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
@@ -264,7 +317,9 @@ def govern_payload(
         mcp_tools = [t for t in adjusted_tools if "[MCP Tool" in str(t.get("function", {}).get("description", ""))]
         adjusted_tools = list(SLIM_CODING_TOOLS) + mcp_tools
         adjustments_applied.append("swapped_to_slim_tools")
-        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools)
+        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+        if breakdown["total_tokens"] is None:
+            return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
         if breakdown["total_tokens"] <= budget:
             _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
             return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
@@ -289,7 +344,7 @@ def _log_governance_event(
     workspace: str,
     provider: str,
     budget: int,
-    breakdown: dict[str, int],
+    breakdown: dict[str, Any],
     adjustments: list[str],
     failed_closed: bool,
 ) -> None:
@@ -308,3 +363,20 @@ def _log_governance_event(
         })
     except Exception as exc:
         logger.debug("Failed to log governance event: %s", exc)
+
+
+def _tokenizer_unavailable_result(
+    messages: list[ChatMessage],
+    tools: list[dict[str, Any]] | None,
+    provider: str,
+    model: str,
+    budget: int,
+    breakdown: dict[str, int | None],
+    adjustments: list[str],
+    workspace: str,
+) -> GovernanceResult:
+    summary = "fail_closed: exact tokenizer became unavailable during payload reduction."
+    logger.error("payload_governor: %s provider=%s model=%s", summary, provider, model)
+    adjustments = adjustments + ["fail_closed_tokenizer_unavailable"]
+    _log_governance_event(workspace, provider, budget, breakdown, adjustments, failed_closed=True)
+    return GovernanceResult(messages, tools, bool(adjustments), summary, breakdown, True)

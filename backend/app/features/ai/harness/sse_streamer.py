@@ -9,6 +9,8 @@ import json
 import re
 from typing import Any
 
+from .payload_governor import get_token_count
+
 
 def _sse_event(event_type: str, data: dict[str, Any]) -> str:
     """Format a typed Server-Sent Event conforming to the SSE wire standard."""
@@ -174,7 +176,9 @@ class StreamReasoningFilter:
     Routes reasoning text to thinking events, suppresses machine tool calls from user prose, and emits clean user text to token events.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, provider: str = "", model: str = "") -> None:
+        self.provider = provider
+        self.model = model
         self.buffer = ""
         self.in_thought = False
         self.thought_tag_close = ""
@@ -265,9 +269,10 @@ class StreamReasoningFilter:
                         self.accumulated_thought += thought_content
                         clean_thought = self.accumulated_thought.strip()
                         if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
-                            token_estimate = max(1, len(clean_thought) // 4)
+                            token_estimate = get_token_count(clean_thought, self.provider, self.model)
                             events.append(("thinking", clean_thought))
-                            events.append(("thinking_tokens", token_estimate))
+                            if token_estimate is not None:
+                                events.append(("thinking_tokens", token_estimate))
                         self.buffer = self.buffer[idx + len(self.thought_tag_close):]
                         self.in_thought = False
                         self.thought_tag_close = ""
@@ -277,9 +282,9 @@ class StreamReasoningFilter:
                         self.accumulated_thought += self.buffer
                         clean_thought = self.accumulated_thought.strip()
                         if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
-                            token_estimate = max(1, len(clean_thought) // 4)
+                            token_estimate = get_token_count(clean_thought, self.provider, self.model)
                             # Emit token count every ~50 tokens
-                            if token_estimate - self.last_reported_thought_tokens >= 30:
+                            if token_estimate is not None and token_estimate - self.last_reported_thought_tokens >= 30:
                                 self.last_reported_thought_tokens = token_estimate
                                 events.append(("thinking_tokens", token_estimate))
                         self.buffer = ""
@@ -297,18 +302,20 @@ class StreamReasoningFilter:
             elif self.in_thought:
                 clean_thought = (self.accumulated_thought + self.buffer).strip()
                 if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
-                    token_estimate = max(1, len(clean_thought) // 4)
+                    token_estimate = get_token_count(clean_thought, self.provider, self.model)
                     events.append(("thinking", clean_thought))
-                    events.append(("thinking_tokens", token_estimate))
+                    if token_estimate is not None:
+                        events.append(("thinking_tokens", token_estimate))
             self.buffer = ""
             self.in_tool_call = False
             self.tool_tag_close = ""
         elif self.in_thought and self.accumulated_thought:
             clean_thought = self.accumulated_thought.strip()
             if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
-                token_estimate = max(1, len(clean_thought) // 4)
+                token_estimate = get_token_count(clean_thought, self.provider, self.model)
                 events.append(("thinking", clean_thought))
-                events.append(("thinking_tokens", token_estimate))
+                if token_estimate is not None:
+                    events.append(("thinking_tokens", token_estimate))
             self.accumulated_thought = ""
         return events
 

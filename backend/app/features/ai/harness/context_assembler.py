@@ -10,6 +10,7 @@ from typing import Any, List, Optional, Set, Tuple
 
 from app.core.paths import ensure_within_workspace, normalize_workspace
 from app.features.search.semantic_service import semantic_search
+from app.features.ai.harness.payload_governor import get_token_count
 
 logger = logging.getLogger(__name__)
 
@@ -19,20 +20,6 @@ DEFAULT_MAX_CONTEXT_FILES = 15
 
 # Token budget threshold to trigger hierarchical summarization
 SUMMARIZATION_TOKEN_THRESHOLD = 4000
-
-
-def get_token_count(text: str) -> int:
-    """Return an accurate BPE token count using tiktoken (cl100k_base / GPT-4).
-
-    Falls back to ``len(text) // 4`` character-heuristic if tiktoken is not
-    installed so the rest of the system never hard-fails on import errors.
-    """
-    try:
-        import tiktoken  # type: ignore[import]
-        enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
-    except Exception:
-        return max(1, len(text) // 4)
 
 
 def split_file_into_chunks(file_path: str, content: str, chunk_size_lines: int = DEFAULT_CHUNK_SIZE_LINES) -> list[dict]:
@@ -121,12 +108,14 @@ def assemble_context_with_budget(
     query: str = "",
     max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     max_files: int = DEFAULT_MAX_CONTEXT_FILES,
+    provider: str = "",
+    model: str = "",
 ) -> tuple[str, str]:
     """Greedily assemble top-ranked chunks within 80% token budget with a context map header."""
     if not file_paths:
         return "", ""
 
-    char_budget = int(max_tokens * 4 * 0.80)  # Reserve 20% for agent output
+    token_budget = int(max_tokens * 0.80)  # Reserve 20% for agent output
     ws_norm = normalize_workspace(workspace) if workspace else ""
 
     all_chunks: list[dict] = []
@@ -142,13 +131,16 @@ def assemble_context_with_budget(
     ranked = rank_chunks(all_chunks, query)
 
     included_chunks: list[dict] = []
-    current_chars = 0
+    current_tokens = 0
 
     for chunk in ranked:
-        chunk_len = len(chunk["content"])
-        if current_chars + chunk_len <= char_budget or not included_chunks:
+        chunk_tokens = get_token_count(chunk["content"], provider, model)
+        if chunk_tokens is None:
+            logger.warning("context_assembler: exact tokenizer unavailable; omitting attachment context")
+            return "", ""
+        if current_tokens + chunk_tokens <= token_budget or not included_chunks:
             included_chunks.append(chunk)
-            current_chars += chunk_len
+            current_tokens += chunk_tokens
 
     # Sort included chunks by path and line number for coherent reading
     included_chunks.sort(key=lambda c: (c["path"], c["start_line"]))
@@ -233,7 +225,11 @@ async def summarize_conversation(
         for m in messages
     )
 
-    if get_token_count(full_text) <= threshold_tokens:
+    token_count = get_token_count(full_text, model=model)
+    if token_count is None:
+        logger.warning("context_assembler: exact tokenizer unavailable; skipping conversation summarization")
+        return ""
+    if token_count <= threshold_tokens:
         return ""
 
     if provider is None:

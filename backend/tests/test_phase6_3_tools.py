@@ -61,6 +61,17 @@ from app.features.ai.harness.checkpoint_manager import (
     _ensure_git_checkpoint,
     undo_turn_files,
 )
+from app.features.ai.harness import payload_governor
+
+
+class _Utf8TestEncoding:
+    def encode(self, text):
+        return list(range((len(text.encode("utf-8")) + 3) // 4))
+
+
+@pytest.fixture(autouse=True)
+def exact_tokenizer(monkeypatch):
+    monkeypatch.setattr(payload_governor, "_get_token_encoder", lambda _name: _Utf8TestEncoding())
 
 
 # -----------------------------------------------------------------------------

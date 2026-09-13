@@ -145,6 +145,7 @@ from .harness import (
     _finalize_staged_changes,
     _escalate_to_duo,
 )
+from .harness.payload_governor import get_token_count
 
 # Engine Singletons
 sandbox_executor = SandboxExecutor()
@@ -152,6 +153,16 @@ server_session_manager = ServerSessionManager()
 code_intelligence = CodeIntelligence()
 
 logger = logging.getLogger(__name__)
+
+
+def _message_token_count(messages: list[ChatMessage], provider: str, model: str) -> int:
+    """Count chat metrics with the same tokenizer as send governance."""
+    text = "\n".join(m.content for m in messages if hasattr(m, "content") and m.content)
+    return get_token_count(text, provider, model) or 0
+
+
+def _utf8_byte_count(value: Any) -> int | None:
+    return len(value.encode("utf-8")) if isinstance(value, str) else None
 
 
 def _is_document_review_turn(user_query: str, attached_filenames: set[str], attached_paths: list[str] | None = None) -> bool:
@@ -327,6 +338,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         yield _sse_tier_routing(tier, tier_label, reason=tier_reason)
         yield _sse_status("tier_routing", f"Routing: {tier_reason}", tier=tier, label=tier_label)
 
+        effective_prov_key = request.api_key_provider or ("nvidia-nim" if request.provider == "nvidia-nim" else request.provider)
+        if effective_prov_key == "openai-compatible" and request.provider in ("groq", "gemini", "nvidia-nim", "openai", "anthropic", "deepseek", "mistral"):
+            effective_prov_key = request.provider
+
         # Check adaptive escalation recommendation and gate the turn (E1)
         try:
             from app.features.ai.intelligence.task_classifier import classify_task
@@ -493,7 +508,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 "target": user_query[:100],
                 "outcome": "success",
                 "tier": tier,
-                "token_count": len(rag_snippets) // 4,
+                "token_count": get_token_count(rag_snippets, effective_prov_key, request.model) or 0,
                 "details": f"rag_context: {chunks_count} chunks, top similarity {top_similarity:.2f}, files: {rag_files}",
             })
 
@@ -791,7 +806,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         )
 
                 # First-byte (120.0s for reasoning/NIM, 35.0s standard) and Inter-chunk stall watchdog (20.0s)
-                reasoning_filter = StreamReasoningFilter()
+                reasoning_filter = StreamReasoningFilter(effective_prov_key, chat_request.model)
                 stream_iter = stream.__aiter__()
                 first_token_received = False
                 _is_reasoning_first_byte = effective_prov_key in ("nvidia-nim", "nvidia") or any(
@@ -1095,10 +1110,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
             # Record success and daily token usage
             provider_health_tracker.record_outcome(effective_prov_key, success=True)
-            turn_tokens = max(1, len(response_text) // 4)
+            turn_tokens = get_token_count(response_text, effective_prov_key, chat_request.model) or 0
             rate_limiter.record_provider_tokens(effective_prov_key, turn_tokens)
 
-            tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+            tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
             _save_interrupted_state(
                 workspace=workspace,
                 user_query=user_query,
@@ -1306,7 +1321,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     yield _sse_done(False, "Task stopped: staged changes failed final verification or approval.")
                     return
                 duration_ms = (time.time() - start_time) * 1000.0
-                tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+                tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
                 _clear_interrupted_state(workspace)
                 _append_activity_log(workspace, {
                     "action_type": "session_done",
@@ -1368,7 +1383,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 if outcome is not None:
                                     finalization_ok = outcome
                         duration_ms = (time.time() - start_time) * 1000.0
-                        tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+                        tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
                         _clear_interrupted_state(workspace)
                         _append_activity_log(workspace, {
                             "action_type": "session_done",
@@ -1989,22 +2004,29 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             turn_all_tools_successful = False
                         elif tc.name == "edit_file":
                             consecutive_failed_edits_per_path[target_clean] = consecutive_failed_edits_per_path.get(target_clean, 0) + 1
-                            raw_updated = tc.arguments.get("updated", "")
-                            model_emitted_len = len(raw_updated) if isinstance(raw_updated, str) else len(str(raw_updated or ""))
-                            parsed_len = len(str(tc.arguments.get("updated", "")))
+                            parsed_updated = tc.arguments.get("updated", "")
+                            model_emitted_updated = parsed_updated
+                            if tc.raw_text:
+                                try:
+                                    model_emitted_updated = json.loads(tc.raw_text).get("updated", parsed_updated)
+                                except (TypeError, ValueError, AttributeError):
+                                    pass
+                            model_emitted_len = _utf8_byte_count(model_emitted_updated)
+                            parsed_len = _utf8_byte_count(parsed_updated)
                             valid, err, change = _validate_smart_edit(workspace, tc.arguments)
                             if valid and change:
-                                staged_len = len(change.updated)
+                                staged_len = _utf8_byte_count(change.updated)
                                 applied_len = staged_len
 
-                                if model_emitted_len != parsed_len or parsed_len != staged_len:
+                                if None in (model_emitted_len, parsed_len, staged_len) or model_emitted_len != parsed_len or parsed_len != staged_len:
                                     mismatch_err = (
-                                        f"Byte-count fidelity mismatch on '{change.path}': "
+                                        f"UTF-8 byte-fidelity mismatch on '{change.path}': "
                                         f"model_emitted={model_emitted_len}, parsed={parsed_len}, staged={staged_len}. "
                                         "Change blocked from staging."
                                     )
                                     logger.error("chat_harness: %s", mismatch_err)
                                     yield _sse_status("fidelity_mismatch", mismatch_err, tool="edit_file", path=change.path)
+                                    yield _sse_event("integrity", {"outcome": "blocked", "path": change.path, "hops": {"model_emitted": model_emitted_len, "parsed": parsed_len, "staged": staged_len, "applied": applied_len}})
                                     result = ToolResult(tool_name="edit_file", success=False, output="", error=mismatch_err)
                                     turn_all_tools_successful = False
                                 else:
@@ -2031,6 +2053,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                             "applied": applied_len,
                                         }),
                                     })
+                                    yield _sse_event("integrity", {"outcome": "staged", "path": change.path, "hops": {"model_emitted": model_emitted_len, "parsed": parsed_len, "staged": staged_len, "applied": applied_len}})
                                     result = ToolResult(
                                         tool_name="edit_file",
                                         success=True,
@@ -2672,7 +2695,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         yield _sse_done(False, "Task stopped: staged changes failed final verification or approval.")
                         return
                     duration_ms = (time.time() - start_time) * 1000.0
-                    tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+                    tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
                     _clear_interrupted_state(workspace)
                     _append_activity_log(workspace, {
                         "action_type": "session_done",
@@ -2804,7 +2827,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     return
 
                 duration_ms = (time.time() - start_time) * 1000.0
-                tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+                tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
                 _clear_interrupted_state(workspace)
                 _append_activity_log(workspace, {
                     "action_type": "session_done",
@@ -2855,7 +2878,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     return
 
                 duration_ms = (time.time() - start_time) * 1000.0
-                tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+                tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
                 _clear_interrupted_state(workspace)
                 _append_activity_log(workspace, {
                     "action_type": "session_done",
@@ -2877,7 +2900,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         # Cap reached — honest partial report
         if tier == 0:
             duration_ms = (time.time() - start_time) * 1000.0
-            tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+            tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
             _clear_interrupted_state(workspace)
             yield _sse_metrics(1, total_tools_executed, duration_ms, tier=0, tokens_used=tokens_used)
             yield _sse_done(False, "Fast answer could not be generated. Please try again or switch model in the dropdown.")
@@ -2917,7 +2940,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             )
 
         duration_ms = (time.time() - start_time) * 1000.0
-        tokens_used = sum(len(m.content.split()) * 4 // 3 for m in messages if hasattr(m, "content") and m.content)
+        tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
         _clear_interrupted_state(workspace)
         _append_activity_log(workspace, {
             "action_type": "session_done",

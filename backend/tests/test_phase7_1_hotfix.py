@@ -40,6 +40,7 @@ from app.features.ai.harness.activity_logger import _load_activity_log
 from app.features.ai.schemas import ChatMessage
 from app.features.ai.chat_harness import run_chat_agent, ChatAgentRequest
 from app.features.ai.providers.base import ProviderStreamEvent, ProviderToolCall
+from app.features.ai.harness import payload_governor
 
 
 class MockStreamProvider:
@@ -548,7 +549,12 @@ async def test_byte_count_chain_logged_and_mismatch_blocks_apply():
 
         mock_prov = MockStreamProvider(mock_stream)
 
-        with patch("app.features.ai.chat_harness.provider_for", return_value=mock_prov):
+        class Utf8TestEncoding:
+            def encode(self, text):
+                return list(range((len(text.encode("utf-8")) + 3) // 4))
+
+        with patch("app.features.ai.chat_harness.provider_for", return_value=mock_prov), \
+             patch.object(payload_governor, "_get_token_encoder", return_value=Utf8TestEncoding()):
             events = []
             async for ev in run_chat_agent(req):
                 events.append(ev)
@@ -567,3 +573,51 @@ async def test_byte_count_chain_logged_and_mismatch_blocks_apply():
             assert "staged" in chain
             assert "applied" in chain
             assert chain["model_emitted"] == chain["parsed"] == chain["staged"] == chain["applied"]
+
+
+@pytest.mark.asyncio
+async def test_utf8_byte_chain_blocks_normalization_changed_tool_argument():
+    """A model-emitted decomposed character cannot silently become NFC when parsed."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        req = ChatAgentRequest(
+            messages=[{"role": "user", "content": "Edit Unicode file"}],
+            workspace=tmpdir,
+            provider="openai",
+            model="gpt-4o",
+            is_agent_mode=True,
+        )
+        stream_events = [
+            ProviderStreamEvent(
+                type="tool_calls",
+                tool_calls=(
+                    ProviderToolCall(
+                        id="c_unicode",
+                        name="edit_file",
+                        arguments={"path": "main.py", "original": "", "updated": "é"},
+                        arguments_json='{"path":"main.py","original":"","updated":"e\\u0301"}',
+                        complete=True,
+                    ),
+                ),
+                finish_reason="stop",
+            )
+        ]
+
+        async def mock_stream(*_args, **_kwargs):
+            for event in stream_events:
+                yield event
+
+        class Utf8TestEncoding:
+            def encode(self, text):
+                return list(range((len(text.encode("utf-8")) + 3) // 4))
+
+        with patch("app.features.ai.chat_harness.provider_for", return_value=MockStreamProvider(mock_stream)), \
+             patch.object(payload_governor, "_get_token_encoder", return_value=Utf8TestEncoding()):
+            events = []
+            async for event in run_chat_agent(req):
+                events.append(event)
+                if any("event: integrity" in item for item in events):
+                    break
+
+        assert any("UTF-8 byte-fidelity mismatch" in event for event in events)
+        assert any("event: integrity" in event and '"outcome": "blocked"' in event for event in events)
+        assert not any(entry.get("action_type") == "edit_byte_count_chain" for entry in _load_activity_log(tmpdir))
