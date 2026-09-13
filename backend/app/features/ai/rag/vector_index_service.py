@@ -75,6 +75,10 @@ _clients: Dict[str, chromadb.PersistentClient] = {}
 _collections: Dict[str, Collection] = {}
 _status_cache: Dict[str, Dict[str, Any]] = {}
 _embedding_fn = None
+MAX_REINDEX_QUEUE_SIZE = 1000
+_REINDEX_RATE_LIMIT_SECONDS = 2.0
+_pending_reindex: Dict[Tuple[str, str], str] = {}
+_reindex_event: asyncio.Event | None = None
 _reindex_queue: asyncio.Queue[Tuple[str, str, str]] | None = None
 _reindex_worker_task: asyncio.Task | None = None
 _last_reindex_time: float = 0.0
@@ -686,15 +690,28 @@ async def get_indexing_status(workspace: str) -> Dict[str, Any]:
 # ── Auto-indexing Rate-Limited Queue ──────────────────────────────────────────
 
 async def _reindex_worker():
-    """Background worker processing file change events with max 1 file per 2 seconds."""
-    global _last_reindex_time
+    """Background worker processing file change events with bounded last-event-wins queue (AUD-012)."""
+    global _last_reindex_time, _pending_reindex, _reindex_event
     while True:
         try:
-            workspace, file_path, event_type = await _reindex_queue.get()
+            if not _pending_reindex:
+                if _reindex_event is None:
+                    _reindex_event = asyncio.Event()
+                await _reindex_event.wait()
+                _reindex_event.clear()
+
+            if not _pending_reindex:
+                continue
+
+            # Pop oldest pending path (FIFO across paths, last-event-wins per path)
+            key = next(iter(_pending_reindex))
+            event_type = _pending_reindex.pop(key)
+            workspace, file_path = key
+
             now = time.time()
             elapsed = now - _last_reindex_time
-            if elapsed < 2.0:
-                await asyncio.sleep(2.0 - elapsed)
+            if elapsed < _REINDEX_RATE_LIMIT_SECONDS:
+                await asyncio.sleep(_REINDEX_RATE_LIMIT_SECONDS - elapsed)
 
             if event_type == "deleted":
                 await remove_file(workspace, file_path)
@@ -702,7 +719,6 @@ async def _reindex_worker():
                 await index_file(workspace, file_path)
 
             _last_reindex_time = time.time()
-            _reindex_queue.task_done()
         except asyncio.CancelledError:
             break
         except Exception as exc:
@@ -717,8 +733,9 @@ def schedule_rag_reindex(
 ) -> None:
     """
     Hook called from file_watcher or background threads to schedule rate-limited re-indexing of changed code files.
+    Enforces a bounded per-path coalescing queue with last-event-wins semantics (AUD-012).
     """
-    global _reindex_queue, _reindex_worker_task
+    global _pending_reindex, _reindex_event, _reindex_worker_task
 
     try:
         safe_file_path = _ensure_within_workspace(workspace, file_path)
@@ -744,13 +761,23 @@ def schedule_rag_reindex(
         logger.debug("schedule_rag_reindex: no active event loop available to schedule reindex of %s", file_path)
         return
 
+    key = (workspace, str(safe_file_path))
+
     def _enqueue():
-        global _reindex_queue, _reindex_worker_task
-        if _reindex_queue is None:
-            _reindex_queue = asyncio.Queue()
+        global _pending_reindex, _reindex_event, _reindex_worker_task
+        if _reindex_event is None:
+            _reindex_event = asyncio.Event()
         if _reindex_worker_task is None or _reindex_worker_task.done():
             _reindex_worker_task = target_loop.create_task(_reindex_worker())
-        _reindex_queue.put_nowait((workspace, str(safe_file_path), event_type))
+
+        # Enforce bounded capacity under burst: evict oldest entry if queue full and key is new (AUD-012)
+        if key not in _pending_reindex and len(_pending_reindex) >= MAX_REINDEX_QUEUE_SIZE:
+            oldest_key = next(iter(_pending_reindex))
+            _pending_reindex.pop(oldest_key, None)
+
+        # Coalesce per-path: last-event-wins
+        _pending_reindex[key] = event_type
+        _reindex_event.set()
 
     try:
         current_loop = asyncio.get_running_loop()
@@ -761,6 +788,26 @@ def schedule_rag_reindex(
         _enqueue()
     else:
         target_loop.call_soon_threadsafe(_enqueue)
+
+
+async def cancel_rag_reindex() -> None:
+    """Cancel the background RAG reindex worker and clear pending queue items (AUD-012)."""
+    global _reindex_worker_task, _pending_reindex, _reindex_event
+    if _reindex_worker_task is not None and not _reindex_worker_task.done():
+        _reindex_worker_task.cancel()
+        try:
+            await _reindex_worker_task
+        except asyncio.CancelledError:
+            pass
+        _reindex_worker_task = None
+    _pending_reindex.clear()
+    if _reindex_event is not None:
+        _reindex_event.clear()
+
+
+def get_rag_reindex_queue_size() -> int:
+    """Return the current number of pending distinct paths in the RAG reindex queue (AUD-012)."""
+    return len(_pending_reindex)
 
 
 async def reindex_workspace_now(workspace: str) -> Dict[str, Any]:
