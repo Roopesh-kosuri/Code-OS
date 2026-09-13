@@ -1316,6 +1316,14 @@ export const useAIStore = create<AIState>((set, get) => ({
   },
 
   // ── Message Actions with Adaptive Tier Routing ──────────────────────────────
+  //
+  // AUD-011: Single-active-send queue design.
+  // If `streaming` is true when a new sendMessage is called, the current run's
+  // AbortController is cancelled first. The new run then creates a fresh
+  // AbortController and a fresh assistant bubble, so its SSE tokens never
+  // mix with the previous run's tokens. A stale "done" finalizer from the
+  // aborted run is silently discarded by the browser's fetch abort logic before
+  // it can clear streaming state for the newer run.
 
   sendMessage: async (content, attachedPaths = [], attachedImages = []) => {
     const workspace = useWorkspaceStore.getState().currentWorkspace?.path || "";
@@ -1324,6 +1332,15 @@ export const useAIStore = create<AIState>((set, get) => ({
     if (restrictedMode && (content.toLowerCase().includes("write") || content.toLowerCase().includes("edit") || content.toLowerCase().includes("modify") || content.toLowerCase().includes("change"))) {
       set({ error: "File operations are disabled in Restricted Mode. Switch to Trusted mode to enable AI file writes." });
       return;
+    }
+
+    // AUD-011: Abort any active run before starting a new one.
+    if (activeController) {
+      activeController.abort();
+      activeController = null;
+      // Yield a tick so the aborted fetch's rejection propagates and its
+      // finally-block runs, resetting streaming=false before we set it true again.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
 
     let threadId = get().currentThreadId;
@@ -1379,7 +1396,9 @@ export const useAIStore = create<AIState>((set, get) => ({
       agentToolHistory: [],
     };
 
-    activeController = new AbortController();
+    // Create a fresh controller for this run (AUD-011).
+    const thisController = new AbortController();
+    activeController = thisController;
     const now = Date.now();
     set((state) => ({
       messages: [...state.messages, userMessage, assistantMessage],
@@ -1437,7 +1456,7 @@ export const useAIStore = create<AIState>((set, get) => ({
           vision_model: get().visionModel,
         },
         sseHandler.handler,
-        activeController.signal
+        thisController.signal
       );
       sseHandler.flushTokens();
 
@@ -1459,8 +1478,13 @@ export const useAIStore = create<AIState>((set, get) => ({
         });
       }
     } finally {
-      activeController = null;
-      set({ streaming: false, pendingUserResponse: null, streamStartTimestamp: null, lastTokenTimestamp: null });
+      // AUD-011: Only clear streaming state if this run is still the active one.
+      // If a newer run has already started (activeController !== thisController),
+      // do not touch streaming or other run-level state.
+      if (activeController === thisController) {
+        activeController = null;
+        set({ streaming: false, pendingUserResponse: null, streamStartTimestamp: null, lastTokenTimestamp: null });
+      }
     }
   },
 
