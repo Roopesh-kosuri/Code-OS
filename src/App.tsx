@@ -8,6 +8,7 @@ import { useSettingsStore } from "./stores/settingsStore";
 import { useWorkspaceStore } from "./stores/workspaceStore";
 
 import { useBackendStore } from "./stores/backendStore";
+import { useMarathonStore } from "./features/marathon/marathonStore";
 
 function BootOverlay() {
   const bootPhase = useBackendStore((s) => s.bootPhase);
@@ -147,6 +148,12 @@ export function App() {
   useEffect(() => {
     void restoreLastWorkspace();
   }, [restoreLastWorkspace]);
+
+  // On backend connect + workspace ready, check for any paused/running marathon
+  useEffect(() => {
+    if (backendStatus !== "connected" || !currentWorkspace?.path) return;
+    void useMarathonStore.getState().checkForActiveMarathon(currentWorkspace.path);
+  }, [backendStatus, currentWorkspace?.path]);
 
   useEffect(() => {
     void useSettingsStore.getState().load().then(() => {

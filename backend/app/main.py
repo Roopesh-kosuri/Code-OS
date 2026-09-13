@@ -68,6 +68,7 @@ from app.features.ai.cicd.cicd_routes import router as cicd_router
 from app.features.ai.memory.memory_routes import router as memory_router
 from app.features.ai.intelligence import intelligence_router
 from app.features.ai.cost.budget_guard import install_budget_guard_hook
+from app.features.ai.marathon import marathon_router
 from app.core.monitoring import monitor
 from app.core.errors import AppError, app_error_handler
 _START_TIME = time.time()
@@ -205,6 +206,17 @@ async def lifespan(app: FastAPI):
         await load_pending_approvals_from_db()
     except Exception as exc:
         logger.warning('Error reloading pending approvals on startup: %s', exc)
+
+    try:
+        from app.features.ai.marathon.marathon_service import check_for_active_marathon
+        from app.features.workspaces.service import get_active_workspace
+        active_ws = await get_active_workspace()
+        if active_ws:
+            pending = check_for_active_marathon(active_ws)
+            if pending:
+                logger.info("boot: found pending marathon %s (status=%s) — resume via /api/marathon/active/resume-check", pending.marathon_id, pending.status)
+    except Exception as exc:
+        logger.debug("Marathon boot-check skipped: %s", exc)
 
     try:
         from app.features.ai.step_tracker import recover_interrupted_tasks
@@ -584,5 +596,6 @@ app.include_router(standup_router, prefix="/api/standup", tags=["standup"])
 app.include_router(cicd_router, prefix="/api/cicd", tags=["cicd"])
 app.include_router(memory_router, prefix="/api/memories", tags=["memories"])
 app.include_router(intelligence_router, prefix="/api/intelligence", tags=["intelligence"])
+app.include_router(marathon_router, tags=["marathon"])
 
 install_budget_guard_hook()

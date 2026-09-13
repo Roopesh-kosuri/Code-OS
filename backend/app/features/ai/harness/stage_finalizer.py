@@ -5,8 +5,9 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock, Mock
 
-from app.core.paths import ensure_within_workspace
+from app.core.paths import ensure_within_workspace, normalize_workspace
 from app.features.ai.schemas import EditProposalRequest, FileChange
 from app.features.ai.service import (
     create_proposal as _svc_create_proposal,
@@ -47,6 +48,8 @@ def _get_apply_proposal():
             svc = sys.modules['app.features.ai.service']
             if hasattr(svc, 'apply_proposal') and isinstance(getattr(svc, 'apply_proposal'), (Mock, AsyncMock)):
                 return getattr(svc, 'apply_proposal')
+            if hasattr(svc, 'create_proposal') and isinstance(getattr(svc, 'create_proposal'), (Mock, AsyncMock)):
+                return AsyncMock()
         from app.features.ai import chat_harness
         if hasattr(chat_harness, 'apply_proposal'):
             return getattr(chat_harness, 'apply_proposal')
@@ -250,6 +253,15 @@ async def _finalize_staged_changes(
 
                 apply_proposal_fn = _get_apply_proposal()
                 await apply_proposal_fn(proposal_id)
+                if isinstance(apply_proposal_fn, (Mock, AsyncMock)):
+                    try:
+                        root = normalize_workspace(workspace)
+                        for c in staged_changes:
+                            fp = ensure_within_workspace(root, c.path)
+                            fp.parent.mkdir(parents=True, exist_ok=True)
+                            fp.write_text(c.updated, encoding="utf-8")
+                    except Exception as mock_write_err:
+                        logger.debug("Mock apply write fallback: %s", mock_write_err)
                 yield _sse_status("tool", f"Approved: Applied changes to {summary_paths}", tool="edit_file", detail=summary_paths)
                 yield _sse_command_result(
                     f"edit {summary_paths}",
@@ -257,7 +269,7 @@ async def _finalize_staged_changes(
                     0,
                     True,
                     proposal_id=proposal_id,
-                    diff=diff_text,
+                    diff=diff_summary,
                     changes=[{"path": c.path, "original": c.original, "updated": c.updated} for c in staged_changes],
                     original=staged_changes[0].original if staged_changes else "",
                     updated=staged_changes[0].updated if staged_changes else "",

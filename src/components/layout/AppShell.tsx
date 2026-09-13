@@ -39,7 +39,9 @@ import { StandupGeneratorPanel } from "../../features/standup/StandupGeneratorPa
 import { PipelineGeneratorPanel } from "../../features/cicd/PipelineGeneratorPanel";
 import { AgentMemoryPanel } from "../../features/memory/AgentMemoryPanel";
 import { useMemoryStore } from "../../features/memory/memoryStore";
-import { Shield, ClipboardList, GitBranch, Brain } from "lucide-react";
+import { MarathonDashboard } from "../../features/marathon/MarathonDashboard";
+import { useMarathonStore } from "../../features/marathon/marathonStore";
+import { Shield, ClipboardList, GitBranch, Brain, Rocket } from "lucide-react";
 
 // ── Activity Bar Button Sub-component ────────────────────────────────────────
 
@@ -118,6 +120,8 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
     (state) => state.scanSummary.critical + state.scanSummary.high
   );
   const memoryCount = useMemoryStore((state) => state.memories.length);
+  const marathonStatus = useMarathonStore((s) => s.activeMarathon?.status);
+  const marathonIsActive = marathonStatus === "running" || marathonStatus === "paused";
 
   const [activeSidebar, setActiveSidebar] = useState(() => {
     return localStorage.getItem("code-os:layout-active-sidebar") || "explorer";
@@ -429,6 +433,15 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                     badgeClassName="bg-cyan-500 text-black"
                   />
                   <ActivityBarButton
+                    id="activity-btn-marathon"
+                    icon={<Rocket size={20} />}
+                    label="Marathon Autopilot"
+                    active={showSidebar && activeSidebar === "marathon"}
+                    onClick={() => handleActivityClick("marathon")}
+                    badge={marathonIsActive ? "●" : undefined}
+                    badgeClassName="bg-violet-500 text-white text-[8px] animate-pulse"
+                  />
+                  <ActivityBarButton
                     id="activity-btn-extensions"
                     iconName="extension"
                     label="Extensions"
@@ -509,6 +522,7 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                         : activeSidebar === "security" ? <SecurityDashboardPanel />
                         : activeSidebar === "standup" ? <StandupGeneratorPanel />
                         : activeSidebar === "cicd" ? <PipelineGeneratorPanel />
+                        : activeSidebar === "marathon" ? <MarathonDashboard />
                         : <FileExplorer />}
                     </div>
                   </aside>

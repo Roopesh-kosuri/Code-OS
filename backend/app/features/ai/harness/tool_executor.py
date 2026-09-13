@@ -1109,6 +1109,12 @@ def _is_social_or_mood_fact(fact_str: str) -> bool:
     """Check if fact matches social, mood, greeting, or small talk patterns."""
     if not fact_str or not fact_str.strip():
         return False
+    stripped = fact_str.strip()
+    if stripped.startswith(("- ", "* ")):
+        stripped = stripped[2:].strip()
+    return any(p.search(stripped) for p in _NON_TECHNICAL_MEMORY_PATTERNS)
+
+
 _CONTROL_SIGNAL_OR_BOILERPLATE_PATTERNS = [
     re.compile(r"\[(?:DONE|COMPLETE|TASK_DONE|ESCALATE|ESCALATE_TO_DUO)\]", re.IGNORECASE),
     re.compile(r"\b(?:staged\s+(?:file|changes|proposal)|staging\s+notification|changes\s+staged)\b", re.IGNORECASE),

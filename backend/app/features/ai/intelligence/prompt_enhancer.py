@@ -51,7 +51,7 @@ def get_enhancement_stats() -> dict[str, int]:
     return dict(_STATS)
 
 
-def record_enhancement_action(action: str) -> None:
+def record_enhancement_action(action: str, task: Optional[str] = None) -> None:
     """Record user interaction with enhanced prompt (accept, revert, dismiss) or escalation decision."""
     action_clean = action.lower().strip()
     if action_clean == "accept":
