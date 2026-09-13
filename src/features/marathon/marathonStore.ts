@@ -8,6 +8,8 @@ import type {
   StartMarathonRequest,
 } from "./types";
 
+export type AgentConsoleMode = "standard" | "team" | "marathon";
+
 interface MarathonStore {
   // State
   activeMarathon: MarathonStateResponse | null;
@@ -16,12 +18,14 @@ interface MarathonStore {
   error: string | null;
   showModal: boolean;
   liveLog: string[];
+  consoleMode: AgentConsoleMode;
 
   // SSE connection
   _sseSource: EventSource | null;
 
   // Actions
   setShowModal: (show: boolean) => void;
+  setConsoleMode: (mode: AgentConsoleMode) => void;
   startMarathon: (req: StartMarathonRequest) => Promise<void>;
   pauseMarathon: (workspace: string) => Promise<void>;
   resumeMarathon: (workspace: string) => Promise<void>;
@@ -42,9 +46,11 @@ export const useMarathonStore = create<MarathonStore>((set, get) => ({
   error: null,
   showModal: false,
   liveLog: [],
+  consoleMode: "standard",
   _sseSource: null,
 
   setShowModal: (show) => set({ showModal: show }),
+  setConsoleMode: (mode) => set({ consoleMode: mode }),
 
   clearError: () => set({ error: null }),
 

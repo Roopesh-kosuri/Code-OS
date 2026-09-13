@@ -129,10 +129,19 @@ export function MarathonDashboard() {
   const marathon = useMarathonStore((s) => s.activeMarathon);
   const liveLog = useMarathonStore((s) => s.liveLog);
   const showModal = useMarathonStore((s) => s.showModal);
-  const isLoading = useMarathonStore((s) => s.isLoading);
-  const { setShowModal, pauseMarathon, resumeMarathon, abortMarathon } = useMarathonStore();
+  const { setShowModal, pauseMarathon, resumeMarathon, abortMarathon, connectSSE, disconnectSSE } = useMarathonStore();
   const workspace = useWorkspaceStore((s) => s.currentWorkspace?.path ?? ".");
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Connect SSE on mount when an active marathon exists; disconnect cleanly on unmount
+  useEffect(() => {
+    if (marathon?.marathon_id && workspace) {
+      connectSSE(marathon.marathon_id, workspace);
+    }
+    return () => {
+      disconnectSSE();
+    };
+  }, [marathon?.marathon_id, workspace, connectSSE, disconnectSSE]);
 
   // Auto-scroll live log
   useEffect(() => {

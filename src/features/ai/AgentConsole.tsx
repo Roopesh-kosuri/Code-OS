@@ -31,6 +31,7 @@ import {
   MessageSquare,
   Send,
   CornerDownLeft,
+  Rocket,
 } from "lucide-react";
 
 import { useWorkspaceStore } from "../../stores/workspaceStore";
@@ -42,6 +43,8 @@ import { PROVIDER_PRESETS } from "../../lib/providerPresets";
 import { CustomSelect, type CustomSelectOption } from "../../components/ui/CustomSelect";
 import { LiquidGlassModelSelector } from "../../components/ui/LiquidGlassModelSelector";
 import { TeamConsole } from "./console/TeamConsole";
+import { MarathonDashboard } from "../marathon/MarathonDashboard";
+import { useMarathonStore } from "../marathon/marathonStore";
 import { FileUploadZone } from "../files/FileUploadZone";
 import { FilePreviewModal } from "../files/FilePreviewModal";
 import { useFileUploadStore } from "../files/fileUploadStore";
@@ -293,7 +296,10 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
   const [actionInProgress, setActionInProgress] = useState(false);
   const [recoveryProvider, setRecoveryProvider] = useState<string>("groq");
   const [recoveryModel, setRecoveryModel] = useState<string>("openai/gpt-oss-120b");
-  const [teamMode, setTeamMode] = useState(false);
+  const consoleMode = useMarathonStore((state) => state.consoleMode);
+  const setConsoleMode = useMarathonStore((state) => state.setConsoleMode);
+  const marathonStatus = useMarathonStore((state) => state.activeMarathon?.status);
+  const marathonIsActive = marathonStatus === "running" || marathonStatus === "paused";
   const [rightPanelTab, setRightPanelTab] = useState<"logs" | "steering">("logs");
   const [steeringInput, setSteeringInput] = useState("");
   const [isSteeringSubmitting, setIsSteeringSubmitting] = useState(false);
@@ -570,9 +576,9 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
           >
             <button
               data-testid="mode-toggle-standard"
-              onClick={() => setTeamMode(false)}
+              onClick={() => setConsoleMode("standard")}
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                !teamMode
+                consoleMode === "standard"
                   ? "bg-surface-container-high text-on-surface font-bold shadow"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
@@ -581,15 +587,34 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
             </button>
             <button
               data-testid="mode-toggle-team"
-              onClick={() => setTeamMode(true)}
+              onClick={() => setConsoleMode("team")}
               className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                teamMode
+                consoleMode === "team"
                   ? "bg-primary-container text-on-primary-container font-bold shadow"
                   : "text-on-surface-variant hover:text-on-surface"
               }`}
             >
               <Users size={13} />
               <span>Team Mode</span>
+            </button>
+            <button
+              data-testid="mode-toggle-marathon"
+              onClick={() => setConsoleMode("marathon")}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer relative ${
+                consoleMode === "marathon"
+                  ? "bg-violet-600 text-white font-bold shadow shadow-violet-500/25"
+                  : "text-on-surface-variant hover:text-on-surface"
+              }`}
+            >
+              <Rocket size={13} className={marathonIsActive ? "animate-pulse text-violet-300" : ""} />
+              <span>Marathon</span>
+              {marathonIsActive && (
+                <span
+                  data-testid="marathon-tab-badge"
+                  className="w-2 h-2 rounded-full bg-violet-400 animate-pulse ml-0.5"
+                  title="Marathon active"
+                />
+              )}
             </button>
           </div>
 
@@ -609,7 +634,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
             </button>
           </div>
 
-          {!teamMode && (
+          {consoleMode === "standard" && (
             <span className={`px-3 py-1 rounded-full font-caption text-caption font-bold tracking-wider flex items-center gap-1.5 ${
               isRunning
                 ? activeJob?.status === "paused"
@@ -630,7 +655,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
         </div>
 
         {/* Timer & Refresh */}
-        {!teamMode && (
+        {consoleMode === "standard" && (
           <div className="flex items-center gap-2">
             <button
               onClick={() => void fetchActiveJob()}
@@ -647,8 +672,12 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
         )}
       </div>
 
-      {teamMode ? (
+      {consoleMode === "team" ? (
         <TeamConsole />
+      ) : consoleMode === "marathon" ? (
+        <div data-testid="marathon-console-view" className="flex-1 min-h-0 h-full -m-6 mt-0">
+          <MarathonDashboard />
+        </div>
       ) : (
         <>
           {error && (

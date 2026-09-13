@@ -121,6 +121,7 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
   );
   const memoryCount = useMemoryStore((state) => state.memories.length);
   const marathonStatus = useMarathonStore((s) => s.activeMarathon?.status);
+  const consoleMode = useMarathonStore((s) => s.consoleMode);
   const marathonIsActive = marathonStatus === "running" || marathonStatus === "paused";
 
   const [activeSidebar, setActiveSidebar] = useState(() => {
@@ -436,8 +437,11 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                     id="activity-btn-marathon"
                     icon={<Rocket size={20} />}
                     label="Marathon Autopilot"
-                    active={showSidebar && activeSidebar === "marathon"}
-                    onClick={() => handleActivityClick("marathon")}
+                    active={activeTopView === "agent" && consoleMode === "marathon"}
+                    onClick={() => {
+                      useMarathonStore.getState().setConsoleMode("marathon");
+                      setActiveTopView("agent");
+                    }}
                     badge={marathonIsActive ? "●" : undefined}
                     badgeClassName="bg-violet-500 text-white text-[8px] animate-pulse"
                   />
@@ -522,7 +526,27 @@ export function AppShell({ backendDown = false }: { backendDown?: boolean }) {
                         : activeSidebar === "security" ? <SecurityDashboardPanel />
                         : activeSidebar === "standup" ? <StandupGeneratorPanel />
                         : activeSidebar === "cicd" ? <PipelineGeneratorPanel />
-                        : activeSidebar === "marathon" ? <MarathonDashboard />
+                        : activeSidebar === "marathon" ? (
+                          <div className="flex flex-col items-center justify-center h-full p-6 text-center gap-3">
+                            <div className="w-12 h-12 rounded-2xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center">
+                              <Rocket size={24} className="text-violet-400" />
+                            </div>
+                            <div className="text-sm font-semibold text-slate-200">Marathon Autopilot</div>
+                            <p className="text-xs text-slate-400 max-w-xs">
+                              Marathon Autopilot is integrated directly as a first-class mode inside the Agent Console.
+                            </p>
+                            <button
+                              id="sidebar-marathon-open-console-btn"
+                              onClick={() => {
+                                useMarathonStore.getState().setConsoleMode("marathon");
+                                setActiveTopView("agent");
+                              }}
+                              className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-semibold cursor-pointer shadow-md shadow-violet-500/20 transition-all active:scale-95"
+                            >
+                              Open in Agent Console
+                            </button>
+                          </div>
+                        )
                         : <FileExplorer />}
                     </div>
                   </aside>
