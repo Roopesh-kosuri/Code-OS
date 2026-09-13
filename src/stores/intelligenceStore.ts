@@ -38,6 +38,8 @@ interface IntelligenceState {
 }
 
 let classifyTimer: ReturnType<typeof setTimeout> | null = null;
+let currentClassifyRevision = 0;
+let classifyAbortController: AbortController | null = null;
 
 export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   quality: null,
@@ -61,9 +63,14 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
       clearTimeout(classifyTimer);
       classifyTimer = null;
     }
+    if (classifyAbortController) {
+      classifyAbortController.abort();
+      classifyAbortController = null;
+    }
 
     const trimmed = prompt.trim();
     if (!trimmed) {
+      currentClassifyRevision++;
       set({ showBar: false, showDiff: false, quality: null, originalPrompt: "", enhancedPrompt: "", enhancementError: null });
       return;
     }
@@ -71,17 +78,31 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
     // Check user settings toggle: Suggest prompt enhancements (default ON)
     const suggestEnabled = localStorage.getItem("code-os:ai.suggest_prompt_enhancements") !== "false";
     if (!suggestEnabled) {
+      currentClassifyRevision++;
       set({ showBar: false, showDiff: false, enhancementError: null });
       return;
     }
 
+    // AUD-013: Revision ID and AbortController gate to discard out-of-order/stale completions
+    const thisRevision = ++currentClassifyRevision;
+    const controller = new AbortController();
+    classifyAbortController = controller;
+
     // Debounce by 600ms
     classifyTimer = setTimeout(async () => {
       try {
-        const res = await api.post<PromptQuality>("/api/intelligence/classify-prompt", {
-          prompt: trimmed,
-          active_file: activeFile ?? null,
-        });
+        const res = await api.post<PromptQuality>(
+          "/api/intelligence/classify-prompt",
+          {
+            prompt: trimmed,
+            active_file: activeFile ?? null,
+          }
+        );
+
+        // Discard stale response if a newer input has arrived or this run was aborted (AUD-013)
+        if (thisRevision !== currentClassifyRevision || controller.signal.aborted) {
+          return;
+        }
 
         if (res.quality === "weak" || res.quality === "vague" || res.quality !== "good") {
           set({
@@ -103,7 +124,10 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
             enhancementError: null,
           });
         }
-      } catch (err) {
+      } catch (err: any) {
+        if (err?.name === "AbortError" || thisRevision !== currentClassifyRevision) {
+          return;
+        }
         console.warn("[intelligenceStore] classification failed", err);
       }
     }, 600);
@@ -219,6 +243,15 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   },
 
   dismiss: () => {
+    if (classifyTimer) {
+      clearTimeout(classifyTimer);
+      classifyTimer = null;
+    }
+    if (classifyAbortController) {
+      classifyAbortController.abort();
+      classifyAbortController = null;
+    }
+    currentClassifyRevision++;
     set({ showBar: false, showDiff: false, enhancementError: null });
     try {
       void api.post("/api/intelligence/record-action", { action: "dismiss" });
@@ -232,6 +265,15 @@ export const useIntelligenceStore = create<IntelligenceState>((set, get) => ({
   },
 
   reset: () => {
+    if (classifyTimer) {
+      clearTimeout(classifyTimer);
+      classifyTimer = null;
+    }
+    if (classifyAbortController) {
+      classifyAbortController.abort();
+      classifyAbortController = null;
+    }
+    currentClassifyRevision++;
     set({
       quality: null,
       originalPrompt: "",
