@@ -2036,11 +2036,6 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                         staged_changes[existing_idx] = change
                                     else:
                                         staged_changes.append(change)
-                                    try:
-                                        parent_dir = ensure_within_workspace(workspace, str(Path(change.path).parent))
-                                        parent_dir.mkdir(parents=True, exist_ok=True)
-                                    except Exception:
-                                        pass
                                     _append_activity_log(workspace, {
                                         "action_type": "edit_byte_count_chain",
                                         "target": change.path,
