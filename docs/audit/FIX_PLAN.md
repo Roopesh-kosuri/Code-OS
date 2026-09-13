@@ -11,8 +11,8 @@
 graph TD
     B1["Batch 1 (Codex Patches)<br/>AUD-009, AUD-002, AUD-004, AUD-008, AUD-007, AUD-005<br/>[CLOSED]"] --> B2["Batch 2 (Phase 10.1)<br/>AUD-010: Authenticated SSE Transport<br/>[CLOSED - commit a469052]"]
     B2 --> B3["Batch 3 (Phase 10.2)<br/>AUD-001, AUD-006, AUD-011<br/>Pre-Approval Purity, Escalation Isolation, Concurrent-Send Isolation<br/>[CLOSED - commits df22d9c, 5976221, 914139d]"]
-    B3 --> B4["Batch 4 (Phase 10.3)<br/>AUD-012, AUD-003<br/>Electron Security, Compaction Recovery<br/>[OPEN]"]
-    B4 --> B5["Batch 5 (Phase 10.4)<br/>AUD-013, AUD-014<br/>Memory Ingestion & CI/Packaging<br/>[OPEN]"]
+    B3 --> B4["Batch 4 (Phase 10.3)<br/>AUD-003, AUD-012, AUD-013<br/>Contamination Wiring, RAG Queue Bound, Enhancer Revision Gate<br/>[CLOSED - commits 0d70f96, f373f13, f238c3a]"]
+    B4 --> B5["Batch 5 (Phase 10.4)<br/>AUD-014<br/>CI/Packaging & Security Gates<br/>[OPEN]"]
 ```
 
 ---
@@ -79,7 +79,7 @@ All 6 patches integrated, verified with focused test suites, and committed local
 
 - **AUD-001 — Pre-Approval Filesystem Mutation**:
   - Target: `backend/app/features/ai/chat_harness.py`, `backend/tests/test_aud_001_006_011.py`
-  - Scope: Removed `mkdir(parents=True)` from the staging path in `chat_harness.py:2039-2043`. Parent directories are now only created inside the approved `apply_proposal`/`write_file` transaction. On rejection or timeout, no directories are created.
+  - Scope: Removed `mkdir(parents=True)` from the staging path in `chat_harness.py`. Parent directories are now only created inside the approved `apply_proposal`/`write_file` transaction. On rejection or timeout, no directories are created.
   - Regression Tests: `test_nested_new_file_reject_leaves_no_directories`, `test_nested_new_file_timeout_leaves_no_directories`
   - Commit: `df22d9c` (`fix(staging): remove pre-approval mkdir during file staging (AUD-001)`)
   - Status: **CLOSED**
@@ -94,29 +94,40 @@ All 6 patches integrated, verified with focused test suites, and committed local
 - **AUD-011 — Concurrent-Send Turn Isolation**:
   - Target: `src/stores/aiStore.ts`, `src/__tests__/aud_011_concurrent_sends.test.ts`
   - Scope: Single-active-send queue. When a second `sendMessage` arrives while streaming is active, the current run's `AbortController` is aborted and a tick is yielded before the new run starts. Each run captures its own `thisController` reference; the `finally` block only clears streaming state when `activeController === thisController` — a stale finalizer from an aborted run cannot clear a newer run's state.
-  - Design choice documented in `aiStore.ts` comments above `sendMessage`.
   - Regression Tests: `test_concurrent_sends_isolated_content`, `test_stale_finalizer_cannot_clear_newer_run`
   - Commit: `914139d` (`fix(chat): single-active-send queue isolates concurrent sends (AUD-011)`)
   - Status: **CLOSED**
 
 ---
 
-## Batch 4: Electron Security & Compaction Recovery (Phase 10.3)
+## Batch 4: Contamination Wiring, RAG Queue Bound, Enhancer Revision Gate (Phase 10.3)
 
-- **AUD-012 — Electron CaptureService Security Lockdown**:
-  - Target: `electron/services/captureService.ts`, `electron/main.ts`
-  - Scope: Auth token enforcement, localhost-only origin restriction, safe webSecurity settings.
-- **AUD-003 — Context Compaction Fail-Closed Recovery**:
-  - Target: `backend/app/features/ai/harness/payload_governor.py`, `backend/app/features/ai/harness/compaction_manager.py`
-  - Scope: Fail-closed recovery when payload hopelessly exceeds budget.
+- **AUD-003 — Proposal Integrity Contamination Gate Unwired**:
+  - Target: `backend/app/features/ai/harness/content_integrity.py`, `backend/app/features/ai/harness/stage_finalizer.py`, `backend/app/features/ai/chat_harness.py`, `backend/tests/test_aud_003_012.py`
+  - Scope: Bounded provenance-separated history snapshot (last N assistant messages and tool prose) passed from `chat_harness.py` through `stage_finalizer.py` into `validate_content_integrity`. The contamination detector strictly checks assistant prose while ignoring user instructions and standard code. Proposals containing copied prior assistant prose are blocked.
+  - Regression Tests: `test_contamination_gate_blocks_copied_prose_in_live_flow`, `test_ordinary_source_repetition_not_blocked`, `test_check_cross_turn_contamination_provenance_filter`
+  - Commit: `0d70f96` (`fix(harness): wire live history into contamination integrity gate (AUD-003)`)
+  - Status: **CLOSED**
+
+- **AUD-012 — Semantic RAG Reindex Queue Boundedness & Eviction**:
+  - Target: `backend/app/features/ai/rag/vector_index_service.py`, `backend/app/features/ai/rag/__init__.py`, `backend/tests/test_aud_003_012.py`
+  - Scope: Replaced unbounded `asyncio.Queue` with per-path coalesced dictionary (`_pending_reindex`) using last-event-wins semantics, bounded capacity (`MAX_REINDEX_QUEUE_SIZE = 1000` with oldest-event eviction), and lifecycle cancellation support (`cancel_rag_reindex`, `get_rag_reindex_queue_size`).
+  - Regression Tests: `test_rag_queue_bounded_under_burst`, `test_rag_queue_lifecycle_cancellation`
+  - Commit: `f373f13` (`fix(rag): bounded last-event-wins reindex queue with cancellation (AUD-012)`)
+  - Status: **CLOSED**
+
+- **AUD-013 — Prompt Enhancer Classification Race / Stale Response**:
+  - Target: `src/stores/intelligenceStore.ts`, `src/__tests__/aud_013_enhancer_stale_response.test.ts`
+  - Scope: Monotonically increasing revision sequence counter (`currentClassifyRevision`) and `AbortController` gate (`classifyAbortController`). In-flight classification requests are aborted on subsequent input changes, and late/out-of-order responses from superseded revisions are discarded before mutating state.
+  - Regression Tests: `test_enhancer_stale_response_discarded`, `test_empty_input_cancels_and_discards_in_flight_classification`
+  - Commit: `f238c3a` (`fix(intelligence): revision ID and abort gate for prompt enhancer (AUD-013)`)
+  - Status: **CLOSED**
 
 ---
 
 ## Batch 5: Autonomous Feedback & Packaging Infrastructure (Phase 10.4)
 
-- **AUD-013 — Autonomous Memory Feedback Ingestion**:
-  - Target: `backend/app/features/ai/memory/memory_service.py`
-  - Scope: Auto-logging lessons from failed tests and rejected diffs into memory.
 - **AUD-014 — CI/CD Security Scanning & Release Signing**:
   - Target: `.github/workflows/ci.yml`, `electron-builder.yml`
   - Scope: Mandatory SAST (`bandit`, `pip-audit`, `npm audit`) gates and code signing verification.
+  - Status: **OPEN**
