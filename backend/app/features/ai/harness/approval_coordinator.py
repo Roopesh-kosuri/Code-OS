@@ -84,33 +84,22 @@ def register_pending_escalation(escalation: PendingEscalation) -> None:
 
 
 def resolve_escalation(action_id: str = "", decision: str = "continue", workspace: str = "", task: str = "") -> bool:
-    """Resolve a pending escalation decision ('continue' or 'escalate')."""
-    if action_id and action_id in _pending_escalations:
-        pending = _pending_escalations[action_id]
-        pending.decision = decision
-        pending.event.set()
-        return True
+    """Resolve a pending escalation decision ('continue' or 'escalate').
 
-    # If action_id not provided or not found, match by workspace or task
-    for aid, pending in list(_pending_escalations.items()):
-        if not pending.event.is_set():
-            if workspace and pending.workspace and (workspace in pending.workspace or pending.workspace in workspace):
-                pending.decision = decision
-                pending.event.set()
-                return True
-            if task and pending.task and (task[:40].lower() in pending.task.lower() or pending.task[:40].lower() in task.lower()):
-                pending.decision = decision
-                pending.event.set()
-                return True
-
-    # Fallback to resolving the most recent pending escalation
-    for aid, pending in reversed(list(_pending_escalations.items())):
-        if not pending.event.is_set():
-            pending.decision = decision
-            pending.event.set()
-            return True
-
-    return False
+    Requires an exact action_id match. Workspace/task are accepted for API
+    compatibility but are NEVER used as fallback resolution criteria (AUD-006).
+    Returns False when the action_id is absent or not found.
+    """
+    if not action_id:
+        logger.warning("resolve_escalation: called without action_id — rejecting (AUD-006)")
+        return False
+    pending = _pending_escalations.get(action_id)
+    if pending is None or pending.event.is_set():
+        logger.warning("resolve_escalation: action_id %s not found or already resolved", action_id)
+        return False
+    pending.decision = decision
+    pending.event.set()
+    return True
 
 
 def get_pending_escalation(action_id: str) -> Optional[PendingEscalation]:
