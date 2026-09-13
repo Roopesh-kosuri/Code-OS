@@ -10,9 +10,9 @@
 ```mermaid
 graph TD
     B1["Batch 1 (Codex Patches)<br/>AUD-009, AUD-002, AUD-004, AUD-008, AUD-007, AUD-005<br/>[CLOSED]"] --> B2["Batch 2 (Phase 10.1)<br/>AUD-010: Authenticated SSE Transport<br/>[CLOSED - commit a469052]"]
-    B2 --> B3["Batch 3 (Phase 10.2)<br/>AUD-001, AUD-003, AUD-006<br/>Harness & Team Durability<br/>[OPEN]"]
-    B3 --> B4["Batch 4<br/>AUD-011, AUD-012<br/>Sandbox & Electron Security<br/>[OPEN]"]
-    B4 --> B5["Batch 5<br/>AUD-013, AUD-014<br/>Memory Ingestion & CI/Packaging<br/>[OPEN]"]
+    B2 --> B3["Batch 3 (Phase 10.2)<br/>AUD-001, AUD-006, AUD-011<br/>Pre-Approval Purity, Escalation Isolation, Concurrent-Send Isolation<br/>[CLOSED - commits df22d9c, 5976221, 914139d]"]
+    B3 --> B4["Batch 4 (Phase 10.3)<br/>AUD-012, AUD-003<br/>Electron Security, Compaction Recovery<br/>[OPEN]"]
+    B4 --> B5["Batch 5 (Phase 10.4)<br/>AUD-013, AUD-014<br/>Memory Ingestion & CI/Packaging<br/>[OPEN]"]
 ```
 
 ---
@@ -75,28 +75,40 @@ All 6 patches integrated, verified with focused test suites, and committed local
 
 ---
 
-## Batch 3: Agentic Harness & Team Durability (Phase 10.2)
+## Batch 3: Pre-Approval Purity, Escalation Isolation, Concurrent-Send Isolation (Phase 10.2)
 
-- **AUD-001 — Duo Loop Semantic Termination Gate**:
-  - Target: `backend/app/features/ai/duo/service.py`, `backend/app/features/ai/chat_harness.py`
-  - Scope: Semantic convergence checks for Generator-Critic loop.
-- **AUD-003 — Context Compaction Fail-Closed Recovery**:
-  - Target: `backend/app/features/ai/harness/payload_governor.py`, `backend/app/features/ai/harness/compaction_manager.py`
-  - Scope: Fail-closed recovery when payload hopelessly exceeds budget.
-- **AUD-006 — Team Mode Task Step Durability**:
-  - Target: `backend/app/features/ai/team/orchestrator.py`, `backend/app/features/ai/step_tracker.py`
-  - Scope: Write-ahead logging of task step milestones to SQLite for crash resumption.
+- **AUD-001 — Pre-Approval Filesystem Mutation**:
+  - Target: `backend/app/features/ai/chat_harness.py`, `backend/tests/test_aud_001_006_011.py`
+  - Scope: Removed `mkdir(parents=True)` from the staging path in `chat_harness.py:2039-2043`. Parent directories are now only created inside the approved `apply_proposal`/`write_file` transaction. On rejection or timeout, no directories are created.
+  - Regression Tests: `test_nested_new_file_reject_leaves_no_directories`, `test_nested_new_file_timeout_leaves_no_directories`
+  - Commit: `df22d9c` (`fix(staging): remove pre-approval mkdir during file staging (AUD-001)`)
+  - Status: **CLOSED**
+
+- **AUD-006 — Escalation Resolver Fuzzy Matching**:
+  - Target: `backend/app/features/ai/harness/approval_coordinator.py`, `backend/app/features/ai/chat_harness_routes.py`, `backend/app/features/ai/team/team_routes.py`
+  - Scope: `resolve_escalation` now requires an exact `action_id`. Workspace substring, task substring, and "most recent pending" fallbacks removed. The `/escalation-decision` endpoint returns 404 when `action_id` is missing or not found. The redundant `resolve_escalation` call in `team_routes.py` (which used no action_id) was removed.
+  - Regression Tests: `test_escalation_resolution_requires_exact_action_id`, `test_concurrent_escalations_resolve_independently`, `test_stale_handoff_id_rejected`, `test_workspace_substring_fallback_removed`, `test_task_substring_fallback_removed`, `test_most_recent_pending_fallback_removed`
+  - Commit: `5976221` (`fix(escalation): exact action_id required for all resolution paths (AUD-006)`)
+  - Status: **CLOSED**
+
+- **AUD-011 — Concurrent-Send Turn Isolation**:
+  - Target: `src/stores/aiStore.ts`, `src/__tests__/aud_011_concurrent_sends.test.ts`
+  - Scope: Single-active-send queue. When a second `sendMessage` arrives while streaming is active, the current run's `AbortController` is aborted and a tick is yielded before the new run starts. Each run captures its own `thisController` reference; the `finally` block only clears streaming state when `activeController === thisController` — a stale finalizer from an aborted run cannot clear a newer run's state.
+  - Design choice documented in `aiStore.ts` comments above `sendMessage`.
+  - Regression Tests: `test_concurrent_sends_isolated_content`, `test_stale_finalizer_cannot_clear_newer_run`
+  - Commit: `914139d` (`fix(chat): single-active-send queue isolates concurrent sends (AUD-011)`)
+  - Status: **CLOSED**
 
 ---
 
-## Batch 4: Sandbox & Electron Isolation Hardening (Phase 10.3)
+## Batch 4: Electron Security & Compaction Recovery (Phase 10.3)
 
-- **AUD-011 — Mandatory Server-Side Sandbox Policy**:
-  - Target: `backend/app/features/ai/sandbox/policy.py`, `backend/app/features/ai/chat_harness.py`
-  - Scope: Server-enforced sandbox requirement for untrusted workspaces.
 - **AUD-012 — Electron CaptureService Security Lockdown**:
   - Target: `electron/services/captureService.ts`, `electron/main.ts`
   - Scope: Auth token enforcement, localhost-only origin restriction, safe webSecurity settings.
+- **AUD-003 — Context Compaction Fail-Closed Recovery**:
+  - Target: `backend/app/features/ai/harness/payload_governor.py`, `backend/app/features/ai/harness/compaction_manager.py`
+  - Scope: Fail-closed recovery when payload hopelessly exceeds budget.
 
 ---
 
