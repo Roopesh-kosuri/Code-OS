@@ -123,15 +123,22 @@ def _normalize_workspace_path(workspace: str) -> str:
     return str(Path(workspace).resolve()).replace("\\", "/")
 
 
+def _ensure_within_workspace(ws: str | Path, path: str | Path) -> Path:
+    """Resolve ``path`` and reject anything outside the resolved workspace."""
+    ws_path = Path(ws).resolve()
+    raw_path = Path(path)
+    file_path = raw_path.resolve() if raw_path.is_absolute() else (ws_path / raw_path).resolve()
+    try:
+        file_path.relative_to(ws_path)
+    except ValueError as exc:
+        # Do not interpolate the rejected path: it may disclose an external path.
+        raise PermissionError("RAG path is outside the workspace") from exc
+    return file_path
+
+
 def _get_relative_path(workspace: str, file_path: str) -> str:
-    norm_ws = Path(_normalize_workspace_path(workspace))
-    raw_p = Path(file_path)
-    if raw_p.is_absolute():
-        try:
-            return str(raw_p.resolve().relative_to(norm_ws)).replace("\\", "/")
-        except ValueError:
-            return str(raw_p).replace("\\", "/")
-    return str(raw_p).replace("\\", "/")
+    ws_path = Path(_normalize_workspace_path(workspace))
+    return str(_ensure_within_workspace(ws_path, file_path).relative_to(ws_path)).replace("\\", "/")
 
 
 def init_vector_store(workspace: str, collection_name: str = "codebase_rag") -> Collection:
@@ -242,8 +249,9 @@ async def index_file(workspace: str, file_path: str) -> int:
     Returns number of chunks indexed.
     """
     norm_ws = _normalize_workspace_path(workspace)
+    full_p = _ensure_within_workspace(norm_ws, file_path)
+    rel_path = str(full_p.relative_to(Path(norm_ws))).replace("\\", "/")
     collection = init_vector_store(norm_ws)
-    rel_path = _get_relative_path(norm_ws, file_path)
 
     # 1. Exclude polluted or ignored paths (.code_os, uploads, .git, node_modules, .pytest_cache)
     if is_ignored_rag_path(rel_path) or is_ignored_rag_path(file_path):
@@ -259,7 +267,6 @@ async def index_file(workspace: str, file_path: str) -> int:
     except Exception as exc:
         logger.debug("index_file: delete previous chunks failed/empty: %s", exc)
 
-    full_p = Path(norm_ws) / rel_path
     if not full_p.is_file():
         return 0
 
@@ -315,8 +322,9 @@ async def index_file(workspace: str, file_path: str) -> int:
 async def remove_file(workspace: str, file_path: str) -> bool:
     """Remove a file's chunks from the vector index."""
     norm_ws = _normalize_workspace_path(workspace)
+    full_p = _ensure_within_workspace(norm_ws, file_path)
+    rel_path = str(full_p.relative_to(Path(norm_ws))).replace("\\", "/")
     collection = init_vector_store(norm_ws)
-    rel_path = _get_relative_path(norm_ws, file_path)
     try:
         collection.delete(where={"file_path": rel_path})
         return True
@@ -350,6 +358,10 @@ async def index_workspace(workspace: str) -> Dict[str, Any]:
         ]
         for f in files:
             p = Path(root) / f
+            try:
+                _ensure_within_workspace(ws_path, p)
+            except PermissionError:
+                continue
             rel_p = _get_relative_path(norm_ws, str(p))
             if not is_ignored_rag_path(rel_p) and p.suffix.lower() in CODE_EXTENSIONS:
                 files_to_index.append(p)
@@ -616,8 +628,9 @@ async def get_file_context(workspace: str, file_path: str) -> List[Dict[str, Any
     sorted by chunk_index.
     """
     norm_ws = _normalize_workspace_path(workspace)
+    full_p = _ensure_within_workspace(norm_ws, file_path)
+    rel_path = str(full_p.relative_to(Path(norm_ws))).replace("\\", "/")
     collection = init_vector_store(norm_ws)
-    rel_path = _get_relative_path(norm_ws, file_path)
 
     try:
         res = collection.get(where={"file_path": rel_path})
@@ -707,7 +720,12 @@ def schedule_rag_reindex(
     """
     global _reindex_queue, _reindex_worker_task
 
-    ext = Path(file_path).suffix.lower()
+    try:
+        safe_file_path = _ensure_within_workspace(workspace, file_path)
+    except PermissionError:
+        return
+
+    ext = safe_file_path.suffix.lower()
     if ext not in CODE_EXTENSIONS:
         return
 
@@ -732,7 +750,7 @@ def schedule_rag_reindex(
             _reindex_queue = asyncio.Queue()
         if _reindex_worker_task is None or _reindex_worker_task.done():
             _reindex_worker_task = target_loop.create_task(_reindex_worker())
-        _reindex_queue.put_nowait((workspace, file_path, event_type))
+        _reindex_queue.put_nowait((workspace, str(safe_file_path), event_type))
 
     try:
         current_loop = asyncio.get_running_loop()
@@ -785,6 +803,10 @@ async def reconcile_workspace_index(workspace: str, loop: Optional[asyncio.Abstr
                 polluted_paths.add(fp)
         for pp in polluted_paths:
             try:
+                _ensure_within_workspace(norm_ws, pp)
+            except PermissionError:
+                continue
+            try:
                 collection.delete(where={"file_path": pp})
                 logger.info("reconcile_workspace_index: pruned polluted record %s", pp)
             except Exception as p_err:
@@ -815,6 +837,10 @@ async def reconcile_workspace_index(workspace: str, loop: Optional[asyncio.Abstr
         ]
         for f in files:
             p = Path(root) / f
+            try:
+                _ensure_within_workspace(ws_path, p)
+            except PermissionError:
+                continue
             rel_p = _get_relative_path(norm_ws, str(p))
             if not is_ignored_rag_path(rel_p) and p.suffix.lower() in CODE_EXTENSIONS:
                 disk_files[rel_p] = p
@@ -836,6 +862,8 @@ async def reconcile_workspace_index(workspace: str, loop: Optional[asyncio.Abstr
     for df in deleted_files:
         try:
             await remove_file(norm_ws, df)
+        except PermissionError:
+            continue
         except Exception as exc:
             logger.debug("reconcile_workspace_index: error removing deleted file %s: %s", df, exc)
 
@@ -921,6 +949,10 @@ async def get_rag_stats(workspace: str) -> Dict[str, Any]:
         ]
         for f in files:
             p = Path(root) / f
+            try:
+                _ensure_within_workspace(ws_path, p)
+            except PermissionError:
+                continue
             rel_p = _get_relative_path(norm_ws, str(p))
             if not is_ignored_rag_path(rel_p) and p.suffix.lower() in CODE_EXTENSIONS:
                 if rel_p not in indexed_files:
@@ -939,4 +971,3 @@ async def get_rag_stats(workspace: str) -> Dict[str, Any]:
         "last_index_at": last_index_at,
         "missing_files_sample": missing_files[:10],
     }
-

@@ -13,7 +13,10 @@ Tests:
 
 import asyncio
 from pathlib import Path
+import subprocess
+from unittest.mock import AsyncMock
 import pytest
+from fastapi import HTTPException
 from httpx import AsyncClient, ASGITransport
 
 from app.main import app
@@ -26,6 +29,7 @@ from app.features.ai.rag.vector_index_service import (
     get_file_context,
     get_indexing_status,
 )
+from app.features.ai.rag import rag_routes
 
 
 def _setup_test_codebase(ws_path: Path):
@@ -190,6 +194,69 @@ async def test_get_file_context_returns_all_chunks(tmp_path: Path):
     # Verify proper ordering
     indexes = [c["chunk_index"] for c in chunks]
     assert indexes == list(range(len(chunks)))
+
+
+@pytest.mark.asyncio
+async def test_rag_rejects_outside_paths_without_reading_them(tmp_path: Path, monkeypatch):
+    """Index, delete, and file-context requests must not escape their workspace."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("raise AssertionError('external file was read')", encoding="utf-8")
+
+    link = workspace / "outside_link.py"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        # File symlinks need Developer Mode or elevated privileges on many Windows hosts.
+        # A junction still exercises Path.resolve()'s outside-workspace link handling.
+        outside_dir = tmp_path / "outside_dir"
+        outside_dir.mkdir()
+        linked_outside = outside_dir / "outside.py"
+        linked_outside.write_text("raise AssertionError('external file was read')", encoding="utf-8")
+        link_dir = workspace / "outside_link"
+        junction = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link_dir), str(outside_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if junction.returncode != 0:
+            pytest.skip("creating symlinks and junctions is unavailable on this Windows test host")
+        link = link_dir / "outside.py"
+
+    def fail_if_read(*_args, **_kwargs):
+        raise AssertionError("an escaped file was read")
+
+    monkeypatch.setattr(Path, "read_text", fail_if_read)
+    escaped_paths = (str(outside), "../outside.py", str(link))
+    for escaped_path in escaped_paths:
+        with pytest.raises(PermissionError):
+            await index_file(str(workspace), escaped_path)
+        with pytest.raises(PermissionError):
+            await remove_file(str(workspace), escaped_path)
+        with pytest.raises(PermissionError):
+            await get_file_context(str(workspace), escaped_path)
+
+
+@pytest.mark.asyncio
+async def test_rag_routes_return_403_for_outside_index_delete_and_query(tmp_path: Path, monkeypatch):
+    """Route guards reject escaped paths before trust checks or vector-store access."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("external", encoding="utf-8")
+    monkeypatch.setattr(rag_routes, "ensure_workspace_trusted", AsyncMock())
+
+    requests = (
+        rag_routes.handle_index_file(rag_routes.IndexFileRequest(workspace=str(workspace), file_path=str(outside))),
+        rag_routes.handle_remove_file(rag_routes.RemoveFileRequest(workspace=str(workspace), file_path=str(outside))),
+        rag_routes.handle_get_file_context(str(workspace), str(outside)),
+    )
+    for request in requests:
+        with pytest.raises(HTTPException) as exc_info:
+            await request
+        assert exc_info.value.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -379,4 +446,3 @@ async def test_budget_respected(tmp_path: Path):
 
     assert isinstance(results, list)
     assert len(rag_summary) <= 300  # Strict budget adhered to with buffer
-

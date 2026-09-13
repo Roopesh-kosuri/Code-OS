@@ -19,9 +19,18 @@ from .vector_index_service import (
     get_indexing_status,
     reindex_workspace_now,
     get_rag_stats,
+    _ensure_within_workspace,
 )
 
 router = APIRouter()
+
+
+def _ensure_request_path_within_workspace(workspace: str, file_path: str) -> None:
+    """Translate service-level path containment failures into an HTTP denial."""
+    try:
+        _ensure_within_workspace(workspace, file_path)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="RAG path is outside the workspace") from exc
 
 
 # ── Request Models ────────────────────────────────────────────────────────────
@@ -67,6 +76,7 @@ async def handle_reindex_now(req: IndexWorkspaceRequest) -> Dict[str, Any]:
 @router.post("/index-file")
 async def handle_index_file(req: IndexFileRequest) -> Dict[str, Any]:
     """Incrementally index or re-index a single file in ChromaDB."""
+    _ensure_request_path_within_workspace(req.workspace, req.file_path)
     await ensure_workspace_trusted(req.workspace)
     chunks_count = await index_file(req.workspace, req.file_path)
     return {"ok": True, "chunks_indexed": chunks_count, "file_path": req.file_path}
@@ -75,6 +85,7 @@ async def handle_index_file(req: IndexFileRequest) -> Dict[str, Any]:
 @router.post("/remove-file")
 async def handle_remove_file(req: RemoveFileRequest) -> Dict[str, Any]:
     """Remove a file from the vector index."""
+    _ensure_request_path_within_workspace(req.workspace, req.file_path)
     await ensure_workspace_trusted(req.workspace)
     success = await remove_file(req.workspace, req.file_path)
     return {"ok": True, "removed": success, "file_path": req.file_path}
@@ -103,6 +114,7 @@ async def handle_get_file_context(
     file_path: str = Query(..., description="Target file path"),
 ) -> Dict[str, Any]:
     """Retrieve all indexed chunks for a file, sorted by line order."""
+    _ensure_request_path_within_workspace(workspace, file_path)
     chunks = await get_file_context(workspace, file_path)
     return {"ok": True, "file_path": file_path, "chunks": chunks, "count": len(chunks)}
 
