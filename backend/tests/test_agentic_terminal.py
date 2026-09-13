@@ -12,6 +12,9 @@ Required Tests:
 
 import asyncio
 import json
+import subprocess
+import sys
+import time
 import pytest
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
@@ -147,6 +150,56 @@ async def test_send_signal_terminates_process(tmp_path: Path):
 
     res = await asyncio.wait_for(exec_task, timeout=5.0)
     assert res["exit_code"] != 0
+
+
+@pytest.mark.windows
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process-tree regression")
+@pytest.mark.asyncio
+async def test_windows_signal_and_close_reap_process_tree(tmp_path: Path):
+    """Signal and close must reap a spawned grandchild without hanging."""
+    child_script = "import time; time.sleep(60)"
+    parent_script = (
+        "import subprocess, sys, time; "
+        f"child = subprocess.Popen([sys.executable, '-c', {child_script!r}]); "
+        "print(child.pid, flush=True); time.sleep(60)"
+    )
+
+    async def wait_for_child_pid(terminal_id: str) -> int:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            events = get_session(terminal_id)["recent_events"]
+            for event in reversed(events):
+                if event.get("type") == "output" and event.get("stream") == "stdout":
+                    try:
+                        return int(event["line"].strip())
+                    except ValueError:
+                        pass
+            await asyncio.sleep(0.05)
+        raise AssertionError("spawned grandchild PID was not observed")
+
+    for action in ("signal", "close"):
+        terminal_id = create_session(job_id=f"job_windows_{action}", workspace=str(tmp_path))
+        execution = asyncio.create_task(
+            execute_command(terminal_id, sys.executable, args=["-c", parent_script])
+        )
+        grandchild_pid = await wait_for_child_pid(terminal_id)
+
+        started = time.monotonic()
+        if action == "signal":
+            assert await send_signal(terminal_id) is True
+        else:
+            assert await close_session(terminal_id) is True
+        result = await asyncio.wait_for(execution, timeout=5.0)
+        assert time.monotonic() - started < 5.0
+        assert result["exit_code"] != 0
+
+        tasklist = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {grandchild_pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        assert str(grandchild_pid) not in tasklist.stdout
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -41,6 +42,15 @@ _ACTIVE_PROCESSES: Dict[str, asyncio.subprocess.Process] = {}
 
 # Max execution timeout (seconds)
 COMMAND_TIMEOUT_SECONDS = 300.0
+
+# A process signal must never leave a terminal request waiting indefinitely for
+# asyncio's subprocess transport to observe the exit.
+PROCESS_EXIT_GRACE_SECONDS = 2.0
+
+# Reader tasks and stop events are kept separately from the public process map
+# so close/signal paths can reliably finish an in-flight execute_command call.
+_READER_TASKS: Dict[str, List[asyncio.Task]] = {}
+_PROCESS_STOP_EVENTS: Dict[str, asyncio.Event] = {}
 
 
 def create_session(job_id: str, workspace: str) -> str:
@@ -96,6 +106,8 @@ def clear_all_sessions() -> None:
     _TERMINAL_SESSIONS.clear()
     _EVENT_QUEUES.clear()
     _ACTIVE_PROCESSES.clear()
+    _READER_TASKS.clear()
+    _PROCESS_STOP_EVENTS.clear()
 
 
 async def close_session(terminal_id: str) -> bool:
@@ -107,13 +119,23 @@ async def close_session(terminal_id: str) -> bool:
     session["status"] = "closed"
 
     # Kill active process if still running
-    proc = _ACTIVE_PROCESSES.pop(terminal_id, None)
-    if proc and proc.returncode is None:
+    proc = _ACTIVE_PROCESSES.get(terminal_id)
+    stopping_process = bool(proc and proc.returncode is None)
+    if stopping_process:
         try:
-            proc.kill()
-            await proc.wait()
+            await _kill_process_tree(proc)
         except Exception as exc:
             logger.warning("Error killing process for terminal %s: %s", terminal_id, exc)
+        finally:
+            stop_event = _PROCESS_STOP_EVENTS.get(terminal_id)
+            if stop_event:
+                stop_event.set()
+
+    await _cancel_and_wait_reader_tasks(
+        terminal_id,
+        drain=not stopping_process,
+    )
+    _ACTIVE_PROCESSES.pop(terminal_id, None)
 
     # Notify listeners that session is closed
     await _broadcast_event(terminal_id, {"type": "session_closed", "terminal_id": terminal_id})
@@ -192,6 +214,9 @@ async def execute_command(
     stdout_lines: List[str] = []
     stderr_lines: List[str] = []
     exit_code: Optional[int] = None
+    proc: Optional[asyncio.subprocess.Process] = None
+    reader_tasks: List[asyncio.Task] = []
+    stop_event = _PROCESS_STOP_EVENTS.setdefault(terminal_id, asyncio.Event())
 
     # Handle built-ins or emulate printenv/echo if not installed natively
     exec_argv = list(argv)
@@ -224,12 +249,19 @@ async def execute_command(
     try:
         # Spawn subprocess with sanitized environment (prevent secret / API key leaks)
         safe_env = _build_safe_environment()
+        spawn_kwargs: Dict[str, Any] = {}
+        if os.name == "nt":
+            # Isolate the command in a process group. taskkill /T below then
+            # tears down the complete tree without touching unrelated jobs.
+            spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+
         proc = await asyncio.create_subprocess_exec(
             *exec_argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workspace,
             env=safe_env,
+            **spawn_kwargs,
         )
         _ACTIVE_PROCESSES[terminal_id] = proc
 
@@ -264,16 +296,29 @@ async def execute_command(
         # Run stdout/stderr reader tasks with timeout
         stdout_task = asyncio.create_task(read_stream(proc.stdout, "stdout", stdout_lines))
         stderr_task = asyncio.create_task(read_stream(proc.stderr, "stderr", stderr_lines))
+        reader_tasks = [stdout_task, stderr_task]
+        _READER_TASKS[terminal_id] = reader_tasks
+
+        process_wait_task = asyncio.create_task(proc.wait())
+        stop_wait_task = asyncio.create_task(stop_event.wait())
 
         try:
-            await asyncio.wait_for(asyncio.gather(stdout_task, stderr_task, proc.wait()), timeout=timeout)
-            exit_code = proc.returncode if proc.returncode is not None else 0
+            done, _ = await asyncio.wait_for(
+                asyncio.wait(
+                    {process_wait_task, stop_wait_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                ),
+                timeout=timeout,
+            )
+            if stop_wait_task in done and proc.returncode is None:
+                exit_code = -1
+            else:
+                exit_code = proc.returncode if proc.returncode is not None else 0
         except asyncio.TimeoutError:
             logger.warning("Command '%s' timed out after %ss in terminal %s", full_cmd, timeout, terminal_id)
-            stdout_task.cancel()
-            stderr_task.cancel()
             # Auto-kill hung process tree
             await _kill_process_tree(proc)
+            stop_event.set()
             exit_code = -1
             timeout_msg = f"Command timed out after {timeout}s"
             stderr_lines.append(timeout_msg)
@@ -283,13 +328,11 @@ async def execute_command(
                 "stream": "stderr",
                 "timestamp": time.time(),
             })
-
-        # Untrack process
-        if proc.pid:
-            try:
-                await asyncio.wait_for(untrack_process(proc.pid), timeout=0.5)
-            except Exception:
-                pass
+        finally:
+            for wait_task in (process_wait_task, stop_wait_task):
+                if not wait_task.done():
+                    wait_task.cancel()
+            await asyncio.gather(process_wait_task, stop_wait_task, return_exceptions=True)
 
     except Exception as exc:
         logger.error("Error executing command in terminal %s: %s", terminal_id, exc)
@@ -303,8 +346,22 @@ async def execute_command(
             "timestamp": time.time(),
         })
     finally:
-        _ACTIVE_PROCESSES.pop(terminal_id, None)
-        session["status"] = "idle"
+        await _cancel_and_wait_reader_tasks(
+            terminal_id,
+            reader_tasks,
+            drain=not stop_event.is_set(),
+        )
+        if proc and proc.pid:
+            try:
+                await asyncio.wait_for(untrack_process(proc.pid), timeout=0.5)
+            except Exception:
+                pass
+        if _ACTIVE_PROCESSES.get(terminal_id) is proc:
+            _ACTIVE_PROCESSES.pop(terminal_id, None)
+        if _PROCESS_STOP_EVENTS.get(terminal_id) is stop_event:
+            _PROCESS_STOP_EVENTS.pop(terminal_id, None)
+        if session.get("status") != "closed":
+            session["status"] = "idle"
 
     duration_ms = round((time.perf_counter() - t0) * 1000.0, 2)
 
@@ -331,22 +388,97 @@ async def execute_command(
     return history_entry
 
 
+async def _cancel_and_wait_reader_tasks(
+    terminal_id: str,
+    tasks: Optional[List[asyncio.Task]] = None,
+    *,
+    drain: bool = True,
+) -> None:
+    """Cancel and join stream readers so no subprocess gather can outlive a command."""
+    reader_tasks = tasks if tasks is not None else _READER_TASKS.pop(terminal_id, [])
+    if reader_tasks and drain:
+        # A reaped process normally closes both pipes immediately. Let readers
+        # consume that final data before cancellation, but never wait forever.
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*reader_tasks, return_exceptions=True),
+                timeout=PROCESS_EXIT_GRACE_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            pass
+    for task in reader_tasks:
+        task.cancel()
+    if reader_tasks:
+        await asyncio.gather(*reader_tasks, return_exceptions=True)
+    if _READER_TASKS.get(terminal_id) is reader_tasks:
+        _READER_TASKS.pop(terminal_id, None)
+
+
+async def _wait_for_process_exit(proc: asyncio.subprocess.Process) -> bool:
+    """Wait for asyncio's process transport with a bounded timeout."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=PROCESS_EXIT_GRACE_SECONDS)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+async def _taskkill_process_tree(pid: int) -> None:
+    """Run taskkill asynchronously so the event loop can reconcile proc.wait()."""
+    taskkill = await asyncio.create_subprocess_exec(
+        "taskkill",
+        "/F",
+        "/T",
+        "/PID",
+        str(pid),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(taskkill.wait(), timeout=PROCESS_EXIT_GRACE_SECONDS)
+    except asyncio.TimeoutError:
+        taskkill.kill()
+        await asyncio.gather(taskkill.wait(), return_exceptions=True)
+
+
 async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-    """Kill process and all descendants across platforms."""
+    """Kill a process tree and bound both exit observation and escalation."""
     if proc.returncode is not None:
         return
+
     try:
         if os.name == "nt" and proc.pid:
-            import subprocess as sync_sub
-            sync_sub.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            await _taskkill_process_tree(proc.pid)
         else:
             proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except Exception:
-                proc.kill()
+    except (ProcessLookupError, FileNotFoundError):
+        pass
     except Exception as exc:
-        logger.debug("Failed to kill process tree for PID %s: %s", getattr(proc, "pid", None), exc)
+        logger.debug("Failed to terminate process tree for PID %s: %s", getattr(proc, "pid", None), exc)
+
+    if await _wait_for_process_exit(proc):
+        return
+
+    # Record the one permitted escalation. On Windows the first taskkill has
+    # already terminated descendants; kill() forces asyncio to reconcile the
+    # tracked root process if its transport did not observe that exit.
+    logger.warning(
+        "Process PID %s did not exit within %.1fs; escalating once",
+        getattr(proc, "pid", None),
+        PROCESS_EXIT_GRACE_SECONDS,
+    )
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    except Exception as exc:
+        logger.debug("Failed to escalate kill for PID %s: %s", getattr(proc, "pid", None), exc)
+
+    if not await _wait_for_process_exit(proc):
+        logger.error(
+            "Process PID %s remained unreaped after bounded termination",
+            getattr(proc, "pid", None),
+        )
 
 
 async def send_signal(terminal_id: str, sig_name: str = "SIGINT") -> bool:
@@ -357,6 +489,9 @@ async def send_signal(terminal_id: str, sig_name: str = "SIGINT") -> bool:
 
     try:
         await _kill_process_tree(proc)
+        stop_event = _PROCESS_STOP_EVENTS.get(terminal_id)
+        if stop_event:
+            stop_event.set()
         logger.info("Terminated process PID %s in terminal %s", proc.pid, terminal_id)
         return True
     except ProcessLookupError:
