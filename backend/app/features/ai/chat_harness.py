@@ -112,6 +112,7 @@ from .harness import (
     _sse_event, _sse_status, _sse_checkpoint, _sse_token, _sse_tier_routing,
     _sse_ask_user, _sse_memory_updated, _sse_plan, _sse_approval_request,
     _sse_proposal, _sse_command_result, _sse_metrics, _sse_done, _sse_error, StreamReasoningFilter,
+    _sse_escalation_recommendation,
     PendingApproval, PendingUserResponse,
     _pending_approvals, _pending_user_responses,
     approve_action, reject_action, respond_to_user_question, clear_all_pending,
