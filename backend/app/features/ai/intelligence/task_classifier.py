@@ -115,14 +115,6 @@ def escalation_classifier(
     across_multiple = bool(re.search(r"across\s+[\w\s,]+(?:,|\band\b)[\w\s,]+", text)) or bool(re.search(r"\bacross\s+(?:the\s+)?entire\s+[\w\-]+\s+(?:module|system|package|codebase)\b", text))
     has_arch_kw = "architectural" in text or "architecture" in text
 
-    if (
-        (refactor_detected and (file_count > 5 or ">5 files" in text or "5+ files" in text or across_multiple or has_arch_kw))
-        or (file_count > 5 and has_arch_kw)
-        or (module_wide_implementation and across_multiple)
-    ):
-        matched_triggers.append("multi_file_refactor")
-        reasons.append("Multi-file refactor or module-wide architectural implementation across multiple components")
-
     # 2. New feature spanning multiple layers (DB + API + UI + tests)
     has_full_stack = bool(re.search(r"\b(?:full-stack|full\s+stack|fullstack|end-to-end|end\s+to\s+end|cross-cutting|all layers|multiple layers)\b", text))
     layers_detected = 0
@@ -134,6 +126,16 @@ def escalation_classifier(
         layers_detected += 1
     if re.search(r"\b(?:test|tests|testing|e2e|integration|unit\s+tests?|coverage|validators?|rate\s+limit(?:er|ing)?)\b", text):
         layers_detected += 1
+
+    full_stack_multifile = (has_full_stack and layers_detected >= 2) or layers_detected >= 3
+    if (
+        (refactor_detected and (file_count > 5 or ">5 files" in text or "5+ files" in text or across_multiple or has_arch_kw))
+        or (file_count > 5 and has_arch_kw)
+        or (module_wide_implementation and across_multiple)
+        or full_stack_multifile
+    ):
+        matched_triggers.append("multi_file_refactor")
+        reasons.append("Multi-file refactor or full-stack implementation spanning multiple components/layers")
 
     if has_full_stack or layers_detected >= 2 or (refactor_detected and across_multiple) or (module_wide_implementation and layers_detected >= 2):
         matched_triggers.append("cross_layer_feature")
@@ -165,16 +167,22 @@ def escalation_classifier(
         reasons.append("User explicitly requested a team or multi-agent orchestration approach")
 
     count = len(matched_triggers)
-    should_escalate = count >= 2
+    has_high_loc = bool(re.search(r"\b(?:>500\s*loc|500\+\s*loc|500\s+lines\s+of\s+code)\b", text))
+    has_distributed_consensus = bool(re.search(r"\b(?:distributed\s+consensus|raft|paxos)\b", text))
+    has_standalone_hard = (
+        ("complex_algorithm" in matched_triggers and (has_high_loc or has_distributed_consensus))
+        or ("explicit_team_request" in matched_triggers)
+    )
+    should_escalate = count >= 2 or has_standalone_hard
 
     # Confidence scoring per spec:
-    # 0-1 triggers: <0.3
+    # 0-1 triggers: <0.3 (unless standalone hard >500 LOC/distributed consensus/explicit team)
     # 2-3 triggers: 0.5-0.75
     # 4+ triggers: >0.8
     if count == 0:
         confidence = 0.10
     elif count == 1:
-        confidence = 0.25
+        confidence = 0.70 if has_standalone_hard else 0.25
     elif count == 2:
         confidence = 0.65
     elif count == 3:
