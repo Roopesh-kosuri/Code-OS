@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from collections.abc import AsyncIterator
@@ -16,6 +17,7 @@ from app.features.ai.service import (
 )
 from app.features.ai.indexing.code_intelligence import _scan_for_secrets, _update_architecture_doc
 from .approval_coordinator import PendingApproval, _pending_approvals, _ensure_git_checkpoint
+from .checkpoint_manager import _restore_checkpoint
 from .tool_executor import EDIT_APPROVAL_TIMEOUT_SECONDS
 from .activity_logger import _append_activity_log
 from .prompt_builder import _evaluate_edit_critique, _discover_and_run_test_snapshot
@@ -89,7 +91,9 @@ async def _finalize_staged_changes(
     """Convert staged file changes into an edit proposal, run self-critique (Tier 2), and verify on disk after approval."""
     if not staged_changes:
         return
-    
+
+    rollback_commit = ""
+    rollback_paths: list[str] = []
     try:
         # Tier 2 Self-Critique pass before showing approval card
         if tier == 2:
@@ -241,6 +245,8 @@ async def _finalize_staged_changes(
                     yield _sse_done(False, chk_err)
                     yield _sse_event("finalization", {"success": False, "reason": "checkpoint_failed"})
                     return
+                rollback_commit = commit_h
+                rollback_paths = touched_paths
                 if new_init:
                     yield _sse_status("checkpoint", "initialized git repo for turn checkpoints")
                 if commit_h:
@@ -252,7 +258,18 @@ async def _finalize_staged_changes(
                     yield _sse_status("regression_guard", f"Baseline tests before apply: {sum_before}", phase="before", passed=p_before, failed=f_before)
 
                 apply_proposal_fn = _get_apply_proposal()
-                await apply_proposal_fn(proposal_id)
+                try:
+                    await apply_proposal_fn(proposal_id)
+                except Exception as apply_exc:
+                    rollback_ok, rollback_message, restored_paths = _restore_checkpoint(workspace, commit_h, touched_paths)
+                    outcome = "rolled_back" if rollback_ok else "rollback_failed"
+                    logger.error("stage_finalizer: apply failed; %s: %s", outcome, rollback_message)
+                    yield _sse_status("rollback", f"{outcome}: {rollback_message}", outcome=outcome, files=restored_paths or touched_paths)
+                    yield _sse_command_result(f"edit {summary_paths}", f"Apply failed and {outcome}: {rollback_message}", 1, False)
+                    if not rollback_ok:
+                        yield _sse_error(f"Rollback failed after apply failure: {rollback_message}")
+                    yield _sse_event("finalization", {"success": False, "reason": outcome, "files": restored_paths or touched_paths})
+                    return
                 if isinstance(apply_proposal_fn, (Mock, AsyncMock)):
                     try:
                         root = normalize_workspace(workspace)
@@ -262,19 +279,6 @@ async def _finalize_staged_changes(
                             fp.write_text(c.updated, encoding="utf-8")
                     except Exception as mock_write_err:
                         logger.debug("Mock apply write fallback: %s", mock_write_err)
-                yield _sse_status("tool", f"Approved: Applied changes to {summary_paths}", tool="edit_file", detail=summary_paths)
-                yield _sse_command_result(
-                    f"edit {summary_paths}",
-                    f"Successfully applied changes to {summary_paths} (Proposal: {proposal_id})",
-                    0,
-                    True,
-                    proposal_id=proposal_id,
-                    diff=diff_summary,
-                    changes=[{"path": c.path, "original": c.original, "updated": c.updated} for c in staged_changes],
-                    original=staged_changes[0].original if staged_changes else "",
-                    updated=staged_changes[0].updated if staged_changes else "",
-                )
-
                 # Regression Guard: Post-apply test snapshot
                 if ran_test_before:
                     ran_test_after, p_after, f_after, sum_after = await _discover_and_run_test_snapshot(workspace, touched_paths)
@@ -301,24 +305,23 @@ async def _finalize_staged_changes(
                                 "details": reg_msg,
                             })
 
-                # Post-Apply Read-Back: Confirm modified files exist on disk with updated content
+                # Post-Apply Read-Back: exact bytes must match the staged content.
                 read_back_verified = True
                 for c in staged_changes:
                     try:
                         full_p = ensure_within_workspace(workspace, c.path)
                         if full_p.is_file():
-                            disk_content = full_p.read_text(encoding="utf-8", errors="replace")
-                            target_updated = c.updated.strip()
-                            if not target_updated:
-                                matched = True
-                            elif len(target_updated) <= 2000:
-                                matched = target_updated in disk_content
-                            else:
-                                head_chunk = target_updated[:200]
-                                mid_idx = len(target_updated) // 2
-                                mid_chunk = target_updated[mid_idx:mid_idx + 200]
-                                tail_chunk = target_updated[-200:]
-                                matched = (head_chunk in disk_content) and (mid_chunk in disk_content) and (tail_chunk in disk_content)
+                            disk_bytes = full_p.read_bytes()
+                            staged_bytes = c.updated.encode("utf-8")
+                            disk_hash = hashlib.sha256(disk_bytes).digest()
+                            staged_hash = hashlib.sha256(staged_bytes).digest()
+                            norm_disk = disk_bytes.replace(b"\r\n", b"\n")
+                            norm_staged = staged_bytes.replace(b"\r\n", b"\n")
+                            matched = (
+                                (disk_hash == staged_hash)
+                                or (hashlib.sha256(norm_disk).digest() == hashlib.sha256(norm_staged).digest())
+                                or (bool(c.original) and norm_staged in norm_disk)
+                            )
 
                             if matched:
                                 yield _sse_status("verified_disk", f"✓ change verified on disk: '{c.path}'", path=c.path, confirmed=True)
@@ -331,24 +334,6 @@ async def _finalize_staged_changes(
                     except Exception as rb_exc:
                         read_back_verified = False
                         logger.warning("chat_harness: post-apply read-back failed for %s: %s", c.path, rb_exc)
-
-                # Living Architecture Document: Auto-update on multi-file changes or new modules
-                if len(staged_changes) > 1 or any(c.original == "" for c in staged_changes):
-                    try:
-                        _update_architecture_doc(workspace, reason=f"Applied changes to {summary_paths}")
-                    except Exception:
-                        pass
-
-                _append_activity_log(workspace, {
-                    "action_type": "edit_proposal",
-                    "target": summary_paths,
-                    "outcome": "approved",
-                    "tier": tier,
-                    "details": f"Applied {len(staged_changes)} file change(s) (Proposal: {proposal_id[:8]})",
-                })
-
-                if commit_h:
-                    yield _sse_checkpoint(turn_number, commit_h, touched_paths)
 
                 # Tightened Auto-Verify Trigger Scope (Phase 7A4)
                 browser_verified = True
@@ -389,7 +374,9 @@ async def _finalize_staged_changes(
                                 outcome="failed",
                             )
                 except Exception as b_err:
-                    logger.warning("stage_finalizer: auto-verify encountered non-fatal error: %s", b_err)
+                    browser_verified = False
+                    browser_verify_reason = f"browser_verification_error: {b_err}"
+                    logger.warning("stage_finalizer: auto-verify failed: %s", b_err)
 
                 regressed = bool(ran_test_before and 'has_regression' in locals() and has_regression)
                 final_reason = "verified"
@@ -400,10 +387,54 @@ async def _finalize_staged_changes(
                 elif not browser_verified:
                     final_reason = browser_verify_reason or "browser_verification_failed"
 
-                yield _sse_event("finalization", {
-                    "success": read_back_verified and not regressed and browser_verified,
-                    "reason": final_reason,
+                transaction_succeeded = read_back_verified and not regressed and browser_verified
+                if not transaction_succeeded:
+                    rollback_ok, rollback_message, restored_paths = _restore_checkpoint(workspace, commit_h, touched_paths)
+                    outcome = "rolled_back" if rollback_ok else "rollback_failed"
+                    logger.error("stage_finalizer: post-apply %s; %s: %s", final_reason, outcome, rollback_message)
+                    _append_activity_log(workspace, {
+                        "action_type": "edit_proposal",
+                        "target": summary_paths,
+                        "outcome": outcome,
+                        "tier": tier,
+                        "details": f"Post-apply {final_reason}; {rollback_message}",
+                    })
+                    yield _sse_status("rollback", f"{outcome}: {rollback_message}", outcome=outcome, files=restored_paths or touched_paths)
+                    yield _sse_command_result(f"edit {summary_paths}", f"Post-apply {final_reason}; {outcome}: {rollback_message}", 1, False)
+                    if not rollback_ok:
+                        yield _sse_error(f"Rollback failed after {final_reason}: {rollback_message}")
+                    yield _sse_event("finalization", {"success": False, "reason": outcome, "failure_reason": final_reason, "files": restored_paths or touched_paths})
+                    return
+
+                # Only a fully verified transaction is visible as applied.
+                if len(staged_changes) > 1 or any(c.original == "" for c in staged_changes):
+                    try:
+                        _update_architecture_doc(workspace, reason=f"Applied changes to {summary_paths}")
+                    except Exception:
+                        pass
+                _append_activity_log(workspace, {
+                    "action_type": "edit_proposal",
+                    "target": summary_paths,
+                    "outcome": "approved",
+                    "tier": tier,
+                    "details": f"Applied and verified {len(staged_changes)} file change(s) (Proposal: {proposal_id[:8]})",
                 })
+                yield _sse_status("tool", f"Approved: Applied and verified changes to {summary_paths}", tool="edit_file", detail=summary_paths, outcome="verified")
+                yield _sse_command_result(
+                    f"edit {summary_paths}",
+                    f"Successfully applied and verified changes to {summary_paths} (Proposal: {proposal_id})",
+                    0,
+                    True,
+                    proposal_id=proposal_id,
+                    diff=diff_summary,
+                    changes=[{"path": c.path, "original": c.original, "updated": c.updated} for c in staged_changes],
+                    original=staged_changes[0].original if staged_changes else "",
+                    updated=staged_changes[0].updated if staged_changes else "",
+                )
+                yield _sse_checkpoint(turn_number, commit_h, touched_paths)
+                rollback_commit = ""
+                rollback_paths = []
+                yield _sse_event("finalization", {"success": True, "reason": "applied_verified", "files": touched_paths})
             else:
                 reject_proposal_fn = _get_reject_proposal()
                 try:
@@ -434,5 +465,20 @@ async def _finalize_staged_changes(
 
     except Exception as exc:
         logger.exception("chat_harness: failed to create edit proposal: %s", exc)
+        if rollback_commit:
+            try:
+                rollback_ok, rollback_message, restored_paths = _restore_checkpoint(workspace, rollback_commit, rollback_paths)
+            except Exception as rollback_exc:
+                rollback_ok = False
+                rollback_message = f"Rollback raised: {rollback_exc}"
+                restored_paths = []
+            outcome = "rolled_back" if rollback_ok else "rollback_failed"
+            logger.error("stage_finalizer: exception after checkpoint; %s: %s", outcome, rollback_message)
+            yield _sse_status("rollback", f"{outcome}: {rollback_message}", outcome=outcome, files=restored_paths or rollback_paths)
+            yield _sse_command_result("edit proposal", f"Finalization error; {outcome}: {rollback_message}", 1, False)
+            if not rollback_ok:
+                yield _sse_error(f"Rollback failed after finalization error: {rollback_message}")
+            yield _sse_event("finalization", {"success": False, "reason": outcome, "files": restored_paths or rollback_paths})
+            return
         yield _sse_error(f"Failed to create edit proposal: {exc}")
         yield _sse_event("finalization", {"success": False, "reason": "finalizer_exception", "detail": str(exc)[:200]})

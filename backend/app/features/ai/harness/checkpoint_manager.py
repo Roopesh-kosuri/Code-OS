@@ -4,6 +4,7 @@ checkpoint_manager.py - Git-based surgical workspace checkpoint and undo managem
 """
 
 import fnmatch
+import hashlib
 import logging
 import subprocess
 from pathlib import Path
@@ -146,7 +147,12 @@ def _ensure_git_checkpoint(
 
 
 def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) -> tuple[bool, str, list[str]]:
-    """Restores ONLY the agent-touched files from the pre-turn commit hash."""
+    """Restore and hash-verify each touched path from a pre-turn commit.
+
+    Paths absent from the checkpoint are proposal-created paths and must be
+    removed. This makes rollback a complete workspace transaction instead of
+    only checking out files Git already knows about.
+    """
     if not workspace or not commit_hash or not touched_files:
         return False, "Missing workspace, commit_hash, or touched_files", []
     
@@ -166,26 +172,55 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
     if not rel_paths:
         return False, "No valid files to restore", []
 
+    restored: list[str] = []
+    failures: list[str] = []
     try:
-        cmd = ["git", "checkout", commit_hash, "--"] + rel_paths
-        res = subprocess.run(
-            cmd,
-            cwd=str(ws_path),
-            capture_output=True,
-            text=True,
-            timeout=15.0,
-        )
-        if res.returncode == 0:
-            restored = []
-            for rf in rel_paths:
-                fp = ws_path / rf
-                if fp.exists():
+        for rf in rel_paths:
+            fp = ws_path / rf
+            snapshot = subprocess.run(
+                ["git", "show", f"{commit_hash}:{rf}"],
+                cwd=str(ws_path),
+                capture_output=True,
+                timeout=15.0,
+            )
+            if snapshot.returncode == 0:
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                fp.write_bytes(snapshot.stdout)
+                if not fp.is_file() or hashlib.sha256(fp.read_bytes()).digest() != hashlib.sha256(snapshot.stdout).digest():
+                    failures.append(f"{rf}: restored bytes do not match checkpoint")
+                else:
                     restored.append(rf)
-            return True, f"Successfully restored {len(restored)} file(s) to checkpoint {commit_hash[:7]}", restored
-        else:
-            return False, f"Git checkout error: {res.stderr.strip()}", []
+                continue
+
+            snapshot_error = snapshot.stderr.decode("utf-8", errors="replace")
+            if "does not exist in" not in snapshot_error and "not in '" not in snapshot_error:
+                failures.append(f"{rf}: unable to read checkpoint snapshot")
+                continue
+
+            # git show exits non-zero when this path did not exist in the
+            # checkpoint. Remove the post-apply file and its empty parents.
+            if fp.exists():
+                if fp.is_dir():
+                    failures.append(f"{rf}: expected file path is a directory")
+                    continue
+                fp.unlink()
+            parent = fp.parent
+            while parent != ws_path:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
+            if fp.exists():
+                failures.append(f"{rf}: created path still exists after rollback")
+            else:
+                restored.append(rf)
     except Exception as exc:
-        return False, f"Undo operation failed: {exc}", []
+        return False, f"Undo operation failed: {exc}", restored
+
+    if failures:
+        return False, "Rollback verification failed: " + "; ".join(failures), restored
+    return True, f"Successfully restored {len(restored)} path(s) to checkpoint {commit_hash[:7]}", restored
 
 
 def _create_checkpoint(workspace: str, touched_files: list[str], turn_number: int) -> str:

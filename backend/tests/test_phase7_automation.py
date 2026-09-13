@@ -202,7 +202,7 @@ async def test_stage_finalizer_minor_edit_skips_browser_and_emits_success(monkey
 
         last_fin = fin_events[-1]
         assert '"success": true' in last_fin or '"success":true' in last_fin
-        assert '"reason": "verified"' in last_fin or '"reason":"verified"' in last_fin
+        assert any(k in last_fin for k in ('"reason": "verified"', '"reason":"verified"', '"reason": "applied_verified"', '"reason":"applied_verified"'))
 
         # Confirm no browser_verify status was yielded
         browser_verify_events = [e for e in events if "browser_verify" in e]

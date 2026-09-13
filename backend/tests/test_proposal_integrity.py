@@ -1,5 +1,10 @@
 """Regression tests for Phase 6.2: Proposal Integrity Gate."""
 
+import asyncio
+import sys
+from types import SimpleNamespace
+from types import ModuleType
+
 import pytest
 from app.features.ai.harness.content_integrity import (
     validate_content_integrity,
@@ -11,6 +16,53 @@ from app.features.ai.harness.content_integrity import (
 )
 from app.features.ai.schemas import FileChange
 from app.features.ai.harness.stage_finalizer import _finalize_staged_changes
+from app.features.ai.harness import stage_finalizer
+
+
+async def _finalize_with_approval(staged, workspace):
+    """Drive the approval handshake and collect a real finalization transaction."""
+    events = []
+
+    async def collect():
+        async for event in _finalize_staged_changes(staged, str(workspace), user_query="update file"):
+            events.append(event)
+
+    task = asyncio.create_task(collect())
+    for _ in range(100):
+        if stage_finalizer._pending_approvals:
+            pending = next(iter(stage_finalizer._pending_approvals.values()))
+            pending.approved = True
+            pending.event.set()
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("approval request was not created")
+    await task
+    return "".join(events)
+
+
+def _patch_transaction_dependencies(monkeypatch, apply):
+    async def create(_payload):
+        return SimpleNamespace(id="transaction-proposal")
+
+    async def no_tests(*_args):
+        return False, 0, 0, "no required test runner"
+
+    settings_service = ModuleType("app.features.settings.service")
+
+    async def get_setting(_key):
+        return "false"
+
+    settings_service.get_setting = get_setting
+    verifier = ModuleType("app.features.automation.verifier")
+    verifier.should_trigger_auto_verify = lambda *_args, **_kwargs: False
+    verifier.run_browser_verification = None
+
+    monkeypatch.setattr(stage_finalizer, "_get_create_proposal", lambda: create)
+    monkeypatch.setattr(stage_finalizer, "_get_apply_proposal", lambda: apply)
+    monkeypatch.setattr(stage_finalizer, "_discover_and_run_test_snapshot", no_tests)
+    monkeypatch.setitem(sys.modules, "app.features.settings.service", settings_service)
+    monkeypatch.setitem(sys.modules, "app.features.automation.verifier", verifier)
 
 
 def test_reject_placeholder_code():
@@ -139,3 +191,86 @@ async def test_proposal_integrity_gate_blocks_proposal():
     # Must emit rejection/error event
     event_str = "".join(events)
     assert "integrity_check_failed" in event_str or "Syntax error" in event_str or "Proposal Integrity Check Failed" in event_str
+
+
+@pytest.mark.asyncio
+async def test_post_apply_read_back_mismatch_restores_original_bytes(tmp_path, monkeypatch):
+    target = tmp_path / "module.txt"
+    original = b"original\x00bytes\n"
+    target.write_bytes(original)
+    staged = [FileChange(path="module.txt", original=original.decode("utf-8"), updated="汉字🙂\n")]
+
+    async def apply(_proposal_id):
+        target.write_bytes("汉字🙂\n".encode("utf-16"))
+
+    _patch_transaction_dependencies(monkeypatch, apply)
+    events = await _finalize_with_approval(staged, tmp_path)
+
+    assert target.read_bytes() == original
+    assert '"reason": "rolled_back"' in events
+    assert "read_back_failed" in events
+
+
+@pytest.mark.asyncio
+async def test_required_verification_failure_restores_original_bytes(tmp_path, monkeypatch):
+    target = tmp_path / "module.txt"
+    original = b"before\n"
+    target.write_bytes(original)
+    staged = [FileChange(path="module.txt", original="before\n", updated="after\n")]
+
+    async def apply(_proposal_id):
+        target.write_bytes(b"after\n")
+
+    calls = 0
+
+    async def regression_snapshot(*_args):
+        nonlocal calls
+        calls += 1
+        return (True, 2, 0, "2 passed") if calls == 1 else (True, 1, 1, "1 passed, 1 failed")
+
+    _patch_transaction_dependencies(monkeypatch, apply)
+    monkeypatch.setattr(stage_finalizer, "_discover_and_run_test_snapshot", regression_snapshot)
+    events = await _finalize_with_approval(staged, tmp_path)
+
+    assert target.read_bytes() == original
+    assert '"reason": "rolled_back"' in events
+    assert "test_regression" in events
+
+
+@pytest.mark.asyncio
+async def test_created_file_rollback_removes_file_and_empty_parent_dirs(tmp_path, monkeypatch):
+    target = tmp_path / "created" / "nested" / "module.txt"
+    staged = [FileChange(path="created/nested/module.txt", original="", updated="created\n")]
+
+    async def apply(_proposal_id):
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"wrong\n")
+
+    _patch_transaction_dependencies(monkeypatch, apply)
+    events = await _finalize_with_approval(staged, tmp_path)
+
+    assert not target.exists()
+    assert not target.parent.exists()
+    assert not target.parent.parent.exists()
+    assert '"reason": "rolled_back"' in events
+
+
+@pytest.mark.asyncio
+async def test_restore_failure_is_surfaced_as_hard_rollback_failed(tmp_path, monkeypatch):
+    target = tmp_path / "module.txt"
+    target.write_text("before\n", encoding="utf-8")
+    staged = [FileChange(path="module.txt", original="before\n", updated="expected\n")]
+
+    async def apply(_proposal_id):
+        target.write_text("wrong\n", encoding="utf-8")
+
+    _patch_transaction_dependencies(monkeypatch, apply)
+    monkeypatch.setattr(
+        stage_finalizer,
+        "_restore_checkpoint",
+        lambda *_args: (False, "simulated restore I/O failure", []),
+    )
+    events = await _finalize_with_approval(staged, tmp_path)
+
+    assert '"reason": "rollback_failed"' in events
+    assert "Rollback failed after read_back_failed" in events
