@@ -19,7 +19,7 @@
 | **AUD-007** | RAG | High | Vector index service and RAG endpoints accepted arbitrary paths without strict workspace containment, permitting traversal. | `backend/app/features/ai/rag/rag_routes.py`, `backend/app/features/ai/rag/vector_index_service.py` | **CLOSED** | **commit a2a5ebe**: `fix(rag): strict workspace path containment, reject escapes (AUD-007)` |
 | **AUD-008** | Marathon | High | Marathon autopilot git checkpointing performed global staging (`git add .`), committing unrelated uncommitted user files into agent commits. | `backend/app/features/ai/marathon/marathon_executor.py` | **CLOSED** | **commit dece572**: `fix(marathon): path-scoped git commits, no unrelated dirty files (AUD-008)` |
 | **AUD-009** | Terminal | Critical | Windows terminal process termination leaked orphaned process groups on timeout or cancellation; lacked bounded tree kill (`taskkill /T /F`). | `backend/app/features/ai/terminal/agentic_terminal_service.py` | **CLOSED** | **commit 0f1153d**: `fix(terminal): bounded Windows process-group termination (AUD-009)` |
-| **AUD-010** | SSE Transport | Critical | Packaged-app Team Console, Marathon, and terminal live streams get 401 and never update: native EventSource cannot send Authorization headers and store URLs omit stream tokens. | `backend/app/main.py`, `backend/app/core/auth.py`, `src/features/ai/console/teamStore.ts`, `src/features/marathon/marathonStore.ts`, `src/features/terminal/agenticTerminalStore.ts` | **OPEN** | Priority target for Phase 10.1 remediation. |
+| **AUD-010** | SSE Transport | Critical | Packaged-app Team Console, Marathon, and terminal live streams get 401 and never update: native EventSource cannot send Authorization headers and store URLs omit stream tokens. | `backend/app/main.py`, `backend/app/core/auth.py`, `src/features/ai/console/teamStore.ts`, `src/features/marathon/marathonStore.ts`, `src/features/terminal/agenticTerminalStore.ts` | **CLOSED** | **commit a469052**: `fix(sse): authenticated stream transport for team/marathon/terminal (AUD-010)` |
 | **AUD-011** | Security | Critical | Sandbox policy allowed model parameters to influence `require_sandbox`; server-enforced mandatory sandboxing needed for untrusted workspaces. | `backend/app/features/ai/sandbox/policy.py`, `backend/app/features/ai/chat_harness.py` | **OPEN** | Tracked for Phase 10+ hardening. |
 | **AUD-012** | Desktop | High | Electron `captureService.ts` lacked session token requirement on `/capture`, used overly permissive CORS, and had potential SSRF surfaces. | `electron/services/captureService.ts` | **OPEN** | Tracked for Phase 10+ hardening. |
 | **AUD-013** | Memory | Medium | Self-improving memory lacked automated ingestion hooks from failed test runs and rejected staging diffs, requiring manual lesson creation. | `backend/app/features/ai/memory/memory_service.py` | **OPEN** | Tracked for Phase 10+ hardening. |
@@ -30,6 +30,7 @@
 ## Resolution Accounting
 
 - **Total Findings:** 14
-- **Closed Findings (6):** AUD-002, AUD-004, AUD-005, AUD-007, AUD-008, AUD-009
-- **Open Findings (8):** AUD-001, AUD-003, AUD-006, AUD-010, AUD-011, AUD-012, AUD-013, AUD-014
-- **Immediate Remediations in Progress:** AUD-010 (Phase 10.1 — Authenticated SSE Transport)
+- **Closed Findings (7):** AUD-002, AUD-004, AUD-005, AUD-007, AUD-008, AUD-009, AUD-010
+- **Open Findings (7):** AUD-001, AUD-003, AUD-006, AUD-011, AUD-012, AUD-013, AUD-014
+- **Next Phase in Sequence:** Phase 10.2 (Batch 3 — Harness & Team Durability: AUD-001, AUD-003, AUD-006)
+

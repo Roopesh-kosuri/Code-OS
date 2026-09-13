@@ -9,8 +9,8 @@
 
 ```mermaid
 graph TD
-    B1["Batch 1 (Codex Patches)<br/>AUD-009, AUD-002, AUD-004, AUD-008, AUD-007, AUD-005<br/>[CLOSED]"] --> B2["Batch 2 (Phase 10.1)<br/>AUD-010: Authenticated SSE Transport<br/>[IN PROGRESS]"]
-    B2 --> B3["Batch 3<br/>AUD-001, AUD-003, AUD-006<br/>Harness & Team Durability<br/>[OPEN]"]
+    B1["Batch 1 (Codex Patches)<br/>AUD-009, AUD-002, AUD-004, AUD-008, AUD-007, AUD-005<br/>[CLOSED]"] --> B2["Batch 2 (Phase 10.1)<br/>AUD-010: Authenticated SSE Transport<br/>[CLOSED - commit a469052]"]
+    B2 --> B3["Batch 3 (Phase 10.2)<br/>AUD-001, AUD-003, AUD-006<br/>Harness & Team Durability<br/>[OPEN]"]
     B3 --> B4["Batch 4<br/>AUD-011, AUD-012<br/>Sandbox & Electron Security<br/>[OPEN]"]
     B4 --> B5["Batch 5<br/>AUD-013, AUD-014<br/>Memory Ingestion & CI/Packaging<br/>[OPEN]"]
 ```
@@ -71,7 +71,7 @@ All 6 patches integrated, verified with focused test suites, and committed local
   - Regression Tests:
     - Backend: `test_sse_stream_authorized_via_token`, `test_sse_stream_rejects_missing_invalid_expired_token`
     - Frontend: `test_sse_helper_reconnects_and_cleans_up`, `test_no_eventsource_without_auth_in_stores`
-  - Status: **IN PROGRESS**
+  - Status: **CLOSED** (commit `a469052`: `fix(sse): authenticated stream transport for team/marathon/terminal (AUD-010)`)
 
 ---
 
