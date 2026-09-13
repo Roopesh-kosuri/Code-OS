@@ -166,6 +166,28 @@ def _utf8_byte_count(value: Any) -> int | None:
     return len(value.encode("utf-8")) if isinstance(value, str) else None
 
 
+def _get_contamination_history(messages: list[Any], max_assistant_messages: int = 5) -> list[dict[str, str]]:
+    """Extract a bounded, provenance-separated history snapshot of prior assistant messages (AUD-003)."""
+    snapshot: list[dict[str, str]] = []
+    for m in messages:
+        role = m.get("role", "") if isinstance(m, dict) else getattr(m, "role", "")
+        content = m.get("content", "") if isinstance(m, dict) else getattr(m, "content", "")
+        if role == "assistant" and content:
+            snapshot.append({"role": "assistant", "content": str(content), "provenance": "assistant_prose"})
+    return snapshot[-max_assistant_messages:]
+
+
+def _get_tool_prose(tool_results: list[str] | None, max_items: int = 5) -> list[str]:
+    """Extract non-source prose from recent tool executions (AUD-003)."""
+    if not tool_results:
+        return []
+    prose: list[str] = []
+    for tr in tool_results[-max_items:]:
+        if "read_file" not in tr and len(tr.strip()) > 30:
+            prose.append(tr.strip())
+    return prose
+
+
 def _is_document_review_turn(user_query: str, attached_filenames: set[str], attached_paths: list[str] | None = None) -> bool:
     """Determine whether the turn is a document review, summary, analysis, or critique inquiry."""
     has_attached = bool(attached_filenames or attached_paths)
@@ -1312,7 +1334,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             if is_only_ask_user and len(clean_prose) >= 50:
                 logger.info("chat_harness: response contains substantive answer after clarification; completing turn instead of re-prompting ask_user")
                 finalization_ok = not staged_changes
-                async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                     yield event
                     outcome = _finalization_succeeded(event)
                     if outcome is not None:
@@ -1357,7 +1379,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         yield _sse_status("tool_cap_reached", f"Tool cap reached ({total_tools_executed}/{MAX_TOOL_CALLS_PER_TURN}). Emitting honest partial report...", tools=total_tools_executed)
                         yield _sse_token(cap_report)
                         if staged_changes:
-                            async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                            async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages), extra_texts=_get_tool_prose(tool_results_list if 'tool_results_list' in locals() else None)):
                                 yield event
                         _append_activity_log(workspace, {
                             "action_type": "tool_cap_reached",
@@ -1378,7 +1400,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         yield _sse_status("termination_signal", "Termination token [DONE] detected in tool arguments. Finalizing turn...", tool=tc.name)
                         finalization_ok = not staged_changes
                         if staged_changes:
-                            async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                            async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages), extra_texts=_get_tool_prose(tool_results_list if 'tool_results_list' in locals() else None)):
                                 yield event
                                 outcome = _finalization_succeeded(event)
                                 if outcome is not None:
@@ -2681,7 +2703,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             yield _sse_status("audit", "✓ Post-generation structural audit passed cleanly.")
 
                     finalization_ok = not staged_changes
-                    async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                    async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages), extra_texts=_get_tool_prose(tool_results_list)):
                         yield event
                         outcome = _finalization_succeeded(event)
                         if outcome is not None:
@@ -2812,7 +2834,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         return
 
                 finalization_ok = not staged_changes
-                async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                     yield event
                     outcome = _finalization_succeeded(event)
                     if outcome is not None:
@@ -2863,7 +2885,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         return
 
                 finalization_ok = not staged_changes
-                async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query):
+                async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                     yield event
                     outcome = _finalization_succeeded(event)
                     if outcome is not None:
@@ -2908,7 +2930,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         incomplete_staged: list[tuple[FileChange, str]] = []
         from .harness.content_integrity import validate_content_integrity
         for sc in staged_changes:
-            st, wrn = validate_content_integrity(sc.path, sc.updated, user_query=user_query)
+            st, wrn = validate_content_integrity(sc.path, sc.updated, user_query=user_query, conversation_messages=_get_contamination_history(messages))
             if st == "valid":
                 valid_staged.append(sc)
             else:
@@ -2926,7 +2948,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 )
 
         if valid_staged:
-            async for event in _finalize_staged_changes(valid_staged, workspace, tier, turn_number=turn_number, user_query=user_query):
+            async for event in _finalize_staged_changes(valid_staged, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                 yield event
         elif staged_changes:
             yield _sse_status(

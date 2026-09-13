@@ -87,6 +87,8 @@ async def _finalize_staged_changes(
     tier: int = 1,
     turn_number: int = 1,
     user_query: str = "",
+    conversation_messages: list[Any] | None = None,
+    extra_texts: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """Convert staged file changes into an edit proposal, run self-critique (Tier 2), and verify on disk after approval."""
     if not staged_changes:
@@ -149,6 +151,8 @@ async def _finalize_staged_changes(
                 path=change.path,
                 content=change.updated,
                 user_query=user_query,
+                conversation_messages=conversation_messages,
+                extra_texts=extra_texts,
             )
             if status != "valid":
                 if status == "blocked":
@@ -160,7 +164,7 @@ async def _finalize_staged_changes(
                 if warning:
                     integrity_warnings.append(warning)
 
-        if overall_integrity_status in ("blocked", "incomplete"):
+        if overall_integrity_status in ("blocked", "incomplete", "suspicious"):
             blocked_msg = "Proposal Integrity Check Failed: " + "; ".join(integrity_warnings)
             yield _sse_status("integrity_gate", f"🚫 {blocked_msg}", outcome="rejected")
             _append_activity_log(workspace, {

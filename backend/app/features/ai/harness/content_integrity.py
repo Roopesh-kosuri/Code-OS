@@ -190,7 +190,12 @@ def check_cross_turn_contamination(
     conversation_messages: list[Any] | None = None,
     extra_texts: list[str] | None = None,
 ) -> tuple[bool, str]:
-    """Detect if file content is an accidental copy/echo of earlier assistant prose or chat history."""
+    """Detect if file content is an accidental copy/echo of earlier assistant prose or chat history (AUD-003).
+
+    Provenance-aware: isolates prior assistant conversational prose and checks against
+    staged content without blocking ordinary source repetition from user instructions
+    or file inspection tools.
+    """
     if not content or not content.strip():
         return False, ""
 
@@ -199,13 +204,30 @@ def check_cross_turn_contamination(
 
     if conversation_messages:
         for m in conversation_messages:
+            role = ""
             text = ""
+            provenance = ""
             if isinstance(m, dict):
-                if m.get("role") in ("assistant", "user"):
-                    text = str(m.get("content") or "")
+                role = str(m.get("role") or "")
+                text = str(m.get("content") or "")
+                provenance = str(m.get("provenance") or "")
             elif hasattr(m, "content"):
+                role = str(getattr(m, "role", "") or "")
                 text = str(getattr(m, "content") or "")
-            if text and len(text.strip()) > 30:
+                provenance = str(getattr(m, "provenance", "") or "")
+
+            # Prioritize assistant conversational prose; ignore user instructions or system prompts
+            # so ordinary user code repetition is not blocked (AUD-003)
+            is_assistant = role == "assistant" or provenance in ("assistant_prose", "assistant")
+            if is_assistant and text and len(text.strip()) > 30:
+                # Strip markdown code blocks from assistant prose to isolate conversational sentences
+                prose_only = re.sub(r"```[\s\S]*?```", "", text).strip()
+                if len(prose_only) > 30:
+                    sources_to_check.append(prose_only)
+                elif len(text.strip()) > 30:
+                    sources_to_check.append(text.strip())
+            elif not role and text and len(text.strip()) > 30:
+                # Fallback for generic text blocks
                 sources_to_check.append(text.strip())
 
     if extra_texts:
@@ -305,7 +327,7 @@ def validate_content_integrity(
     # 4. Cross-turn contamination
     is_contam, contam_msg = check_cross_turn_contamination(content, conversation_messages, extra_texts)
     if is_contam:
-        return "suspicious", f"Cross-turn contamination in '{path}': {contam_msg}"
+        return "blocked", f"Cross-turn contamination in '{path}': {contam_msg}"
 
     # 5. Language syntax
     syntax_ok, syntax_msg = validate_language_syntax(path, content)
