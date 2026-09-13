@@ -64,14 +64,14 @@ async def handle_create_session(req: CreateSessionRequest):
 
 
 @router.get("/stream/{terminal_id}")
-async def handle_stream(terminal_id: str):
+async def handle_stream(terminal_id: str, snapshot_only: bool = False):
     """Connect to SSE stream for live agent command output."""
     session = get_session(terminal_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Terminal session {terminal_id} not found")
 
     return StreamingResponse(
-        stream_output(terminal_id),
+        stream_output(terminal_id, snapshot_only=snapshot_only),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

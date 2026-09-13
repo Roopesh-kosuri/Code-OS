@@ -16,7 +16,7 @@
  * Electron-specific protection layer.
  */
 
-const API_BASE = "http://127.0.0.1:8000";
+export const API_BASE = "http://127.0.0.1:8000";
 
 // In-memory token — fetched once from Electron IPC, then reused.
 let _sessionToken: string | null = null;

@@ -501,7 +501,7 @@ async def send_signal(terminal_id: str, sig_name: str = "SIGINT") -> bool:
         return False
 
 
-async def stream_output(terminal_id: str) -> AsyncGenerator[str, None]:
+async def stream_output(terminal_id: str, snapshot_only: bool = False) -> AsyncGenerator[str, None]:
     """SSE generator yielding events for the terminal session."""
     session = _TERMINAL_SESSIONS.get(terminal_id)
     if not session:
@@ -519,6 +519,9 @@ async def stream_output(terminal_id: str) -> AsyncGenerator[str, None]:
     # Send any recent buffered events for immediate synchronization
     for past_event in list(session.get("recent_events", [])):
         yield f"data: {json.dumps(past_event)}\n\n"
+
+    if snapshot_only:
+        return
 
     try:
         while True:

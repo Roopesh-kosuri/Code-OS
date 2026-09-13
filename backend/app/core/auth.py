@@ -220,3 +220,109 @@ async def require_token(request: Request, call_next: Callable) -> Response:
         )
 
     return await call_next(request)
+
+
+STREAM_TOKEN_TTL_SECONDS: float = 60.0
+
+
+def is_sse_route(path: str) -> bool:
+    """Return True if path corresponds to an authorized SSE stream endpoint."""
+    from urllib.parse import unquote
+    clean = unquote(path.split("?")[0]).rstrip("/")
+    parts = clean.split("/")
+    # /api/team/jobs/{job_id}/events
+    if len(parts) == 6 and parts[1] == "api" and parts[2] == "team" and parts[3] == "jobs" and parts[5] == "events" and bool(parts[4]):
+        return True
+    # /api/marathon/{marathon_id}/stream
+    if len(parts) == 5 and parts[1] == "api" and parts[2] == "marathon" and parts[4] == "stream" and bool(parts[3]):
+        return True
+    # /api/terminal/stream/{terminal_id}
+    if len(parts) == 5 and parts[1] == "api" and parts[2] == "terminal" and parts[3] == "stream" and bool(parts[4]):
+        return True
+    return False
+
+
+def mint_stream_token(route: str, ttl_seconds: float = STREAM_TOKEN_TTL_SECONDS) -> str:
+    """
+    Mint a short-lived single-purpose stream token scoped to a specific route.
+    TTL is capped at 60 seconds.
+    """
+    import base64
+    import hashlib
+    import hmac
+    from urllib.parse import unquote
+
+    clean_route = unquote(route.split("?")[0]).rstrip("/")
+    ttl = min(float(ttl_seconds), 60.0)
+    if ttl <= 0:
+        ttl = 60.0
+    now = time.time()
+    exp = now + ttl
+    nonce = secrets.token_hex(8)
+
+    payload = {
+        "route": clean_route,
+        "exp": exp,
+        "nonce": nonce,
+    }
+    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    p_b64 = base64.urlsafe_b64encode(payload_bytes).decode("ascii").rstrip("=")
+
+    secret = get_token().encode("utf-8")
+    sig = hmac.new(secret, p_b64.encode("ascii"), hashlib.sha256).hexdigest()
+
+    return f"{p_b64}.{sig}"
+
+
+def validate_stream_token(token: str, request_path: str) -> tuple[bool, str]:
+    """
+    Validate a stream token against the request path, signature, and expiration.
+    Returns (is_valid, reason).
+    """
+    import base64
+    import hashlib
+    import hmac
+    from urllib.parse import unquote
+
+    if not token or "." not in token:
+        return False, "Malformed stream token"
+
+    parts = token.split(".")
+    if len(parts) != 2:
+        return False, "Malformed stream token structure"
+
+    p_b64, sig = parts
+    try:
+        secret = get_token().encode("utf-8")
+    except RuntimeError:
+        return False, "Backend not initialized"
+
+    expected_sig = hmac.new(secret, p_b64.encode("ascii"), hashlib.sha256).hexdigest()
+    if not secrets.compare_digest(sig, expected_sig):
+        return False, "Invalid stream token signature"
+
+    try:
+        padded = p_b64 + "=" * (-len(p_b64) % 4)
+        payload_bytes = base64.urlsafe_b64decode(padded)
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except Exception:
+        return False, "Corrupt stream token payload"
+
+    if not isinstance(payload, dict):
+        return False, "Invalid token payload type"
+
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return False, "Missing or invalid expiration in stream token"
+
+    now = time.time()
+    if now > exp:
+        return False, "Stream token expired"
+
+    token_route = unquote(payload.get("route", "")).rstrip("/")
+    clean_req_path = unquote(request_path.split("?")[0]).rstrip("/")
+    if token_route != clean_req_path:
+        return False, f"Stream token scope mismatch (scoped to {token_route}, requested {clean_req_path})"
+
+    return True, "valid"
+

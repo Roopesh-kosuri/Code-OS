@@ -10,6 +10,7 @@
 
 import { create } from "zustand";
 import { api } from "../../lib/api";
+import { createAuthenticatedSSEStream, AuthenticatedSSEStream } from "../../lib/sse";
 
 export interface TerminalEvent {
   type: "connected" | "input" | "output" | "exit" | "session_closed" | "error";
@@ -68,7 +69,7 @@ export interface AgenticTerminalState {
 }
 
 // Module-level map of active EventSources for streaming cleanup
-const activeEventSources: Record<string, EventSource> = {};
+const activeEventSources: Record<string, AuthenticatedSSEStream> = {};
 
 export const useAgenticTerminalStore = create<AgenticTerminalState>((set, get) => ({
   sessions: {},
@@ -320,39 +321,41 @@ export const useAgenticTerminalStore = create<AgenticTerminalState>((set, get) =
     }
 
     try {
-      const es = new EventSource(`/api/terminal/stream/${encodeURIComponent(terminalId)}`);
-      activeEventSources[terminalId] = es;
+      const stream = createAuthenticatedSSEStream({
+        route: `/api/terminal/stream/${encodeURIComponent(terminalId)}`,
+        onMessage: (e) => {
+          try {
+            const data = JSON.parse(e.data) as TerminalEvent;
+            get().appendEvent(terminalId, data);
+            if (onEvent) onEvent(data);
 
-      es.onmessage = (e) => {
-        try {
-          const data = JSON.parse(e.data) as TerminalEvent;
-          get().appendEvent(terminalId, data);
-          if (onEvent) onEvent(data);
-
-          if (data.type === "input") {
-            set((s) => ({
-              isProcessRunning: { ...s.isProcessRunning, [terminalId]: true },
-            }));
-          } else if (data.type === "exit" || data.type === "session_closed") {
-            set((s) => ({
-              isProcessRunning: { ...s.isProcessRunning, [terminalId]: false },
-            }));
+            if (data.type === "input") {
+              set((s) => ({
+                isProcessRunning: { ...s.isProcessRunning, [terminalId]: true },
+              }));
+            } else if (data.type === "exit" || data.type === "session_closed") {
+              set((s) => ({
+                isProcessRunning: { ...s.isProcessRunning, [terminalId]: false },
+              }));
+            }
+          } catch (err) {
+            console.warn("[agenticTerminalStore] Failed to parse SSE event:", err);
           }
-        } catch (err) {
-          console.warn("[agenticTerminalStore] Failed to parse SSE event:", err);
-        }
-      };
+        },
+        shouldReconnect: () => {
+          const sess = get().sessions[terminalId];
+          return !sess || sess.status !== "closed";
+        },
+      });
 
-      es.onerror = () => {
-        // SSE auto-reconnects by default in browsers
-      };
+      activeEventSources[terminalId] = stream;
 
       return () => {
-        es.close();
+        stream.close();
         delete activeEventSources[terminalId];
       };
     } catch (err) {
-      console.warn("[agenticTerminalStore] Failed to create EventSource:", err);
+      console.warn("[agenticTerminalStore] Failed to create authenticated stream:", err);
       return () => {};
     }
   },

@@ -139,16 +139,20 @@ async def api_get_marathon(marathon_id: str, workspace: str = Query(...)):
 
 
 @router.get("/{marathon_id}/stream")
-async def api_marathon_stream(marathon_id: str, workspace: str = Query(...)):
+async def api_marathon_stream(marathon_id: str, workspace: str = Query(...), snapshot_only: bool = False):
     """SSE stream of marathon_update events for a specific marathon."""
     q = _register_subscriber(marathon_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
+        yield ": connected\n\n"
         # Send current state immediately on connect
         state = get_marathon_state(marathon_id, workspace)
         if state:
             resp = MarathonStateResponse.from_state(state)
             yield f"event: marathon_update\ndata: {resp.model_dump_json()}\n\n"
+
+        if snapshot_only:
+            return
 
         try:
             while True:

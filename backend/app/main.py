@@ -16,7 +16,8 @@ from collections import deque
 import threading
 
 import secrets
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -305,7 +306,7 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        from app.core.auth import _is_exempt, get_token
+        from app.core.auth import _is_exempt, get_token, validate_stream_token, is_sse_route
         req = Request(scope)
         if _is_exempt(req):
             await self.app(scope, receive, send)
@@ -316,24 +317,51 @@ class AuthMiddleware:
         auth_header = headers_dict.get(b"authorization", b"").decode("latin1")
 
         provided_token = ""
+        is_stream_query_token = False
         if auth_header.startswith("Bearer "):
             provided_token = auth_header.removeprefix("Bearer ").strip()
         else:
-            # Allow token via query string for EventSource / SSE connections
+            # Allow token via query string ONLY for authorized SSE connections
             query_str = scope.get("query_string", b"").decode("latin1")
             from urllib.parse import parse_qs
             qs = parse_qs(query_str)
             if "token" in qs and qs["token"]:
                 provided_token = qs["token"][0]
+                is_stream_query_token = True
 
         if not provided_token:
             res = JSONResponse(
                 status_code=401,
-                content={"detail": "Missing or malformed Authorization header. Expected: Bearer <session-token> or ?token=<session-token>"},
+                content={"detail": "Missing or malformed Authorization header. Expected: Bearer <session-token> or ?token=<stream-token> on SSE routes"},
                 headers={"WWW-Authenticate": "Bearer", "X-Request-ID": req_id},
             )
             await res(scope, receive, send)
             return
+
+        req_path = scope.get("path", "")
+        if is_stream_query_token:
+            if not is_sse_route(req_path):
+                res = JSONResponse(
+                    status_code=401,
+                    content={"detail": "Stream token query parameter is only permitted on SSE stream routes"},
+                    headers={"WWW-Authenticate": "Bearer", "X-Request-ID": req_id},
+                )
+                await res(scope, receive, send)
+                return
+
+            is_valid, reason = validate_stream_token(provided_token, req_path)
+            if not is_valid:
+                res = JSONResponse(
+                    status_code=401,
+                    content={"detail": f"Invalid or expired stream token: {reason}"},
+                    headers={"WWW-Authenticate": "Bearer", "X-Request-ID": req_id},
+                )
+                await res(scope, receive, send)
+                return
+
+            await self.app(scope, receive, send)
+            return
+
         try:
             expected = get_token()
         except RuntimeError:
@@ -506,6 +534,24 @@ async def system_readiness() -> ReadinessStatus:
 @app.get("/api/auth/token")
 async def get_session_token():
     return {"token": get_token()}
+
+
+class StreamTokenRequest(BaseModel):
+    route: str
+
+
+@app.post("/api/auth/stream-token")
+async def create_stream_token(body: StreamTokenRequest):
+    """
+    Mint a short-lived (60s), single-purpose stream token scoped to an SSE route.
+    Requires Bearer auth (enforced by AuthMiddleware).
+    """
+    from app.core.auth import mint_stream_token, is_sse_route
+    if not is_sse_route(body.route):
+        raise HTTPException(status_code=400, detail="Invalid SSE stream route")
+    token = mint_stream_token(body.route)
+    return {"token": token}
+
 
 
 @app.post("/api/providers/refresh-models")

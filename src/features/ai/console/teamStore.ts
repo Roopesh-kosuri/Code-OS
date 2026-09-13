@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { api } from "../../../lib/api";
+import { createAuthenticatedSSEStream, AuthenticatedSSEStream } from "../../../lib/sse";
 
 export type TeamRole =
   | "architect"
@@ -154,7 +155,7 @@ export interface TeamStoreState {
   agentMetrics: Record<string, AgentMetric>;
   teamConfig: TeamConfig;
   selectedTaskId: string | null;
-  sseConnection: EventSource | null;
+  sseConnection: AuthenticatedSSEStream | null;
   sseStatus: "disconnected" | "connecting" | "connected" | "error";
   reconnectAttempts: number;
   error: string | null;
@@ -192,7 +193,6 @@ export interface TeamStoreState {
 }
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
-let reconnectTimer: any = null;
 
 export const useTeamStore = create<TeamStoreState>((set, get) => ({
   activeJobId: null,
@@ -469,11 +469,6 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
   },
 
   connectSSE: (jobId: string) => {
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-
     const currentSSE = get().sseConnection;
     if (currentSSE) {
       currentSSE.close();
@@ -481,68 +476,53 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
 
     set({ sseStatus: "connecting" });
 
-    const API_BASE = "http://127.0.0.1:8000";
-    const sseUrl = `${API_BASE}/api/team/jobs/${jobId}/events`;
+    // Listen for all 7 event types + snapshot
+    const eventTypes = [
+      "team_snapshot",
+      "team_status",
+      "team_step_update",
+      "team_message",
+      "team_handoff",
+      "team_approval",
+      "team_repair",
+      "team_metrics",
+    ];
 
-    try {
-      const es = new EventSource(sseUrl);
-
-      es.onopen = () => {
-        set({ sseStatus: "connected", reconnectAttempts: 0, sseConnection: es });
-      };
-
-      // Listen for all 7 event types + snapshot
-      const eventTypes = [
-        "team_snapshot",
-        "team_status",
-        "team_step_update",
-        "team_message",
-        "team_handoff",
-        "team_approval",
-        "team_repair",
-        "team_metrics",
-      ];
-
-      eventTypes.forEach((evtName) => {
-        es.addEventListener(evtName, (event: MessageEvent) => {
-          try {
-            const parsed = JSON.parse(event.data);
-            get().handleSSEEvent(evtName, parsed);
-          } catch {
-            get().handleSSEEvent(evtName, event.data);
-          }
-        });
-      });
-
-      es.onerror = () => {
-        set({ sseStatus: "error" });
-        es.close();
-
-        // Check if we should auto-reconnect
-        const currentStatus = get().jobStatus;
-        if (!TERMINAL_STATUSES.has(currentStatus)) {
-          const attempts = get().reconnectAttempts + 1;
-          const delay = Math.min(1000 * Math.pow(2, attempts - 1), 8000);
-          set({ reconnectAttempts: attempts });
-          reconnectTimer = setTimeout(() => {
-            if (get().activeJobId === jobId) {
-              get().connectSSE(jobId);
-            }
-          }, delay);
+    const events: Record<string, (event: MessageEvent) => void> = {};
+    eventTypes.forEach((evtName) => {
+      events[evtName] = (event: MessageEvent) => {
+        try {
+          const parsed = JSON.parse(event.data);
+          get().handleSSEEvent(evtName, parsed);
+        } catch {
+          get().handleSSEEvent(evtName, event.data);
         }
       };
+    });
 
-      set({ sseConnection: es });
+    try {
+      const stream = createAuthenticatedSSEStream({
+        route: `/api/team/jobs/${jobId}/events`,
+        events,
+        onOpen: () => {
+          set({ sseStatus: "connected", reconnectAttempts: 0 });
+        },
+        onError: () => {
+          set({ sseStatus: "error", reconnectAttempts: get().reconnectAttempts + 1 });
+        },
+        shouldReconnect: () => {
+          const currentStatus = get().jobStatus;
+          return get().activeJobId === jobId && !TERMINAL_STATUSES.has(currentStatus);
+        },
+      });
+
+      set({ sseConnection: stream });
     } catch (err: any) {
-      set({ sseStatus: "error", error: err?.message || "Failed to initialize EventSource" });
+      set({ sseStatus: "error", error: err?.message || "Failed to initialize authenticated stream" });
     }
   },
 
   disconnectSSE: () => {
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
     const es = get().sseConnection;
     if (es) {
       es.close();

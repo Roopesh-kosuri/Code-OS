@@ -1,6 +1,7 @@
 // Marathon Autopilot — Zustand store with SSE connection and API actions
 import { create } from "zustand";
 import { api } from "../../lib/api";
+import { createAuthenticatedSSEStream, AuthenticatedSSEStream } from "../../lib/sse";
 import type {
   MarathonSSEEvent,
   MarathonStateResponse,
@@ -21,7 +22,7 @@ interface MarathonStore {
   consoleMode: AgentConsoleMode;
 
   // SSE connection
-  _sseSource: EventSource | null;
+  _sseSource: AuthenticatedSSEStream | null;
 
   // Actions
   setShowModal: (show: boolean) => void;
@@ -128,19 +129,24 @@ export const useMarathonStore = create<MarathonStore>((set, get) => ({
 
   connectSSE: (marathonId, workspace) => {
     get().disconnectSSE();
-    const url = `http://127.0.0.1:8000/api/marathon/${marathonId}/stream?workspace=${encodeURIComponent(workspace)}`;
-    const source = new EventSource(url);
-    source.addEventListener("marathon_update", (e) => {
-      try {
-        const payload: MarathonSSEEvent = JSON.parse(e.data);
-        get().updateFromSSE(payload);
-      } catch {
-        // ignore parse errors
-      }
+    const source = createAuthenticatedSSEStream({
+      route: `/api/marathon/${marathonId}/stream`,
+      query: { workspace },
+      events: {
+        marathon_update: (e) => {
+          try {
+            const payload: MarathonSSEEvent = JSON.parse(e.data);
+            get().updateFromSSE(payload);
+          } catch {
+            // ignore parse errors
+          }
+        },
+      },
+      shouldReconnect: () => {
+        const active = get().activeMarathon;
+        return !!active && active.marathon_id === marathonId && active.status !== "completed" && active.status !== "aborted";
+      },
     });
-    source.onerror = () => {
-      source.close();
-    };
     set({ _sseSource: source });
   },
 
