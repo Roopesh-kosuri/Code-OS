@@ -12,7 +12,7 @@ graph TD
     B1["Batch 1 (Codex Patches)<br/>AUD-009, AUD-002, AUD-004, AUD-008, AUD-007, AUD-005<br/>[CLOSED]"] --> B2["Batch 2 (Phase 10.1)<br/>AUD-010: Authenticated SSE Transport<br/>[CLOSED - commit a469052]"]
     B2 --> B3["Batch 3 (Phase 10.2)<br/>AUD-001, AUD-006, AUD-011<br/>Pre-Approval Purity, Escalation Isolation, Concurrent-Send Isolation<br/>[CLOSED - commits df22d9c, 5976221, 914139d]"]
     B3 --> B4["Batch 4 (Phase 10.3)<br/>AUD-003, AUD-012, AUD-013<br/>Contamination Wiring, RAG Queue Bound, Enhancer Revision Gate<br/>[CLOSED - commits 0d70f96, f373f13, f238c3a]"]
-    B4 --> B5["Batch 5 (Phase 10.4)<br/>AUD-014<br/>CI/Packaging & Security Gates<br/>[OPEN]"]
+    B4 --> B5["Batch 5 (Phase 10.4)<br/>AUD-014<br/>CI/Packaging & Security Gates<br/>[CLOSED - commit 3ff3d40]"]
 ```
 
 ---
@@ -128,6 +128,20 @@ All 6 patches integrated, verified with focused test suites, and committed local
 ## Batch 5: Autonomous Feedback & Packaging Infrastructure (Phase 10.4)
 
 - **AUD-014 — CI/CD Security Scanning & Release Signing**:
-  - Target: `.github/workflows/ci.yml`, `electron-builder.yml`
-  - Scope: Mandatory SAST (`bandit`, `pip-audit`, `npm audit`) gates and code signing verification.
-  - Status: **OPEN**
+  - Target: `.github/workflows/ci.yml`, `electron-builder.yml`, `pyproject.toml`, `scripts/verify-release-signing.js`, `.security-exceptions.json`
+  - Scope:
+    1. Dedicated `security-gates` job added to `.github/workflows/ci.yml` running `bandit -r backend/ -c pyproject.toml -lll`, `pip-audit -r backend/requirements.txt`, `npm audit --audit-level=high`, and `safety check`, each in its own sub-step with `continue-on-error: false`.
+    2. Bandit configured in `pyproject.toml` with `exclude_dirs = ["backend/tests", "backend/scratch", ...]` and `skips = ["B101"]`.
+    3. Quarterly allowed-failures register `.security-exceptions.json` with schema validation and expiry verification (`scripts/verify_security_exceptions.py`).
+    4. Code signing blocks in `electron-builder.yml` for Windows (`sign`, `CSC_LINK`, `CSC_KEY_PASSWORD`), macOS (`notarize: true`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`), and Linux (`afterSign`).
+    5. Release signing verification script (`scripts/verify-release-signing.js`) enforcing valid signatures when signing environment variables are configured or in strict mode.
+    6. Dedicated `release-signing-verification` job in CI triggered on tag/release events.
+  - Regression Tests:
+    - `test_bandit_config_exists_and_valid`
+    - `test_pip_audit_config_excludes_tests`
+    - `test_npm_audit_high_fails_ci`
+    - `test_security_exceptions_file_schema`
+    - `test_electron_builder_sign_blocks_present`
+    - `test_release_signing_verification_script`
+  - Commit: `3ff3d40` (`fix(ci): mandatory security gates and release signing verification (AUD-014)`)
+  - Status: **CLOSED**

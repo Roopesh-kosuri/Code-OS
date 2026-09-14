@@ -1,8 +1,8 @@
 # CODE OS — Comprehensive Audit Findings Register
 
 **Audit Date:** September 2026  
-**Scope:** Full-system audit of CODE OS (AI Harness, Terminal, Marathon, Team Orchestration, RAG, Security, Auth, Desktop)  
-**Status Summary:** 13 findings CLOSED (verified in commits 0f1153d..f238c3a), 1 finding OPEN (tracked in Phase 10.4).
+**Scope:** Full-system audit of CODE OS (AI Harness, Terminal, Marathon, Team Orchestration, RAG, Security, Auth, Desktop, CI/CD)  
+**Status Summary:** 14 findings CLOSED (verified in commits 0f1153d..3ff3d40) — ALL AUDIT FINDINGS REMEDIATED.
 
 ---
 
@@ -23,13 +23,13 @@
 | **AUD-011** | Chat / Frontend | High | Rapid double-send mixed old stream tokens into the newest assistant bubble and stale finalizers could clear streaming state while a newer run was active. | `src/stores/aiStore.ts` | **CLOSED** | **commit 914139d**: `fix(chat): single-active-send queue isolates concurrent sends (AUD-011)` |
 | **AUD-012** | RAG | High | Save bursts make RAG queue memory and latency unbounded because global queue lacked per-path coalescing and cancellation. | `backend/app/features/ai/rag/vector_index_service.py`, `backend/app/features/ai/rag/__init__.py` | **CLOSED** | **commit f373f13**: `fix(rag): bounded last-event-wins reindex queue with cancellation (AUD-012)` |
 | **AUD-013** | Intelligence | High | Slow classification for old drafts caused prompt enhancer race condition where out-of-order completions overwrote current input UI. | `src/stores/intelligenceStore.ts` | **CLOSED** | **commit f238c3a**: `fix(intelligence): revision ID and abort gate for prompt enhancer (AUD-013)` |
-| **AUD-014** | CI/Packaging | Medium | CI pipeline lacked mandatory security SAST / dependency auditing gates (`bandit`, `pip-audit`, `npm audit`) and release code signing verification. | `.github/workflows/ci.yml`, `electron-builder.yml` | **OPEN** | Tracked for Phase 10.4 hardening. |
+| **AUD-014** | CI/Packaging | Medium | CI pipeline lacked mandatory security SAST / dependency auditing gates (`bandit`, `pip-audit`, `npm audit`) and release code signing verification. | `.github/workflows/ci.yml`, `electron-builder.yml`, `pyproject.toml`, `scripts/verify-release-signing.js`, `.security-exceptions.json` | **CLOSED** | **commit 3ff3d40**: `fix(ci): mandatory security gates and release signing verification (AUD-014)` |
 
 ---
 
 ## Resolution Accounting
 
 - **Total Findings:** 14
-- **Closed Findings (13):** AUD-001, AUD-002, AUD-003, AUD-004, AUD-005, AUD-006, AUD-007, AUD-008, AUD-009, AUD-010, AUD-011, AUD-012, AUD-013
-- **Open Findings (1):** AUD-014
-- **Next Phase in Sequence:** Phase 10.4 (Batch 5 — CI/Packaging & Security Gates: AUD-014)
+- **Closed Findings (14):** AUD-001, AUD-002, AUD-003, AUD-004, AUD-005, AUD-006, AUD-007, AUD-008, AUD-009, AUD-010, AUD-011, AUD-012, AUD-013, AUD-014
+- **Open Findings (0):** None
+- **Remediation Status:** 100% COMPLETE — ALL 14 AUDIT FINDINGS CLOSED
