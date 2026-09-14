@@ -21,6 +21,12 @@ const DIST_DIR = path.join(BACKEND_DIR, 'dist', 'backend');
 const exeName = process.platform === 'win32' ? 'watchdog_launcher.exe' : 'watchdog_launcher';
 const outputPath = path.join(DIST_DIR, exeName);
 
+if (fs.existsSync(outputPath) && !process.argv.includes('--force')) {
+  const sizeMB = (fs.statSync(outputPath).size / 1024 / 1024).toFixed(1);
+  console.log(`[build-backend] Using existing compiled binary: ${outputPath} (${sizeMB} MB)`);
+  process.exit(0);
+}
+
 console.log('[build-backend] Starting PyInstaller --onedir backend compilation...');
 console.log(`[build-backend] Target: ${outputPath}`);
 

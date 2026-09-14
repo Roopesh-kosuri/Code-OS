@@ -52,11 +52,11 @@ def test_bundle_contains_python_node_git():
 
     # Verify electron-builder extraResources wires them
     eb_cfg = yaml.safe_load(ELECTRON_BUILDER_YML.read_text(encoding="utf-8"))
-    win_resources = eb_cfg.get("win", {}).get("extraResources", [])
+    win_resources = (eb_cfg.get("win", {}).get("extraResources") or []) + (eb_cfg.get("extraResources") or [])
     destinations = [r.get("to") for r in win_resources if isinstance(r, dict)]
-    assert "python" in destinations, "win.extraResources missing 'python'"
-    assert "node" in destinations, "win.extraResources missing 'node'"
-    assert "git" in destinations, "win.extraResources missing 'git'"
+    assert "python" in destinations, "extraResources missing 'python'"
+    assert "node" in destinations, "extraResources missing 'node'"
+    assert "git" in destinations, "extraResources missing 'git'"
 
 
 def test_tiktoken_cache_bundled_and_env_wired():

@@ -82,5 +82,16 @@ function cleanDirectory(dir, pruneOnly = false) {
 }
 
 console.log(`[clean-release] Mode: ${isPruneStale ? 'Prune Stale Artifacts' : 'Full Pre-build Clean'} (Current version: ${currentVersion})`);
-cleanDirectory(RELEASE_DIR, isPruneStale);
+if (!isPruneStale) {
+  if (fs.existsSync(RELEASE_DIR)) {
+    fs.rmSync(RELEASE_DIR, { recursive: true, force: true });
+    console.log(`[clean-release] Removed ${RELEASE_DIR}`);
+  }
+  if (fs.existsSync(DIST_DIR)) {
+    fs.rmSync(DIST_DIR, { recursive: true, force: true });
+    console.log(`[clean-release] Removed ${DIST_DIR}`);
+  }
+} else {
+  cleanDirectory(RELEASE_DIR, true);
+}
 console.log('[clean-release] Clean complete.');

@@ -14,44 +14,40 @@ files:
   - "package.json"
 
 extraResources:
+  # Bundled runtimes: python/, node/, git/, tiktoken/, backend/
+  - from: "resources/python"
+    to: "python"
+    filter:
+      - "**/*"
+  - from: "resources/node"
+    to: "node"
+    filter:
+      - "**/*"
+  - from: "resources/git"
+    to: "git"
+    filter:
+      - "**/*"
+  - from: "resources/tiktoken"
+    to: "tiktoken"
+    filter:
+      - "**/*"
   - from: "backend/dist/backend"
     to: "backend"
     filter:
       - "**/*"
-  - from: "build/tiktoken"
-    to: "tiktoken"
-    filter:
-      - "**/*"
 
-win:
+win: # target: nsis, icon configured
   icon: "build/icon.ico"
-  extraResources:
-    - from: "build/python-runtime/win/python"
-      to: "python"
-      filter:
-        - "**/*"
-    - from: "build/node-runtime/win/node"
-      to: "node"
-      filter:
-        - "**/*"
-    - from: "build/git-runtime/win/git"
-      to: "git"
-      filter:
-        - "**/*"
   target:
     - target: nsis
       arch:
         - x64
-    - target: portable
+    - target: zip
       arch:
         - x64
-  sign:
-    cscLink: "${CSC_LINK}"
-    cscKeyPassword: "${CSC_KEY_PASSWORD}"
-    certificateFile: "${CSC_LINK}"
-    certificatePassword: "${CSC_KEY_PASSWORD}"
-    signingHashAlgorithms:
-      - sha256
+  artifactName: "${productName}-${version}-win.${ext}"
+  signingHashAlgorithms:
+    - sha256
 
 nsis:
   oneClick: false
@@ -62,24 +58,15 @@ nsis:
   shortcutName: "CODE OS"
   installerIcon: "build/icon.ico"
   uninstallerIcon: "build/icon.ico"
-  artifactName: "${productName}-${version}-setup.${ext}"
+  artifactName: "${productName} Setup ${version}.${ext}"
   runAfterFinish: true
   differentialPackage: false
 
 portable:
   artifactName: "${productName}-${version}-portable.${ext}"
 
-linux:
+linux: # target: AppImage and deb
   icon: "build/icon.png"
-  extraResources:
-    - from: "build/python-runtime/linux/python"
-      to: "python"
-      filter:
-        - "**/*"
-    - from: "build/node-runtime/linux/node"
-      to: "node"
-      filter:
-        - "**/*"
   target:
     - target: AppImage
       arch:
@@ -90,7 +77,6 @@ linux:
   category: Development
   maintainer: "Roopesh Kosuri <roopesh@codeos.ai>"
   artifactName: "${productName}-${version}-${arch}.${ext}"
-  afterSign: "scripts/verify-release-signing.js"
 
 mac:
   icon: "build/icon.png"
@@ -117,9 +103,6 @@ mac:
   gatekeeperAssess: false
   entitlements: "build/entitlements.mac.plist"
   entitlementsInherit: "build/entitlements.mac.inherit.plist"
-  identity: "${CSC_LINK}"
-  notarize: true
-  appleId: "${APPLE_ID}"
-  appleIdPassword: "${APPLE_APP_SPECIFIC_PASSWORD}"
-  teamId: "${APPLE_TEAM_ID}"
+  notarize:
+    teamId: "${APPLE_TEAM_ID}"
   artifactName: "${productName}-${version}-${os}-${arch}${env.MAC_BUILD_SUFFIX}.${ext}"

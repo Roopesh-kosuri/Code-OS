@@ -4,6 +4,7 @@ dist/
 dist-electron/
 dist-release/
 release/
+resources/
 backend-build/
 backend-dist/
 backend/build/
