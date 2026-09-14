@@ -14,6 +14,7 @@ graph TD
     B3 --> B4["Batch 4 (Phase 10.3)<br/>AUD-003, AUD-012, AUD-013<br/>Contamination Wiring, RAG Queue Bound, Enhancer Revision Gate<br/>[CLOSED - commits 0d70f96, f373f13, f238c3a]"]
     B4 --> B5["Batch 5 (Phase 10.4)<br/>AUD-014<br/>CI/Packaging & Security Gates<br/>[CLOSED - commit 3ff3d40]"]
     B5 --> B6["Batch 6 (Phase 10.6)<br/>AUD-016<br/>Monaco Double Line-Spacing Bug (Ship-Blocker)<br/>[CLOSED - commit d6581f9]"]
+    B6 --> B7["Batch 7 (Phase 10.8)<br/>AUD-017<br/>App Icon Transparency (Remove Black Square Background)<br/>[CLOSED - commit bec0837]"]
 ```
 
 ---
@@ -169,4 +170,23 @@ All 6 patches integrated, verified with focused test suites, and committed local
     - `test_file_watcher_update_no_line_doubling`
     - `test_save_preserves_original_eol_style`
   - Commit: `d6581f9` (`fix(editor): resolve Monaco double line-spacing bug across CRLF/LF open/close cycles (AUD-016)`)
+  - Status: **CLOSED**
+
+---
+
+## Batch 7: App Icon Transparency (Phase 10.8)
+
+- **AUD-017 — App Icon Transparency (Remove Black Square Background)**:
+  - Target: `build/icon.png`, `build/icon.ico`, `build/icon_256.png`, `public/icon.png`, `public/codeos-app-icon.png`, `electron-builder.yml`, `scripts/fix_icon_alpha.py`, `backend/tests/test_icon_alpha.py`
+  - Scope:
+    1. Diagnosed with Pillow: `build/icon.png` (512x512) and `build/icon.ico` had opaque `alpha=255` black `[0,0,0]` pixels all the way to the corners, causing Windows desktop shortcuts, taskbars, and NSIS installers to render an opaque black box.
+    2. Created `scripts/fix_icon_alpha.py` using connected-region border flood-fill with Pillow & NumPy to convert outer black background to transparent (`alpha=0`) while strictly preserving anti-aliased edge feathering and leaving 100% of the interior circular logo byte-identical (`sha256` verified).
+    3. Regenerated master assets: `build/icon.png` (512x512), `build/icon_256.png` (256x256), `build/icon.ico` (multi-size: 16, 24, 32, 48, 64, 128, 256 with alpha), and project copies (`dist/`, `public/`).
+    4. Updated `electron-builder.yml` to explicitly configure `installerIcon` and `uninstallerIcon`.
+  - Regression Tests (4/4 passed):
+    - `test_icon_png_has_transparent_corners`
+    - `test_icon_interior_preserved_vs_source`
+    - `test_ico_contains_multiple_sizes_with_alpha`
+    - `test_electron_builder_icon_paths_exist_and_have_alpha`
+  - Commit: `bec0837` (`fix(assets): remove black square background from app icon via border flood fill and regenerate with alpha (Phase 10.8)`)
   - Status: **CLOSED**
