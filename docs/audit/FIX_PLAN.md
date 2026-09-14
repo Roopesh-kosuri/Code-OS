@@ -13,6 +13,7 @@ graph TD
     B2 --> B3["Batch 3 (Phase 10.2)<br/>AUD-001, AUD-006, AUD-011<br/>Pre-Approval Purity, Escalation Isolation, Concurrent-Send Isolation<br/>[CLOSED - commits df22d9c, 5976221, 914139d]"]
     B3 --> B4["Batch 4 (Phase 10.3)<br/>AUD-003, AUD-012, AUD-013<br/>Contamination Wiring, RAG Queue Bound, Enhancer Revision Gate<br/>[CLOSED - commits 0d70f96, f373f13, f238c3a]"]
     B4 --> B5["Batch 5 (Phase 10.4)<br/>AUD-014<br/>CI/Packaging & Security Gates<br/>[CLOSED - commit 3ff3d40]"]
+    B5 --> B6["Batch 6 (Phase 10.6)<br/>AUD-016<br/>Monaco Double Line-Spacing Bug (Ship-Blocker)<br/>[CLOSED - commit d6581f9]"]
 ```
 
 ---
@@ -144,4 +145,28 @@ All 6 patches integrated, verified with focused test suites, and committed local
     - `test_electron_builder_sign_blocks_present`
     - `test_release_signing_verification_script`
   - Commit: `3ff3d40` (`fix(ci): mandatory security gates and release signing verification (AUD-014)`)
+  - Status: **CLOSED**
+
+---
+
+## Batch 6: Monaco Line-Spacing & EOL Handling (Phase 10.6)
+
+- **AUD-016 — Monaco Editor Double Line-Spacing Bug (Ship-Blocker)**:
+  - Target: `backend/app/features/files/service.py`, `backend/app/features/ai/ghost_text/ghost_text_service.py`, `backend/app/features/ai/staging/staging_review_service.py`, `backend/app/features/ai/refactoring/refactor_routes.py`, `backend/app/features/ai/refactoring/verify_service.py`, `src/features/editor/EditorWorkspace.tsx`, `src/stores/editorStore.ts`, `backend/tests/test_aud_016_monaco_eol.py`
+  - Scope:
+    1. Diagnosed root cause with live evidence: Windows text mode in `Path.write_text()` translates `\n` to `\r\n`. If incoming content contains `\r\n` (e.g. from LLM generation or copy-paste), Python writes `\r\r\n` to disk. Subsequent universal-newlines reads (`read_text()`) treat `\r` (bare) and `\r\n` as separate newlines, producing `\n\n` (blank line between every line of code).
+    2. Implemented `_normalize_eol()` regex helper in `backend/app/features/files/service.py` to collapse `\r+\n` to `\n` and bare `\r` to `\n` before writing, ensuring single platform newlines on disk.
+    3. Updated `read_file()` to read raw bytes and decode through `_normalize_eol()` to heal existing corrupted files on disk without splitting on double CRs.
+    4. Normalized content in all AI code generation write paths (`ghost_text_service`, `staging_review_service`, `refactor_routes`, `verify_service`).
+    5. Configured explicit `EndOfLineSequence.LF` on Monaco model mount in `EditorWorkspace.tsx`.
+    6. Added defensive `normalizeEol` in `editorStore.ts` for `openFile`, `updateContent`, and `handleDiskFileChange`.
+  - Regression Tests (26/26 passed):
+    - `test_file_open_preserves_line_count`
+    - `test_close_reopen_no_extra_lines`
+    - `test_crlf_file_no_double_spacing`
+    - `test_lf_file_no_double_spacing`
+    - `test_mixed_eol_file_normalized_correctly`
+    - `test_file_watcher_update_no_line_doubling`
+    - `test_save_preserves_original_eol_style`
+  - Commit: `d6581f9` (`fix(editor): resolve Monaco double line-spacing bug across CRLF/LF open/close cycles (AUD-016)`)
   - Status: **CLOSED**
