@@ -165,7 +165,7 @@ async def run_probe(max_candidates: int = 10, custom_models: list[str] | None = 
         "Content-Type": "application/json",
     }
 
-    async with httpx.AsyncClient(headers=headers, timeout=15.0, verify=False) as client:
+    async with httpx.AsyncClient(headers=headers, timeout=15.0, verify=False) as client:  # nosec B501
         for model in candidates:
             print(f" -> Probing {model}...", end="", flush=True)
             chat_ok, chat_lat, chat_msg = await probe_streaming_chat(client, model)

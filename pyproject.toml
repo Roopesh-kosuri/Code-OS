@@ -1,0 +1,13 @@
+[tool.bandit]
+exclude_dirs = [
+    "backend/tests",
+    "backend/scratch",
+    "backend/dist",
+    "backend/build",
+    "backend/venv"
+]
+skips = ["B101"]
+
+[tool.pip-audit]
+requirement = ["backend/requirements.txt"]
+exclude_dirs = ["backend/tests"]

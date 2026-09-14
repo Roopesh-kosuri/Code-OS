@@ -3,14 +3,63 @@ name: Continuous Integration
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
 jobs:
+  security-gates:
+    name: Security Gates (SAST & Vulnerability Auditing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Security Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary bandit==1.7.5 pip-audit==2.10.1 safety
+          pip install --prefer-binary -r backend/requirements.txt
+          npm install
+
+      - name: Verify Security Exceptions Registry
+        run: python scripts/verify_security_exceptions.py
+        continue-on-error: false
+
+      - name: Python SAST (Bandit)
+        run: bandit -r backend/ -c pyproject.toml -lll || python scripts/verify_security_exceptions.py bandit
+        continue-on-error: false
+
+      - name: Python Dependency Audit (pip-audit)
+        run: pip-audit -r backend/requirements.txt || python scripts/verify_security_exceptions.py pip-audit
+        continue-on-error: false
+
+      - name: Frontend Dependency Audit (npm audit)
+        run: npm audit --audit-level=high || python scripts/verify_security_exceptions.py npm-audit
+        continue-on-error: false
+
+      - name: Secondary Python Dependency Check (Safety)
+        run: safety check || python scripts/verify_security_exceptions.py safety
+        continue-on-error: false
+
   ci-checks:
     name: Frontend and Backend CI Checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: [security-gates]
     env:
       NODE_OPTIONS: "--max-old-space-size=4096"
 
@@ -38,7 +87,7 @@ jobs:
       - name: Install Backend Dependencies & PyInstaller
         run: |
           python -m pip install --upgrade pip
-          pip install --prefer-binary pytest pytest-asyncio pytest-cov pyinstaller bandit pip-audit
+          pip install --prefer-binary pytest pytest-asyncio pytest-cov pyinstaller
           pip install --prefer-binary -r backend/requirements.txt
 
       - name: Install Frontend Dependencies
@@ -46,39 +95,6 @@ jobs:
 
       - name: Run TypeScript Typechecks
         run: npm run typecheck
-
-      - name: Run Bandit (Python security linter)
-        run: bandit -r backend/app -f json -o bandit-report.json
-        continue-on-error: true
-
-      - name: Run pip-audit (dependency vulnerabilities)
-        run: pip-audit --format json --output pip-audit-report.json
-        continue-on-error: true
-
-      - name: Run npm audit (frontend dependencies)
-        run: npm audit --json > npm-audit-report.json
-        continue-on-error: true
-
-      - name: Upload security reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: security-reports
-          path: |
-            bandit-report.json
-            pip-audit-report.json
-            npm-audit-report.json
-
-      - name: Fail on critical vulnerabilities
-        run: |
-          if grep -q '"severity": "HIGH"' bandit-report.json; then
-            echo "High-severity Python vulnerabilities found"
-            exit 1
-          fi
-          if grep -q '"severity": "critical"' npm-audit-report.json; then
-            echo "Critical npm vulnerabilities found"
-            exit 1
-          fi
 
       - name: Compile Production App Build
         run: npm run build
@@ -92,3 +108,28 @@ jobs:
                                --cov-fail-under=80 -v
         env:
           PYTHONPATH: backend
+
+  release-signing-verification:
+    name: Release Signing Verification
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [ci-checks, security-gates]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify Release Signing Script Exists
+        run: test -f scripts/verify-release-signing.js
+
+      - name: Verify Release Artifact Signatures
+        run: node scripts/verify-release-signing.js --strict release
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}

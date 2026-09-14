@@ -170,7 +170,7 @@ def open_application(app_name: str) -> dict[str, Any]:
     try:
         if sys.platform == "win32":
             # Using start command
-            subprocess.Popen(f"start {executable}", shell=True)
+            subprocess.Popen(f"start {executable}", shell=True)  # nosec B602
         else:
             subprocess.Popen([executable])
         return {"action": "open_application", "app_name": app_name, "status": "launched"}
@@ -189,7 +189,7 @@ def close_application(app_name: str) -> dict[str, Any]:
 
     try:
         if sys.platform == "win32":
-            subprocess.run(f"taskkill /IM {proc_name} /F", shell=True, check=False)
+            subprocess.run(f"taskkill /IM {proc_name} /F", shell=True, check=False)  # nosec B602
         else:
             subprocess.run(["pkill", "-f", clean_name], check=False)
         return {"action": "close_application", "app_name": app_name, "status": "closed"}

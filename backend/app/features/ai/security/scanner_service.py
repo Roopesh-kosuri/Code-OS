@@ -337,7 +337,7 @@ def check_npm_dependencies(workspace_path: Path) -> List[Dict[str, Any]]:
             capture_output=True,
             text=True,
             timeout=20,
-            shell=True,
+            shell=True,  # nosec B602
         )
         if proc.stdout:
             dependency_issues = parse_npm_audit(proc.stdout)

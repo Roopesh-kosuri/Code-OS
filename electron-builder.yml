@@ -6,6 +6,8 @@ directories:
 asarUnpack:
   - "**/node_modules/node-pty/**"
 
+afterSign: "scripts/verify-release-signing.js"
+
 files:
   - "dist/**/*"
   - "dist-electron/**/*"
@@ -26,6 +28,13 @@ win:
     - target: portable
       arch:
         - x64
+  sign:
+    cscLink: "${CSC_LINK}"
+    cscKeyPassword: "${CSC_KEY_PASSWORD}"
+    certificateFile: "${CSC_LINK}"
+    certificatePassword: "${CSC_KEY_PASSWORD}"
+    signingHashAlgorithms:
+      - sha256
 
 nsis:
   oneClick: false
@@ -48,6 +57,7 @@ linux:
         - x64
   category: Development
   maintainer: "Roopesh Kosuri <roopesh@codeos.ai>"
+  afterSign: "scripts/verify-release-signing.js"
 
 mac:
   icon: "build/icon.png"
@@ -59,3 +69,6 @@ mac:
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
+  notarize: true
+  appleId: "${APPLE_ID}"
+  appleIdPassword: "${APPLE_APP_SPECIFIC_PASSWORD}"

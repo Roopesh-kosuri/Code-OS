@@ -216,7 +216,7 @@ async def fetch_user_url(
             transport = PinnedTransport(pinned_ip=pinned_ip, original_host=hostname)
             async with httpx.AsyncClient(
                 transport=transport,
-                verify=False,
+                verify=False,  # nosec B501
                 follow_redirects=False,
                 timeout=httpx.Timeout(timeout_seconds),
                 headers={

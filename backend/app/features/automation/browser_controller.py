@@ -78,7 +78,7 @@ class BrowserController:
         except (PermissionError, OSError):
             import hashlib
             from app.core.config import get_settings
-            safe_name = hashlib.md5(str(self.workspace).encode()).hexdigest()[:12]
+            safe_name = hashlib.md5(str(self.workspace).encode(), usedforsecurity=False).hexdigest()[:12]  # nosec B324
             path = get_settings().data_dir / "browser-profiles" / safe_name
             path.mkdir(parents=True, exist_ok=True)
             return path
@@ -98,7 +98,7 @@ class BrowserController:
         except (PermissionError, OSError):
             import hashlib
             from app.core.config import get_settings
-            safe_name = hashlib.md5(str(self.workspace).encode()).hexdigest()[:12]
+            safe_name = hashlib.md5(str(self.workspace).encode(), usedforsecurity=False).hexdigest()[:12]  # nosec B324
             path = get_settings().data_dir / "screenshots" / safe_name
             path.mkdir(parents=True, exist_ok=True)
             return path

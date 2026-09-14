@@ -1,0 +1,278 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "last_reviewed": "2026-09-14",
+  "review_cadence": "quarterly",
+  "exceptions": [
+    {
+      "id": "GHSA-34x7-hfp2-rc4v",
+      "package": "tar",
+      "tool": "npm-audit",
+      "severity": "critical",
+      "justification": "Transitive build-time packaging dependency via electron-builder; not bundled into runtime app executable.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "GHSA-vmqv-hx8q-j7mg",
+      "package": "electron",
+      "tool": "npm-audit",
+      "severity": "high",
+      "justification": "Desktop runtime; app enforces contextIsolation, disables nodeIntegration, and validates all IPC origins. Upgraded in v4.6 roadmap.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "GHSA-jmr9-qjv8-65gv",
+      "package": "extract-zip",
+      "tool": "npm-audit",
+      "severity": "high",
+      "justification": "Transitive dependency of electron-builder packaging pipeline; invoked only during install/packaging, not at runtime.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "GHSA-2883-xcg3-v3hh",
+      "package": "js-yaml",
+      "tool": "npm-audit",
+      "severity": "high",
+      "justification": "Used for reading local workflow configurations; input size is strictly bounded by local filesystem read limits.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "GHSA-cmwh-pvxp-8882",
+      "package": "dompurify",
+      "tool": "npm-audit",
+      "severity": "high",
+      "justification": "Bundled via monaco-editor; editor inputs are sandboxed in renderer with CSP and origin checks.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "GHSA-6w3j-5fw6-r9vr",
+      "package": "joi",
+      "tool": "npm-audit",
+      "severity": "high",
+      "justification": "Transitive validation utility in build tools; no untrusted user input routed through joi schemas.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3814",
+      "package": "chromadb",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Embedded local vector database operating in isolated process memory with path traversal validation.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3813",
+      "package": "chromadb",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Embedded vector DB local SQLite/Chroma instance; network endpoints disabled.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-1793",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Image handling utility for screenshots; inputs are bounded and sanitized by image dimensions.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-165",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Image processing in desktop capture helper; validated by dimension bounds.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2874",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2253",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2254",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2255",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2256",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2257",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3451",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3452",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3453",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3454",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3493",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3494",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3495",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3496",
+      "package": "pillow",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Internal image processing library; inputs restricted to local screenshots.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2025-217",
+      "package": "transformers",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Used for local embeddings and tokenizer; model weights loaded only from verified local paths.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2288",
+      "package": "transformers",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Local embeddings pipeline; untrusted external model download disabled.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2289",
+      "package": "transformers",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Local embeddings pipeline; untrusted external model download disabled.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-2290",
+      "package": "transformers",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Local embeddings pipeline; untrusted external model download disabled.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3929",
+      "package": "transformers",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Local embeddings pipeline; untrusted external model download disabled.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    },
+    {
+      "id": "PYSEC-2026-3740",
+      "package": "nltk",
+      "tool": "pip-audit",
+      "severity": "high",
+      "justification": "Local natural language processing helper; data inputs bounded.",
+      "expires_at": "2026-12-14",
+      "tracking_issue": "AUD-014"
+    }
+  ]
+}

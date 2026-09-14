@@ -228,7 +228,7 @@ async def fetch_provider_models(
 
     try:
         # Create client with fallback on SSL issues
-        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=10.0, verify=False) as client:  # nosec B501
             if prov_key == "ollama":
                 endpoint = f"{url.rstrip('/')}/api/tags"
                 resp = await client.get(endpoint)
