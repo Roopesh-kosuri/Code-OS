@@ -76,6 +76,7 @@ scratch_preview_captured.jpg
 walkthrough.md
 *walkthrough*.md
 *notes*.md
+!RELEASE_NOTES.md
 bandit_raw.json
 bandit_report.*
 task-*.log
