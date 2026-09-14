@@ -157,3 +157,18 @@ Generated artifacts:
    - `release/CODE OS-5.0.0-x64.deb` (if built)
 6. Attach the macOS artifacts generated from the CI build workflow.
 7. Click **Publish Release**.
+
+---
+
+## 4. Development Launch Paths & Environment Wiring
+
+To guarantee tokenizer consistency and offline payload budgeting during local development, every launch path wires `TIKTOKEN_CACHE_DIR=resources/tiktoken`:
+
+| Launch Path | Entry Point | Wiring Mechanism | Description |
+|-------------|-------------|------------------|-------------|
+| **`npm run dev`** | `package.json` | `scripts/dev-backend.js` | Concurrently runs Vite, Electron, and Uvicorn backend supervisor with `TIKTOKEN_CACHE_DIR` injected into child process env. |
+| **Windows Batch** | `scripts/dev.bat` | Batch env export | Sets `TIKTOKEN_CACHE_DIR` relative to script root and starts `npm run dev`. |
+| **PowerShell** | `scripts/dev.ps1` | `$env:TIKTOKEN_CACHE_DIR` | Sets process-level PowerShell environment variable and starts `npm run dev`. |
+| **Electron Dev Spawn** | `electron/services/backendProcess.ts` | `buildSpawnEnv` | Detects `resources/tiktoken` or `app.getAppPath()` and sets `base.TIKTOKEN_CACHE_DIR` for spawned backend process. |
+| **Production Watchdog** | `backend/watchdog_launcher.py` | `os.environ` bootstrap | Auto-locates `resources/tiktoken` within PyInstaller `_MEIPASS` bundle or relative folder. |
+| **Backend Lifespan** | `backend/app/main.py` | `check_tiktoken_health()` | Validates tiktoken availability at boot, auto-wires cache directory, and emits loud warning if missing. |

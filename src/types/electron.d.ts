@@ -40,6 +40,8 @@ declare global {
   interface Window {
     codeOS?: CodeOSDesktopApi;
   }
+  const __BUILD_HASH__: string;
+  const __APP_VERSION__: string;
 }
 
 export {};

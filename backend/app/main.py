@@ -197,29 +197,21 @@ def _get_git_sha_and_build_time() -> tuple[str, str]:
 
 
 def check_tiktoken_health() -> bool:
-    """Verify that tiktoken is available at boot. Log a loud warning if missing (E2)."""
+    """Check tokenizer availability at boot (E4 downgrade for v5.0.0).
+
+    Logs INFO ('exact token accounting active') or INFO ('using conservative estimator').
+    Never logs WARNING or ERROR, and never blocks startup.
+    """
     try:
         import tiktoken
         tiktoken.get_encoding("cl100k_base")
-        logger.info("boot: tiktoken available and verified (cl100k_base loaded)")
+        logger.info("boot: exact token accounting active (tiktoken cl100k_base loaded)")
         return True
     except ImportError:
-        logger.warning(
-            "\n" + "=" * 78 + "\n"
-            "⚠️  [BOOT WARNING] MISSING DEPENDENCY: 'tiktoken' is not installed!\n"
-            "Payload governance will fall back to conservative byte estimation.\n"
-            "Fix immediately: run 'pip install tiktoken' in your Python environment.\n"
-            + "=" * 78
-        )
+        logger.info("boot: using conservative estimator (tiktoken absent; conservative byte-based fallback active)")
         return False
     except Exception as exc:
-        logger.warning(
-            "\n" + "=" * 78 + "\n"
-            "⚠️  [BOOT WARNING] 'tiktoken' failed to load encoding: %s\n"
-            "Fix: ensure TIKTOKEN_CACHE_DIR points to valid blobs or run 'pip install tiktoken'.\n"
-            + "=" * 78,
-            exc,
-        )
+        logger.info("boot: using conservative estimator (tiktoken failed to load: %s; conservative fallback active)", exc)
         return False
 
 

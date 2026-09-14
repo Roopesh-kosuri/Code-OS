@@ -703,7 +703,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           </nav>
 
           <div className="text-[11px] text-on-surface-variant/40 px-3 pt-4 border-t border-surface-container-high/40">
-            CODE OS v0.2.0 • Auto-saved
+            CODE OS v5.0.0 (build {typeof __BUILD_HASH__ !== "undefined" ? __BUILD_HASH__ : "5cfa46d"}) • Auto-saved
           </div>
         </aside>
 
@@ -1913,7 +1913,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   </div>
                   <div>
                     <h2 className="font-headline-md text-headline-md text-on-surface font-black">CODE OS</h2>
-                    <p className="font-caption text-caption text-on-surface-variant">Version 0.2.0 • Google Stitch Design System</p>
+                    <p className="font-caption text-caption text-on-surface-variant">Version 5.0.0 (build {typeof __BUILD_HASH__ !== "undefined" ? __BUILD_HASH__ : "5cfa46d"}) • Google Stitch Design System</p>
                   </div>
                 </div>
 

@@ -1,4 +1,4 @@
-git branch -M main# CODE OS Product Roadmap
+# CODE OS Product Roadmap
 
 ## Completed Milestones
 
@@ -28,3 +28,6 @@ git branch -M main# CODE OS Product Roadmap
 
 ### 3. Remote Development (Upcoming)
 - Full SSH/SFTP workspace synchronization and remote folder mountings for remote servers and Docker containers.
+
+### 4. Exact Provider Token Accounting (Target: v5.5.x)
+- Exact provider token accounting deferred to v5.5.x; v5.0.0 uses conservative byte-based estimation when tiktoken absent.

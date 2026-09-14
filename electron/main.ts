@@ -3,7 +3,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell, session } 
 import path from "node:path";
 
 const isDev = !app.isPackaged;
-import { execFileSync } from "node:child_process";
+import { execFileSync, execSync } from "node:child_process";
 import { BackendProcess } from "./services/backendProcess.js";
 import { CaptureService } from "./services/captureService.js";
 import * as pty from "node-pty";
@@ -141,12 +141,18 @@ async function createWindow(): Promise<void> {
     ? path.join(__dirname, "../build/icon.ico")
     : path.join(__dirname, "../build/icon.png");
 
+  let buildHash = "5cfa46d";
+  try {
+    buildHash = execSync("git rev-parse --short HEAD", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+  } catch {}
+  const appTitle = `CODE OS 5.0.0 (build ${buildHash})`;
+
   mainWindow = new BrowserWindow({
     width: 1500,
     height: 950,
     minWidth: 1080,
     minHeight: 720,
-    title: "CODE OS",
+    title: appTitle,
     frame: false,
     titleBarStyle: "hidden",
     autoHideMenuBar: true,

@@ -68,11 +68,18 @@ def _tokenizer_name(provider: str, model: str) -> str:
     return "cl100k_base"
 
 
-@lru_cache(maxsize=2)
+_ENCODER_CACHE: dict[str, Any] = {}
+
+
 def _get_token_encoder(encoding_name: str) -> Any | None:
+    """Retrieve cached tiktoken encoder if available. Successes are cached; failures are never cached."""
+    if encoding_name in _ENCODER_CACHE:
+        return _ENCODER_CACHE[encoding_name]
     try:
         import tiktoken  # type: ignore[import-not-found]
-        return tiktoken.get_encoding(encoding_name)
+        encoder = tiktoken.get_encoding(encoding_name)
+        _ENCODER_CACHE[encoding_name] = encoder
+        return encoder
     except Exception:
         return None
 
@@ -101,17 +108,29 @@ def get_conservative_token_count(text: str) -> int:
     return math.ceil(len(text.encode("utf-8")) / 2)
 
 
-def get_token_count(text: str, provider: str = "", model: str = "") -> int | None:
-    """Return the exact BPE count, or ``None`` when its tokenizer is unavailable."""
+def get_token_count(text: str, provider: str = "", model: str = "") -> int:
+    """Return exact BPE count via tiktoken if available, else conservative upper-bound.
+
+    NEVER returns None and NEVER raises for any valid string or serializable input:
+    - Tries tiktoken (optional import); on success returns exact count.
+    - On ANY absence/exception returns conservative ceil(utf8_bytes / 2) (deliberate overestimate).
+    - Caches exact encoder successes only; never caches fallback estimates as exact.
+    """
     if not isinstance(text, str):
-        return None
-    encoder = _get_token_encoder(_tokenizer_name(provider, model))
-    if encoder is None:
-        return None
+        text = str(text or "")
+
     try:
-        return len(encoder.encode(text))
+        family = _tokenizer_name(provider, model)
+        encoder = _get_token_encoder(family)
+        if encoder is not None:
+            return len(encoder.encode(text))
     except Exception:
-        return None
+        pass
+
+    try:
+        return get_conservative_token_count(text)
+    except Exception:
+        return math.ceil(len(str(text or "").encode("utf-8")) / 2)
 
 
 def estimate_payload_breakdown(
@@ -122,7 +141,6 @@ def estimate_payload_breakdown(
     fail_mode: str | None = None,
 ) -> dict[str, Any]:
     """Calculate token breakdown across all parts of the request payload."""
-    mode = fail_mode or get_governor_fail_mode()
     system_parts: list[str] = []
     history_parts: list[str] = []
     rag_parts: list[str] = []
@@ -142,41 +160,34 @@ def estimate_payload_breakdown(
             history_parts.append(c)
 
     tools_text = ""
+    tools_error = False
     if tools:
         try:
             tools_text = json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
-        except Exception:
-            tools_text = None
-
-    counts = [
-        get_token_count("\n".join(system_parts), provider, model),
-        get_token_count("\n".join(history_parts), provider, model),
-        get_token_count("\n".join(rag_parts), provider, model),
-        get_token_count("\n".join(attachment_parts), provider, model),
-        get_token_count(tools_text, provider, model) if tools_text is not None else None,
-    ]
-    system_tokens, history_tokens, rag_tokens, attachment_tokens, tool_tokens = counts
-    tokenizer_available = all(count is not None for count in counts)
-    is_conservative = False
-
-    if tokenizer_available:
-        total_tokens = sum(counts)
-    elif mode == "conservative":
-        # Fallback to safe conservative upper-bound estimate: ceil(utf8_bytes / 2)
-        try:
-            system_tokens = get_conservative_token_count("\n".join(system_parts))
-            history_tokens = get_conservative_token_count("\n".join(history_parts))
-            rag_tokens = get_conservative_token_count("\n".join(rag_parts))
-            attachment_tokens = get_conservative_token_count("\n".join(attachment_parts))
-            tool_tokens = get_conservative_token_count(tools_text) if tools_text is not None else 0
-            total_tokens = system_tokens + history_tokens + rag_tokens + attachment_tokens + tool_tokens
-            is_conservative = True
         except Exception as exc:
-            logger.error("payload_governor: failed to compute byte count for conservative estimation: %s", exc)
-            total_tokens = None
-    else:
-        # Strict fail-closed mode: exact tokenizer unavailable
+            logger.error("payload_governor: failed to serialize tools: %s", exc)
+            tools_error = True
+
+    family = _tokenizer_name(provider, model)
+    encoder = _get_token_encoder(family)
+    tokenizer_available = encoder is not None
+    is_conservative = not tokenizer_available
+
+    if tools_error:
+        # Cannot compute byte count for request payload (tools is non-serializable)
         total_tokens = None
+        system_tokens = get_token_count("\n".join(system_parts), provider, model)
+        history_tokens = get_token_count("\n".join(history_parts), provider, model)
+        rag_tokens = get_token_count("\n".join(rag_parts), provider, model)
+        attachment_tokens = get_token_count("\n".join(attachment_parts), provider, model)
+        tool_tokens = None
+    else:
+        system_tokens = get_token_count("\n".join(system_parts), provider, model)
+        history_tokens = get_token_count("\n".join(history_parts), provider, model)
+        rag_tokens = get_token_count("\n".join(rag_parts), provider, model)
+        attachment_tokens = get_token_count("\n".join(attachment_parts), provider, model)
+        tool_tokens = get_token_count(tools_text, provider, model) if tools_text else 0
+        total_tokens = system_tokens + history_tokens + rag_tokens + attachment_tokens + tool_tokens
 
     return {
         "system_tokens": system_tokens,
@@ -301,18 +312,15 @@ def govern_payload(
     estimated_tokens = breakdown["total_tokens"]
 
     if estimated_tokens is None:
-        if active_fail_mode == "closed":
-            summary = "fail_closed: token accounting dependency missing (tiktoken unavailable in closed governor mode). Run 'pip install tiktoken' to resolve."
-        else:
-            summary = "fail_closed: unable to compute byte count for request payload."
+        summary = "fail_closed: unable to compute byte count for request payload."
         logger.error("payload_governor: %s provider=%s model=%s", summary, prov_key, model)
-        _log_governance_event(workspace, prov_key, budget, breakdown, ["fail_closed_tokenizer_unavailable"], failed_closed=True)
+        _log_governance_event(workspace, prov_key, budget, breakdown, ["fail_closed_byte_count_unavailable"], failed_closed=True)
         return GovernanceResult(messages, tools, False, summary, breakdown, True)
 
     adjustments_applied: list[str] = []
     if breakdown.get("is_conservative"):
         adjustments_applied.append("conservative_estimate_tokenizer_missing")
-        logger.warning(
+        logger.info(
             "payload_governor: tiktoken unavailable; using conservative estimate ceil(utf8_bytes/2) for %s / %s (%d tokens estimated)",
             prov_key, model, estimated_tokens,
         )
@@ -339,7 +347,9 @@ def govern_payload(
             adjustments_applied.append("compacted_history")
             breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model, fail_mode=active_fail_mode)
             if breakdown["total_tokens"] is None:
-                return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
+                summary = "fail_closed: unable to compute byte count for request payload."
+                _log_governance_event(workspace, prov_key, budget, breakdown, ["fail_closed_byte_count_unavailable"], failed_closed=True)
+                return GovernanceResult(adjusted_messages, adjusted_tools, False, summary, breakdown, True)
             if breakdown["total_tokens"] <= budget:
                 _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
                 return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
@@ -373,7 +383,9 @@ def govern_payload(
         adjusted_messages = new_msgs
         breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model, fail_mode=active_fail_mode)
         if breakdown["total_tokens"] is None:
-            return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
+            summary = "fail_closed: unable to compute byte count for request payload."
+            _log_governance_event(workspace, prov_key, budget, breakdown, ["fail_closed_byte_count_unavailable"], failed_closed=True)
+            return GovernanceResult(adjusted_messages, adjusted_tools, False, summary, breakdown, True)
         if breakdown["total_tokens"] <= budget:
             _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
             return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
@@ -385,7 +397,9 @@ def govern_payload(
         adjustments_applied.append("swapped_to_slim_tools")
         breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model, fail_mode=active_fail_mode)
         if breakdown["total_tokens"] is None:
-            return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
+            summary = "fail_closed: unable to compute byte count for request payload."
+            _log_governance_event(workspace, prov_key, budget, breakdown, ["fail_closed_byte_count_unavailable"], failed_closed=True)
+            return GovernanceResult(adjusted_messages, adjusted_tools, False, summary, breakdown, True)
         if breakdown["total_tokens"] <= budget:
             _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
             return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
@@ -429,20 +443,3 @@ def _log_governance_event(
         })
     except Exception as exc:
         logger.debug("Failed to log governance event: %s", exc)
-
-
-def _tokenizer_unavailable_result(
-    messages: list[ChatMessage],
-    tools: list[dict[str, Any]] | None,
-    provider: str,
-    model: str,
-    budget: int,
-    breakdown: dict[str, Any],
-    adjustments: list[str],
-    workspace: str,
-) -> GovernanceResult:
-    summary = "fail_closed: token accounting dependency missing (tiktoken unavailable during payload reduction). Run 'pip install tiktoken' to resolve."
-    logger.error("payload_governor: %s provider=%s model=%s", summary, provider, model)
-    adjustments = adjustments + ["fail_closed_tokenizer_unavailable"]
-    _log_governance_event(workspace, provider, budget, breakdown, adjustments, failed_closed=True)
-    return GovernanceResult(messages, tools, bool(adjustments), summary, breakdown, True)

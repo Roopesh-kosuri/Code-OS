@@ -37,31 +37,30 @@ def test_requirements_pins_tiktoken():
 
 
 def test_boot_warning_when_tiktoken_missing(caplog):
-    """E2: Backend logs a loud warning at boot when tiktoken is missing, naming 'pip install tiktoken'."""
-    with caplog.at_level(logging.WARNING):
+    """E4: Backend logs INFO at boot when tiktoken is missing, naming conservative estimator and never emitting WARNING/ERROR."""
+    with caplog.at_level(logging.INFO):
         with patch.dict("sys.modules", {"tiktoken": None}):
             with patch("builtins.__import__", side_effect=ImportError("No module named 'tiktoken'")):
                 result = check_tiktoken_health()
                 assert result is False
 
-    warning_text = caplog.text
-    assert "BOOT WARNING" in warning_text
-    assert "pip install tiktoken" in warning_text
-    assert "MISSING DEPENDENCY: 'tiktoken' is not installed" in warning_text
+    info_text = caplog.text
+    assert "using conservative estimator" in info_text
+    assert "WARNING" not in info_text
+    assert "ERROR" not in info_text
 
 
 def test_tokenizer_error_message_not_context_tip(monkeypatch):
-    """E4: When governance fails closed due to missing tokenizer, message specifies token accounting dependency missing and NOT context window limit/compaction."""
+    """E2: Under Phase 10.12, missing tokenizer never fails closed and never emits misleading context tips."""
     monkeypatch.setattr(payload_governor, "_get_token_encoder", lambda _name: None)
     messages = [ChatMessage(role="user", content="Hello world")]
 
-    # In strict 'closed' mode
+    # In strict 'closed' mode or default, request proceeds using conservative estimate
     res = govern_payload(messages, None, provider="openai", model="gpt-4o", fail_mode="closed")
-    assert res.failed_closed is True
-    assert "token accounting dependency missing" in res.summary_reason
-    assert "pip install tiktoken" in res.summary_reason
+    assert res.failed_closed is False
+    assert "conservative_estimate_tokenizer_missing" in res.summary_reason
 
-    # Ensure misleading context-window tip phrases are NOT in the governance error
+    # Ensure misleading context-window tip phrases are NOT in the summary reason
     assert "context window limit reached" not in res.summary_reason.lower()
     assert "compacted" not in res.summary_reason.lower()
 

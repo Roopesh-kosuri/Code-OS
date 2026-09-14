@@ -1,10 +1,20 @@
 import path from "path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { execSync } from "child_process";
+
+let buildHash = "5cfa46d";
+try {
+  buildHash = execSync("git rev-parse --short HEAD").toString().trim();
+} catch {}
 
 export default defineConfig({
   base: "./",
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify("5.0.0"),
+    __BUILD_HASH__: JSON.stringify(buildHash),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

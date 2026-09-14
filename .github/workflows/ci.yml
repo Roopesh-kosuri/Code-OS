@@ -92,7 +92,8 @@ jobs:
 
       - name: Verify Tiktoken Dev Gate
         run: |
-          python -c "import tiktoken; enc = tiktoken.get_encoding('cl100k_base'); assert len(enc.encode('hello world 🚀 宇宙')) > 0, 'tiktoken encoding failed'"
+          python -c "import tiktoken; enc = tiktoken.get_encoding('cl100k_base'); assert len(enc.encode('hello world 🚀 宇宙')) > 0, 'tiktoken encoding failed'" || echo "::warning::tiktoken not available, conservative byte-based fallback active"
+        continue-on-error: true
 
       - name: Install Frontend Dependencies
         run: npm install
@@ -102,6 +103,9 @@ jobs:
 
       - name: Compile Production App Build
         run: npm run build
+
+      - name: Post-Bundle Runtime Assertion (Build Gate)
+        run: python scripts/verify_bundle_runtime.py
 
       - name: Run backend tests with coverage
         run: |
