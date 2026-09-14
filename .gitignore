@@ -74,6 +74,23 @@ scratch_preview_captured.jpg
 !backend/app/features/ai/refactoring/verify_service.py
 walkthrough.md
 *walkthrough*.md
+*notes*.md
+bandit_raw.json
+bandit_report.*
+task-*.log
+
+# Internal Audit, Handoff & Session State (Repo Hygiene - Private, Never Push)
+docs/audit/
+docs/audit/**
+PHASE_STATE.md
+docs/TEAM_CONSOLE_AUDIT.md
+docs/SYSTEM_VERIFICATION_REPORT.md
+docs/V4_FINAL_VERIFICATION_REPORT.md
+docs/CODEX_CURRENT_ERRORS.md
+docs/CODEX_HANDOFF.md
+docs/CODE_SIGNING_PLAN.md
+docs/PRE_COMMIT_CHECKLIST.md
+docs/RELEASE_CLEANUP.md
 
 # Audio & Media Test Outputs (Preserve core UI assets)
 *.wav
