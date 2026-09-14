@@ -18,9 +18,26 @@ extraResources:
     to: "backend"
     filter:
       - "**/*"
+  - from: "build/tiktoken"
+    to: "tiktoken"
+    filter:
+      - "**/*"
 
 win:
   icon: "build/icon.ico"
+  extraResources:
+    - from: "build/python-runtime/win/python"
+      to: "python"
+      filter:
+        - "**/*"
+    - from: "build/node-runtime/win/node"
+      to: "node"
+      filter:
+        - "**/*"
+    - from: "build/git-runtime/win/git"
+      to: "git"
+      filter:
+        - "**/*"
   target:
     - target: nsis
       arch:
@@ -45,6 +62,7 @@ nsis:
   shortcutName: "CODE OS"
   installerIcon: "build/icon.ico"
   uninstallerIcon: "build/icon.ico"
+  artifactName: "${productName}-${version}-setup.${ext}"
   runAfterFinish: true
   differentialPackage: false
 
@@ -53,16 +71,38 @@ portable:
 
 linux:
   icon: "build/icon.png"
+  extraResources:
+    - from: "build/python-runtime/linux/python"
+      to: "python"
+      filter:
+        - "**/*"
+    - from: "build/node-runtime/linux/node"
+      to: "node"
+      filter:
+        - "**/*"
   target:
     - target: AppImage
       arch:
         - x64
+    - target: deb
+      arch:
+        - x64
   category: Development
   maintainer: "Roopesh Kosuri <roopesh@codeos.ai>"
+  artifactName: "${productName}-${version}-${arch}.${ext}"
   afterSign: "scripts/verify-release-signing.js"
 
 mac:
   icon: "build/icon.png"
+  extraResources:
+    - from: "build/python-runtime/darwin/python"
+      to: "python"
+      filter:
+        - "**/*"
+    - from: "build/node-runtime/darwin/node"
+      to: "node"
+      filter:
+        - "**/*"
   target:
     - target: dmg
       arch:

@@ -54,17 +54,26 @@ function getBundledPythonPath(): string | null {
   if (isDev) return null;
   const pf = process.platform === "win32" ? "win" : process.platform === "darwin" ? "darwin" : "linux";
   const exe = process.platform === "win32" ? "python.exe" : "bin/python3";
-  const p = path.join(process.resourcesPath, "python-runtime", pf, "python", exe);
-  if (fs.existsSync(p)) { console.log(`[backend] Bundled Python: ${p}`); return p; }
+  const candidates = [
+    path.join(process.resourcesPath, "python", exe),
+    path.join(process.resourcesPath, "python", process.platform === "win32" ? "python.exe" : "python3"),
+    path.join(process.resourcesPath, "python-runtime", pf, "python", exe),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) { console.log(`[backend] Bundled Python: ${p}`); return p; }
+  }
   return null;
 }
 
 function findPythonCommand(): string | null {
   const b = getBundledPythonPath();
   if (b) return b;
-  for (const cmd of ["python3", "python"]) {
-    const v = getPythonVersion(cmd);
-    if (v && isVersionSupported(v)) { console.log(`[backend] System Python ${v}: ${cmd}`); return cmd; }
+  // In packaged mode (!isDev), NEVER fall back to system python. Only bundled python is permitted.
+  if (isDev) {
+    for (const cmd of ["python3", "python"]) {
+      const v = getPythonVersion(cmd);
+      if (v && isVersionSupported(v)) { console.log(`[backend] Dev mode System Python ${v}: ${cmd}`); return cmd; }
+    }
   }
   return null;
 }
@@ -115,10 +124,59 @@ function buildBackendEnv(extras: Record<string, string> = {}): NodeJS.ProcessEnv
   const pathParts: string[] = [];
   if (!isDev) {
     const pf = process.platform === "win32" ? "win" : process.platform === "darwin" ? "darwin" : "linux";
-    const pyDir   = path.join(process.resourcesPath, "python-runtime", pf, "python");
-    const nodeDir = path.join(process.resourcesPath, "node-runtime",   pf, "node");
-    if (fs.existsSync(pyDir))   { pathParts.push(pyDir);   if (process.platform !== "win32") pathParts.push(path.join(pyDir,   "bin")); }
-    if (fs.existsSync(nodeDir)) { pathParts.push(nodeDir); if (process.platform !== "win32") pathParts.push(path.join(nodeDir, "bin")); }
+
+    // 1. Bundled Python on PATH
+    const pyCandidates = [
+      path.join(process.resourcesPath, "python"),
+      path.join(process.resourcesPath, "python-runtime", pf, "python"),
+    ];
+    for (const pyDir of pyCandidates) {
+      if (fs.existsSync(pyDir)) {
+        pathParts.push(pyDir);
+        const binDir = path.join(pyDir, process.platform === "win32" ? "Scripts" : "bin");
+        if (fs.existsSync(binDir)) pathParts.push(binDir);
+        break;
+      }
+    }
+
+    // 2. Bundled Node on PATH
+    const nodeCandidates = [
+      path.join(process.resourcesPath, "node"),
+      path.join(process.resourcesPath, "node-runtime", pf, "node"),
+    ];
+    for (const nodeDir of nodeCandidates) {
+      if (fs.existsSync(nodeDir)) {
+        pathParts.push(nodeDir);
+        const binDir = path.join(nodeDir, "bin");
+        if (fs.existsSync(binDir)) pathParts.push(binDir);
+        break;
+      }
+    }
+
+    // 3. Bundled Git on PATH
+    const gitCandidates = [
+      path.join(process.resourcesPath, "git", "cmd"),
+      path.join(process.resourcesPath, "git"),
+      path.join(process.resourcesPath, "git-runtime", pf, "git", "cmd"),
+    ];
+    for (const gitDir of gitCandidates) {
+      if (fs.existsSync(gitDir)) {
+        pathParts.push(gitDir);
+        break;
+      }
+    }
+
+    // 4. Bundled Tiktoken Cache
+    const tiktokenCandidates = [
+      path.join(process.resourcesPath, "tiktoken"),
+      path.join(process.resourcesPath, "backend", "tiktoken"),
+    ];
+    for (const tkDir of tiktokenCandidates) {
+      if (fs.existsSync(tkDir)) {
+        base.TIKTOKEN_CACHE_DIR = tkDir;
+        break;
+      }
+    }
   }
   pathParts.push(process.env.PATH || "");
   base.PATH = pathParts.join(path.delimiter);

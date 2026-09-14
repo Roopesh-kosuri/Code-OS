@@ -1,4 +1,4 @@
-﻿/**
+/**
  * download-runtimes.js - Downloads standalone Python 3.11 and Node.js 20
  * runtimes for Windows, Linux, or macOS.
  *
@@ -22,9 +22,13 @@ const ROOT       = path.join(__dirname, '..');
 const BUILD_DIR  = path.join(ROOT, 'build');
 const PYTHON_DIR = path.join(BUILD_DIR, 'python-runtime');
 const NODE_DIR   = path.join(BUILD_DIR, 'node-runtime');
+const GIT_DIR    = path.join(BUILD_DIR, 'git-runtime');
 
 fs.mkdirSync(PYTHON_DIR, { recursive: true });
 fs.mkdirSync(NODE_DIR,   { recursive: true });
+fs.mkdirSync(GIT_DIR,    { recursive: true });
+
+const MINGIT_URL = 'https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/MinGit-2.44.0-64-bit.zip';
 
 const PYTHON_URLS = {
   win32:       'https://github.com/astral-sh/python-build-standalone/releases/download/20250106/cpython-3.11.11%2B20250106-x86_64-pc-windows-msvc-shared-install_only_stripped.tar.gz',
@@ -140,6 +144,27 @@ async function setupRuntimesForPlatform(targetPlatform) {
     }
   } else {
     console.log(`[runtimes] Node.js already present at: ${nodeExe}`);
+  }
+
+  // ── Git runtime (Windows MinGit) ──────────────────────────────────────────
+  if (folderName === 'win') {
+    const gitDestDir = path.join(GIT_DIR, folderName, 'git');
+    const gitExe = path.join(gitDestDir, 'cmd', 'git.exe');
+    if (!fs.existsSync(gitExe)) {
+      try {
+        fs.mkdirSync(gitDestDir, { recursive: true });
+        const gitZip = path.join(gitDestDir, 'mingit.zip');
+        await downloadFile(MINGIT_URL, gitZip);
+        console.log(`[runtimes] Extracting MinGit to ${gitDestDir} ...`);
+        execSync(`powershell -Command "Expand-Archive -Path '${gitZip}' -DestinationPath '${gitDestDir}' -Force"`, { stdio: 'inherit' });
+        if (fs.existsSync(gitZip)) fs.unlinkSync(gitZip);
+        console.log(`[runtimes] Git ready at: ${gitExe}`);
+      } catch (err) {
+        console.warn(`[runtimes] Git download/unpack error: ${err.message}`);
+      }
+    } else {
+      console.log(`[runtimes] Git already present at: ${gitExe}`);
+    }
   }
 }
 

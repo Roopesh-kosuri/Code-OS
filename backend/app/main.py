@@ -268,7 +268,9 @@ async def lifespan(app: FastAPI):
     logger.info("backend stopped")
 
 
-app = FastAPI(title="CODE OS Backend", version="3.1.0", lifespan=lifespan)
+VERSION: str = "5.0.0"
+
+app = FastAPI(title="CODE OS Backend", version=VERSION, lifespan=lifespan)
 
 
 class RequestIdMiddleware:
@@ -518,7 +520,7 @@ async def health() -> HealthCheckResponse:
 
     return HealthCheckResponse(
         status="healthy" if is_healthy else "degraded",
-        version="3.1.0",
+        version=VERSION,
         uptime_seconds=round(time.time() - _START_TIME, 1),
         subsystems=subsystems,
         metrics=metrics,
