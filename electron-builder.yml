@@ -78,6 +78,12 @@ linux: # target: AppImage and deb
   maintainer: "Roopesh Kosuri <roopesh@codeos.ai>"
   artifactName: "${productName}-${version}-${arch}.${ext}"
 
+appImage:
+  artifactName: "${productName}-${version}-x86_64.${ext}"
+
+deb:
+  artifactName: "${name}_${version}_${arch}.${ext}"
+
 mac:
   icon: "build/icon.png"
   extraResources:
