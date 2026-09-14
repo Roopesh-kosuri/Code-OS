@@ -553,8 +553,7 @@ async def test_byte_count_chain_logged_and_mismatch_blocks_apply():
             def encode(self, text):
                 return list(range((len(text.encode("utf-8")) + 3) // 4))
 
-        with patch("app.features.ai.chat_harness.provider_for", return_value=mock_prov), \
-             patch.object(payload_governor, "_get_token_encoder", return_value=Utf8TestEncoding()):
+        with patch("app.features.ai.chat_harness.provider_for", return_value=mock_prov):
             events = []
             async for ev in run_chat_agent(req):
                 events.append(ev)
@@ -610,8 +609,7 @@ async def test_utf8_byte_chain_blocks_normalization_changed_tool_argument():
             def encode(self, text):
                 return list(range((len(text.encode("utf-8")) + 3) // 4))
 
-        with patch("app.features.ai.chat_harness.provider_for", return_value=MockStreamProvider(mock_stream)), \
-             patch.object(payload_governor, "_get_token_encoder", return_value=Utf8TestEncoding()):
+        with patch("app.features.ai.chat_harness.provider_for", return_value=MockStreamProvider(mock_stream)):
             events = []
             async for event in run_chat_agent(req):
                 events.append(event)

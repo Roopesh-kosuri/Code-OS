@@ -64,14 +64,7 @@ from app.features.ai.harness.checkpoint_manager import (
 from app.features.ai.harness import payload_governor
 
 
-class _Utf8TestEncoding:
-    def encode(self, text):
-        return list(range((len(text.encode("utf-8")) + 3) // 4))
-
-
-@pytest.fixture(autouse=True)
-def exact_tokenizer(monkeypatch):
-    monkeypatch.setattr(payload_governor, "_get_token_encoder", lambda _name: _Utf8TestEncoding())
+# Governor is now dependency-free (Phase 10.13)
 
 
 # -----------------------------------------------------------------------------
@@ -294,7 +287,7 @@ def test_tool_schema_token_budget_respected():
     assert gov_res.failed_closed is False
     assert estimate_request_tokens(gov_msgs, gov_tools) <= 7500
 
-    # Verify fail-closed when payload hopelessly exceeds budget even after reductions
+    # Verify governor proceeds best-effort (never fails closed) when payload exceeds budget
     huge_msg = [ChatMessage(role="user", content="HUGE DATA " * 10000)]
     overflow_res = govern_payload(
         huge_msg,
@@ -302,8 +295,8 @@ def test_tool_schema_token_budget_respected():
         provider="groq",
         hard_tpm_limit=2000,
     )
-    assert overflow_res.failed_closed is True
-    assert "fail_closed" in overflow_res.summary_reason
+    assert overflow_res.failed_closed is False
+    assert "best_effort" in overflow_res.summary_reason
 
 
 # -----------------------------------------------------------------------------

@@ -8,18 +8,6 @@ if sys.platform == "win32":
 import os
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 
-# Auto-wire bundled TIKTOKEN_CACHE_DIR if present and not explicitly set
-if "TIKTOKEN_CACHE_DIR" not in os.environ:
-    _root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    _tk_candidates = [
-        os.path.join(_root_dir, "resources", "tiktoken"),
-        os.path.join(sys.prefix, "resources", "tiktoken"),
-        os.path.join(os.path.dirname(sys.executable), "resources", "tiktoken"),
-    ]
-    for _cand in _tk_candidates:
-        if os.path.isdir(_cand):
-            os.environ["TIKTOKEN_CACHE_DIR"] = _cand
-            break
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -197,22 +185,12 @@ def _get_git_sha_and_build_time() -> tuple[str, str]:
 
 
 def check_tiktoken_health() -> bool:
-    """Check tokenizer availability at boot (E4 downgrade for v5.0.0).
+    """Check tokenizer availability at boot (dependency-free in v5.0.0).
 
-    Logs INFO ('exact token accounting active') or INFO ('using conservative estimator').
-    Never logs WARNING or ERROR, and never blocks startup.
+    Logs INFO. Never logs WARNING or ERROR, and never blocks startup.
     """
-    try:
-        import tiktoken
-        tiktoken.get_encoding("cl100k_base")
-        logger.info("boot: exact token accounting active (tiktoken cl100k_base loaded)")
-        return True
-    except ImportError:
-        logger.info("boot: using conservative estimator (tiktoken absent; conservative byte-based fallback active)")
-        return False
-    except Exception as exc:
-        logger.info("boot: using conservative estimator (tiktoken failed to load: %s; conservative fallback active)", exc)
-        return False
+    logger.info("boot: dependency-free token estimator active")
+    return True
 
 
 @asynccontextmanager

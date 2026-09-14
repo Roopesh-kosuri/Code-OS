@@ -1,2 +1,1 @@
-# Optional extras: exact BPE token accounting (deferred to v5.5.x)
-tiktoken==0.14.0
+# Optional extras

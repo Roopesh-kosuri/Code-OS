@@ -1,8 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import ReactDOM from "react-dom";
-import { Paperclip, FileText, FileCode, Image as ImageIcon, File as FileGeneric, ChevronDown, ChevronUp } from "lucide-react";
+import { FileText, FileCode, Image as ImageIcon, File as FileGeneric } from "lucide-react";
 import { useFileUploadStore } from "./fileUploadStore";
-import { FileUploadZone } from "./FileUploadZone";
 import { FilePreviewModal } from "./FilePreviewModal";
 
 interface RonyChatUploadWrapperProps {
@@ -12,7 +11,6 @@ interface RonyChatUploadWrapperProps {
 export const RonyChatUploadWrapper: React.FC<RonyChatUploadWrapperProps> = ({ children }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  const [isZoneOpen, setIsZoneOpen] = useState(false);
   const { uploadedFiles, openPreview } = useFileUploadStore();
 
   useEffect(() => {
@@ -70,7 +68,7 @@ export const RonyChatUploadWrapper: React.FC<RonyChatUploadWrapperProps> = ({ ch
         let portalEl = textarea.parentElement.querySelector(".rony-upload-portal-mount") as HTMLElement;
         if (!portalEl) {
           portalEl = document.createElement("div");
-          portalEl.className = "rony-upload-portal-mount w-full border-b border-white/[0.06]";
+          portalEl.className = "rony-upload-portal-mount w-full";
           textarea.parentElement.insertBefore(portalEl, textarea);
         }
         setPortalTarget(portalEl);
@@ -104,70 +102,48 @@ export const RonyChatUploadWrapper: React.FC<RonyChatUploadWrapperProps> = ({ ch
     };
   }, []);
 
-  const getFileIcon = (mime: string, name: string) => {
-    if (name.toLowerCase().endsWith(".pdf") || mime === "application/pdf") {
+  const getFileIcon = (mime?: string, name?: string) => {
+    const safeName = (name || "").toLowerCase();
+    const safeMime = (mime || "").toLowerCase();
+    if (safeName.endsWith(".pdf") || safeMime === "application/pdf") {
       return <FileText size={11} className="text-red-400" />;
     }
-    if (mime.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) {
+    if (safeMime.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(safeName)) {
       return <ImageIcon size={11} className="text-blue-400" />;
     }
-    if (/\.(py|js|ts|tsx|json|html|css|cpp|rs)$/i.test(name)) {
+    if (/\.(py|js|ts|tsx|json|html|css|cpp|rs)$/i.test(safeName)) {
       return <FileCode size={11} className="text-emerald-400" />;
     }
     return <FileGeneric size={11} className="text-on-surface-variant" />;
   };
 
-  const uploadControls = (
-    <div className="flex flex-col gap-1 px-3 py-1.5 bg-black/20 text-xs select-none">
-      {/* Attached Files Badge Bar / Toggle Drop Zone Header */}
+  const uploadControls = uploadedFiles.length > 0 ? (
+    <div className="flex flex-col gap-1 px-3 py-1.5 bg-black/20 text-xs select-none border-b border-white/[0.06]">
+      {/* Attached Files Badge Bar */}
       <div className="flex items-center justify-between gap-2 min-h-[22px]">
-        {uploadedFiles.length > 0 ? (
-          <button
-            type="button"
-            data-testid="attached-files-badge"
-            onClick={() => {
-              if (uploadedFiles[0]) void openPreview(uploadedFiles[0]);
-            }}
-            className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 transition-all cursor-pointer text-[10.5px] font-medium group shadow-xs"
-            title="Click to preview attached files"
-          >
-            <div className="flex items-center -space-x-1">
-              {uploadedFiles.slice(0, 3).map((f) => (
-                <span key={f.file_id} className="inline-block p-0.5 rounded-full bg-[#141620] border border-white/10">
-                  {getFileIcon(f.mime_type, f.filename)}
-                </span>
-              ))}
-            </div>
-            <span className="font-mono">
-              {uploadedFiles.length} {uploadedFiles.length === 1 ? "file" : "files"} attached
-            </span>
-          </button>
-        ) : (
-          <div className="text-[10px] text-gray-400/80 font-mono flex items-center gap-1.5">
-            <Paperclip size={10} className="text-gray-400/70" />
-            <span>Drop spec or code to inject</span>
-          </div>
-        )}
-
         <button
           type="button"
-          data-testid="toggle-upload-zone-btn"
-          onClick={() => setIsZoneOpen(!isZoneOpen)}
-          className="flex items-center gap-1 text-[10.5px] font-mono text-gray-400 hover:text-gray-200 transition-colors cursor-pointer px-2 py-0.5 rounded-md hover:bg-white/5 border border-transparent hover:border-white/5"
+          data-testid="attached-files-badge"
+          onClick={() => {
+            if (uploadedFiles[0]) void openPreview(uploadedFiles[0]);
+          }}
+          className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 transition-all cursor-pointer text-[10.5px] font-medium group shadow-xs"
+          title="Click to preview attached files"
         >
-          <span>{isZoneOpen ? "Hide Upload" : "+ Add Files"}</span>
-          {isZoneOpen ? <ChevronDown size={11} /> : <ChevronUp size={11} />}
+          <div className="flex items-center -space-x-1">
+            {uploadedFiles.slice(0, 3).map((f) => (
+              <span key={f.file_id} className="inline-block p-0.5 rounded-full bg-[#141620] border border-white/10">
+                {getFileIcon(f.mime_type, f.filename)}
+              </span>
+            ))}
+          </div>
+          <span className="font-mono">
+            {uploadedFiles.length} {uploadedFiles.length === 1 ? "file" : "files"} attached
+          </span>
         </button>
       </div>
-
-      {/* Expandable Drag & Drop Zone */}
-      {isZoneOpen && (
-        <div className="pt-1.5 pb-1 animate-in fade-in slide-in-from-top-1">
-          <FileUploadZone compact />
-        </div>
-      )}
     </div>
-  );
+  ) : null;
 
   return (
     <div
@@ -181,7 +157,7 @@ export const RonyChatUploadWrapper: React.FC<RonyChatUploadWrapperProps> = ({ ch
       </div>
 
       {/* Upload Controls Portal or Fallback */}
-      {portalTarget ? ReactDOM.createPortal(uploadControls, portalTarget) : uploadControls}
+      {uploadControls && (portalTarget ? ReactDOM.createPortal(uploadControls, portalTarget) : uploadControls)}
 
       {/* File Preview Modal */}
       <FilePreviewModal />
