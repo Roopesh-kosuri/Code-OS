@@ -43,6 +43,8 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: "CODE OS"
+  installerIcon: "build/icon.ico"
+  uninstallerIcon: "build/icon.ico"
   runAfterFinish: true
   differentialPackage: false
 
