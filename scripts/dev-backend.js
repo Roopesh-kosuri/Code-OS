@@ -33,8 +33,12 @@ function isVersionSupported(versionStr) {
 }
 
 function findPython() {
-  const candidates = ["python3", "python"];
+  const bundled = path.resolve("resources", "python", process.platform === "win32" ? "python.exe" : "bin/python3");
+  const candidates = [bundled, "python3", "python"];
   for (const cmd of candidates) {
+    if (cmd === bundled && !fs.existsSync(bundled)) {
+      continue;
+    }
     const version = getPythonVersion(cmd);
     if (version && isVersionSupported(version)) {
       console.log(`Found supported Python version ${version} via command: ${cmd}`);
@@ -57,11 +61,12 @@ let currentProc = null;
 
 function startBackend() {
   console.log("[dev:backend] Spawning Uvicorn backend supervisor...");
-  const tiktokenDir = path.resolve("resources", "tiktoken");
-  const spawnEnv = { ...process.env, PYTHONPATH: backendDir };
-  if (fs.existsSync(tiktokenDir)) {
-    spawnEnv.TIKTOKEN_CACHE_DIR = tiktokenDir;
+  const sitePackages = path.resolve("resources", "python", "Lib", "site-packages");
+  const pythonPathParts = [backendDir];
+  if (fs.existsSync(sitePackages)) {
+    pythonPathParts.push(sitePackages);
   }
+  const spawnEnv = { ...process.env, PYTHONPATH: pythonPathParts.join(path.delimiter) };
   currentProc = spawn(pythonCmd, args, {
     stdio: "inherit",
     cwd: backendDir,

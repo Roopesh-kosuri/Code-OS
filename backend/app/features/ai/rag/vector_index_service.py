@@ -179,11 +179,22 @@ def init_vector_store(workspace: str, collection_name: str = "codebase_rag") -> 
             client.delete_collection(collection_name)
         except Exception:
             pass
-        collection = client.create_collection(
-            name=collection_name,
-            embedding_function=ef,
-            metadata={"hnsw:space": "cosine"},
-        )
+        try:
+            collection = client.create_collection(
+                name=collection_name,
+                embedding_function=ef,
+                metadata={"hnsw:space": "cosine"},
+            )
+        except Exception:
+            import shutil
+            shutil.rmtree(str(persist_dir), ignore_errors=True)
+            client = chromadb.PersistentClient(path=str(persist_dir))
+            _clients[norm_ws] = client
+            collection = client.get_or_create_collection(
+                name=collection_name,
+                embedding_function=ef,
+                metadata={"hnsw:space": "cosine"},
+            )
     _collections[cache_key] = collection
     return collection
 
