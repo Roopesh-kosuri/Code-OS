@@ -81,7 +81,7 @@ def verify_refactor_safety(changes: List[Dict[str, Any]], workspace: str) -> Dic
             target_file = tmp_ws / target_rel
             try:
                 target_file.parent.mkdir(parents=True, exist_ok=True)
-                target_file.write_text(updated_content, encoding="utf-8")
+                target_file.write_text(updated_content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
             except Exception as exc:
                 return {
                     "safe": False,

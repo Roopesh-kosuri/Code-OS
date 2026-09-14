@@ -249,7 +249,7 @@ def accept_ghost_text(editor_id: str, file_path: str = "") -> dict:
 
     try:
         full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(updated_content, encoding="utf-8")
+        full_path.write_text(updated_content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
         bytes_written = len(updated_content.encode("utf-8"))
     except OSError as exc:
         return {"status": "error", "error": f"Failed to write file to disk: {exc}"}

@@ -556,7 +556,7 @@ def apply_approved_changes(job_id: str) -> Dict[str, Any]:
                 final_content = _reconstruct_file_content(entry)
                 try:
                     full_path.parent.mkdir(parents=True, exist_ok=True)
-                    full_path.write_text(final_content, encoding="utf-8")
+                    full_path.write_text(final_content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
                 except Exception as e:
                     logger.error("Failed to write %s: %s", full_path, e)
             applied_files.append(path)

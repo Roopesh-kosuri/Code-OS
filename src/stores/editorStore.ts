@@ -50,6 +50,7 @@ function getInitialRecentFiles(): string[] {
 
 export const MAX_LIVE_TABS = 15;
 const evictedTabCache = new Map<string, string>();
+export const normalizeEol = (text: string): string => text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   openFiles: [],
@@ -104,7 +105,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
     console.info("[editor.open] loaded", { path: filePath, language: response.language, bytes: response.content.length });
     set((state) => {
-      let files = [...state.openFiles, { path: filePath, name: filename(filePath), content: response.content, language: response.language, dirty: false }];
+      const cleanContent = normalizeEol(response.content || "");
+      let files = [...state.openFiles, { path: filePath, name: filename(filePath), content: cleanContent, language: response.language, dirty: false }];
       // If over MAX_LIVE_TABS, evict the oldest inactive, clean tab to background cache
       if (files.length > MAX_LIVE_TABS) {
         const evictIndex = files.findIndex((f) => f.path !== filePath && !f.dirty && f.content.length > 0);
@@ -133,8 +135,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       };
     }),
   updateContent: async (filePath, content) => {
+    const cleanContent = normalizeEol(content ?? "");
     set((state) => ({
-      openFiles: state.openFiles.map((file) => (file.path === filePath ? { ...file, content, dirty: true } : file))
+      openFiles: state.openFiles.map((file) => (file.path === filePath ? { ...file, content: cleanContent, dirty: true } : file))
     }));
     if (get().autoSave) {
       await get().saveFile(filePath);
@@ -255,6 +258,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       } catch {
         return;
       }
+    }
+
+    if (content !== undefined) {
+      content = normalizeEol(content);
     }
 
     if (content === file.content) {

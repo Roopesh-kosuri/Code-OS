@@ -135,7 +135,7 @@ async def apply_refactoring_changes(req: ApplyRequest) -> Dict[str, Any]:
             content = change.get("updated_content", "")
             target_path = ws_path / rel_file
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(content, encoding="utf-8")
+            target_path.write_text(content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
             applied_files.append(rel_file)
 
         return {

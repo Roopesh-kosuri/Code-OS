@@ -319,6 +319,10 @@ function MonacoPane({ filePath }: { filePath: string | null }) {
   const handleEditorDidMount = (editor: any, monaco: any) => {
     setEditorInstance(editor);
     setMonacoInstance(monaco);
+    const model = editor.getModel();
+    if (model && monaco?.editor?.EndOfLineSequence?.LF !== undefined) {
+      model.setEOL(monaco.editor.EndOfLineSequence.LF);
+    }
     editor.focus();
 
     if (isIntellisenseActive) {

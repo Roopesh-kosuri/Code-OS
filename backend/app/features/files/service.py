@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import logging
 import threading
@@ -261,7 +262,8 @@ def read_file(workspace: str, path: str) -> tuple[str, str]:
     ensure_file(target)
     if target.stat().st_size > 2_000_000:
         raise HTTPException(status_code=413, detail="File is too large to open")
-    return target.read_text(encoding="utf-8", errors="replace"), LANGUAGE_BY_SUFFIX.get(target.suffix.lower(), "plaintext")
+    raw = target.read_bytes().decode("utf-8", errors="replace")
+    return _normalize_eol(raw), LANGUAGE_BY_SUFFIX.get(target.suffix.lower(), "plaintext")
 
 
 def create_entry(workspace: str, path: str, entry_type: str) -> Path:
@@ -348,13 +350,33 @@ def _next_copy_path(source: Path) -> Path:
     raise HTTPException(status_code=409, detail="Unable to create duplicate path")
 
 
+def _normalize_eol(content: str) -> str:
+    """Normalize CRLF (\\r\\n), bare CR (\\r), and corrupted (\\r\\r\\n) to LF (\\n).
+
+    On Windows, Path.write_text() uses text mode and converts every \\n to \\r\\n.
+    If *content* already contains \\r\\n (e.g. from an LLM or copy-paste), text mode
+    produces \\r\\r\\n on disk. A subsequent read_text() in universal-newlines mode turns
+    each \\r\\r\\n into \\n\\n — two newlines per original line — which Monaco
+    renders as a blank line between every line of code.
+
+    Collapsing any sequence of \\r followed by \\n into a single \\n, and replacing
+    any remaining bare \\r with \\n, ensures clean LF content on both read and write.
+    """
+    if not content:
+        return ""
+    content = re.sub(r"\r+\n", "\n", content)
+    return content.replace("\r", "\n")
+
+
 def write_file(workspace: str, path: str, content: str) -> None:
     logger.info("files.write workspace=%s path=%s bytes=%s", workspace, path, len(content.encode("utf-8")))
     target = ensure_within_workspace(workspace, path)
     if target.is_dir():
         raise HTTPException(status_code=400, detail="Cannot write to a directory")
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
+    # Normalize EOL before write_text to prevent CRLF doubling on Windows.
+    # See _normalize_eol docstring for the full bug explanation.
+    target.write_text(_normalize_eol(content), encoding="utf-8")
     directory_cache.invalidate(workspace)
 
 
