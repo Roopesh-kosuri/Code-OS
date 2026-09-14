@@ -65,11 +65,16 @@ def test_tokenizer_unavailable_fails_closed(monkeypatch):
     monkeypatch.setattr(payload_governor, "_get_token_encoder", lambda _name: None)
     messages = [ChatMessage(role="user", content="汉字🙂")]
 
-    result = govern_payload(messages, None, provider="openai", model="gpt-4o")
-
+    # Strict 'closed' mode fails closed when tokenizer is unavailable
+    result_closed = govern_payload(messages, None, provider="openai", model="gpt-4o", fail_mode="closed")
     assert payload_governor.get_token_count("汉字🙂", "openai", "gpt-4o") is None
-    assert result.failed_closed is True
-    assert "tokenizer unavailable" in result.summary_reason
+    assert result_closed.failed_closed is True
+    assert "tokenizer unavailable" in result_closed.summary_reason or "token accounting dependency missing" in result_closed.summary_reason
+
+    # Default 'conservative' mode falls back safely to upper-bound estimate ceil(utf8_bytes/2)
+    result_conservative = govern_payload(messages, None, provider="openai", model="gpt-4o")
+    assert result_conservative.failed_closed is False
+    assert "conservative_estimate_tokenizer_missing" in result_conservative.summary_reason
 
 
 # -----------------------------------------------------------------------------

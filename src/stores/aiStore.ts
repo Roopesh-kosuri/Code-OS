@@ -667,6 +667,18 @@ export function createSSEStreamHandler(
 }
 
 export function getTaxonomyTip(provider: string, errMsg: string, category?: string, is429?: boolean): string {
+  const lower = (errMsg || "").toLowerCase();
+
+  // Honest handling: token accounting dependency missing (never show context compaction tip)
+  if (
+    lower.includes("token accounting dependency missing") ||
+    lower.includes("tokenizer unavailable") ||
+    lower.includes("exact tokenizer unavailable") ||
+    lower.includes("tiktoken")
+  ) {
+    return `*Tip: Token accounting dependency missing. Run 'pip install tiktoken' in your Python environment.*`;
+  }
+
   if (category === "rate_limit" || is429 === true) {
     return `*Tip: Rate limit reached on ${provider || "provider"}. Wait a moment or switch models below.*`;
   }
@@ -682,7 +694,7 @@ export function getTaxonomyTip(provider: string, errMsg: string, category?: stri
   if (category === "transient") {
     return `*Tip: Provider service is temporarily unreachable. Try again shortly or choose an alternative model below.*`;
   }
-  const lower = errMsg.toLowerCase();
+
   if (lower.includes("http 429") || lower.includes("status 429")) {
     return `*Tip: Rate limit reached on ${provider || "provider"}. Wait a moment or switch models below.*`;
   }
@@ -692,8 +704,11 @@ export function getTaxonomyTip(provider: string, errMsg: string, category?: stri
   if (lower.includes("404") || lower.includes("not found") || lower.includes("does not exist")) {
     return `*Tip: Requested model not found on ${provider || "provider"}. Choose a supported model below.*`;
   }
-  if (lower.includes("context") || lower.includes("too large") || lower.includes("token")) {
+  if (lower.includes("context window") || lower.includes("context overflow") || lower.includes("maximum context length")) {
     return `*Tip: Context window limit reached. The conversation history was compacted.*`;
+  }
+  if (lower.includes("budget") && (lower.includes("exceed") || lower.includes("overflow"))) {
+    return `*Tip: Request payload exceeds model budget. Shorten your input or clear conversation history.*`;
   }
   if (lower.includes("connection") || lower.includes("timeout") || lower.includes("500") || lower.includes("502") || lower.includes("503") || lower.includes("504") || lower.includes("network")) {
     return `*Tip: Provider service is temporarily unreachable. Try again shortly or choose an alternative model below.*`;

@@ -90,6 +90,10 @@ jobs:
           pip install --prefer-binary pytest pytest-asyncio pytest-cov pyinstaller
           pip install --prefer-binary -r backend/requirements.txt
 
+      - name: Verify Tiktoken Dev Gate
+        run: |
+          python -c "import tiktoken; enc = tiktoken.get_encoding('cl100k_base'); assert len(enc.encode('hello world 🚀 宇宙')) > 0, 'tiktoken encoding failed'"
+
       - name: Install Frontend Dependencies
         run: npm install
 

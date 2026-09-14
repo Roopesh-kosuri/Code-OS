@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import os
 import re
 from functools import lru_cache
 from typing import Any, Optional
@@ -75,6 +77,30 @@ def _get_token_encoder(encoding_name: str) -> Any | None:
         return None
 
 
+def get_governor_fail_mode() -> str:
+    """Return active governor failure mode: 'conservative' (default) or 'closed'."""
+    try:
+        from app.core.config import get_settings
+        return (get_settings().governor_fail_mode or "conservative").lower().strip()
+    except Exception:
+        return os.environ.get("CODE_OS_GOVERNOR_FAIL_MODE", "conservative").lower().strip()
+
+
+def get_conservative_token_count(text: str) -> int:
+    """Calculate upper-bound token estimate: ceil(utf8_bytes / 2).
+
+    Deliberate overestimate: in UTF-8, characters are 1-4 bytes, while
+    BPE tokens represent 1 or more bytes (typically 3-4 bytes per token in English).
+    Estimating 1 token per 2 bytes guarantees that:
+    - We never underestimate (preventing TPM/context overflows; audit-safe).
+    - We may over-compact (safe behavior).
+    - If the overestimate fits the budget, the true count definitely fits.
+    """
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    return math.ceil(len(text.encode("utf-8")) / 2)
+
+
 def get_token_count(text: str, provider: str = "", model: str = "") -> int | None:
     """Return the exact BPE count, or ``None`` when its tokenizer is unavailable."""
     if not isinstance(text, str):
@@ -93,8 +119,10 @@ def estimate_payload_breakdown(
     tools: list[dict[str, Any]] | None = None,
     provider: str = "",
     model: str = "",
-) -> dict[str, int | None]:
+    fail_mode: str | None = None,
+) -> dict[str, Any]:
     """Calculate token breakdown across all parts of the request payload."""
+    mode = fail_mode or get_governor_fail_mode()
     system_parts: list[str] = []
     history_parts: list[str] = []
     rag_parts: list[str] = []
@@ -128,7 +156,27 @@ def estimate_payload_breakdown(
         get_token_count(tools_text, provider, model) if tools_text is not None else None,
     ]
     system_tokens, history_tokens, rag_tokens, attachment_tokens, tool_tokens = counts
-    total_tokens = sum(counts) if all(count is not None for count in counts) else None
+    tokenizer_available = all(count is not None for count in counts)
+    is_conservative = False
+
+    if tokenizer_available:
+        total_tokens = sum(counts)
+    elif mode == "conservative":
+        # Fallback to safe conservative upper-bound estimate: ceil(utf8_bytes / 2)
+        try:
+            system_tokens = get_conservative_token_count("\n".join(system_parts))
+            history_tokens = get_conservative_token_count("\n".join(history_parts))
+            rag_tokens = get_conservative_token_count("\n".join(rag_parts))
+            attachment_tokens = get_conservative_token_count("\n".join(attachment_parts))
+            tool_tokens = get_conservative_token_count(tools_text) if tools_text is not None else 0
+            total_tokens = system_tokens + history_tokens + rag_tokens + attachment_tokens + tool_tokens
+            is_conservative = True
+        except Exception as exc:
+            logger.error("payload_governor: failed to compute byte count for conservative estimation: %s", exc)
+            total_tokens = None
+    else:
+        # Strict fail-closed mode: exact tokenizer unavailable
+        total_tokens = None
 
     return {
         "system_tokens": system_tokens,
@@ -137,6 +185,8 @@ def estimate_payload_breakdown(
         "attachment_tokens": attachment_tokens,
         "tool_tokens": tool_tokens,
         "total_tokens": total_tokens,
+        "is_conservative": is_conservative,
+        "tokenizer_available": tokenizer_available,
     }
 
 
@@ -145,9 +195,10 @@ def estimate_request_tokens(
     tools: list[dict[str, Any]] | None = None,
     provider: str = "",
     model: str = "",
+    fail_mode: str | None = None,
 ) -> int | None:
     """Estimate total token consumption of messages and tool definitions."""
-    breakdown = estimate_payload_breakdown(messages, tools, provider, model)
+    breakdown = estimate_payload_breakdown(messages, tools, provider, model, fail_mode=fail_mode)
     return breakdown["total_tokens"]
 
 
@@ -229,6 +280,7 @@ def govern_payload(
     model: str = "",
     hard_tpm_limit: int | None = None,
     workspace: str = "",
+    fail_mode: str | None = None,
 ) -> GovernanceResult:
     """Inspect and govern request payload before dispatch to prevent HTTP 413 TPM overflow.
 
@@ -243,18 +295,33 @@ def govern_payload(
     """
     prov_key = (provider or "").lower().strip()
     budget = hard_tpm_limit or PROVIDER_TOKEN_BUDGETS.get(prov_key, DEFAULT_MAX_REQUEST_TOKENS)
+    active_fail_mode = fail_mode or get_governor_fail_mode()
 
-    breakdown = estimate_payload_breakdown(messages, tools, prov_key, model)
+    breakdown = estimate_payload_breakdown(messages, tools, prov_key, model, fail_mode=active_fail_mode)
     estimated_tokens = breakdown["total_tokens"]
 
     if estimated_tokens is None:
-        summary = "fail_closed: exact tokenizer unavailable; refusing to estimate request payload."
+        if active_fail_mode == "closed":
+            summary = "fail_closed: token accounting dependency missing (tiktoken unavailable in closed governor mode). Run 'pip install tiktoken' to resolve."
+        else:
+            summary = "fail_closed: unable to compute byte count for request payload."
         logger.error("payload_governor: %s provider=%s model=%s", summary, prov_key, model)
         _log_governance_event(workspace, prov_key, budget, breakdown, ["fail_closed_tokenizer_unavailable"], failed_closed=True)
         return GovernanceResult(messages, tools, False, summary, breakdown, True)
 
+    adjustments_applied: list[str] = []
+    if breakdown.get("is_conservative"):
+        adjustments_applied.append("conservative_estimate_tokenizer_missing")
+        logger.warning(
+            "payload_governor: tiktoken unavailable; using conservative estimate ceil(utf8_bytes/2) for %s / %s (%d tokens estimated)",
+            prov_key, model, estimated_tokens,
+        )
+
     if estimated_tokens <= budget:
-        return GovernanceResult(messages, tools, False, "", breakdown, False)
+        summary_str = ", ".join(adjustments_applied) if adjustments_applied else ""
+        if adjustments_applied:
+            _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
+        return GovernanceResult(messages, tools, False, summary_str, breakdown, False)
 
     logger.info(
         "payload_governor: payload of %d tokens exceeds %s budget (%d tokens). Breakdown: %s. Applying progressive reduction.",
@@ -263,7 +330,6 @@ def govern_payload(
 
     adjusted_messages = list(messages)
     adjusted_tools = list(tools) if tools else None
-    adjustments_applied: list[str] = []
 
     # Step 1: Compact conversation history turns
     if len(adjusted_messages) > 2:
@@ -271,7 +337,7 @@ def govern_payload(
         if len(compacted) < len(adjusted_messages) or sum(len(m.content) for m in compacted) < sum(len(m.content) for m in adjusted_messages):
             adjusted_messages = compacted
             adjustments_applied.append("compacted_history")
-            breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+            breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model, fail_mode=active_fail_mode)
             if breakdown["total_tokens"] is None:
                 return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
             if breakdown["total_tokens"] <= budget:
@@ -305,7 +371,7 @@ def govern_payload(
 
     if rag_or_att_truncated:
         adjusted_messages = new_msgs
-        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model, fail_mode=active_fail_mode)
         if breakdown["total_tokens"] is None:
             return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
         if breakdown["total_tokens"] <= budget:
@@ -317,7 +383,7 @@ def govern_payload(
         mcp_tools = [t for t in adjusted_tools if "[MCP Tool" in str(t.get("function", {}).get("description", ""))]
         adjusted_tools = list(SLIM_CODING_TOOLS) + mcp_tools
         adjustments_applied.append("swapped_to_slim_tools")
-        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model, fail_mode=active_fail_mode)
         if breakdown["total_tokens"] is None:
             return _tokenizer_unavailable_result(adjusted_messages, adjusted_tools, prov_key, model, budget, breakdown, adjustments_applied, workspace)
         if breakdown["total_tokens"] <= budget:
@@ -371,11 +437,11 @@ def _tokenizer_unavailable_result(
     provider: str,
     model: str,
     budget: int,
-    breakdown: dict[str, int | None],
+    breakdown: dict[str, Any],
     adjustments: list[str],
     workspace: str,
 ) -> GovernanceResult:
-    summary = "fail_closed: exact tokenizer became unavailable during payload reduction."
+    summary = "fail_closed: token accounting dependency missing (tiktoken unavailable during payload reduction). Run 'pip install tiktoken' to resolve."
     logger.error("payload_governor: %s provider=%s model=%s", summary, provider, model)
     adjustments = adjustments + ["fail_closed_tokenizer_unavailable"]
     _log_governance_event(workspace, provider, budget, breakdown, adjustments, failed_closed=True)

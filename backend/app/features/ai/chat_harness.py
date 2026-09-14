@@ -762,7 +762,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             )
             effective_messages, active_tools, was_governed, gov_reason = gov_res
             if getattr(gov_res, "failed_closed", False) or "fail_closed" in gov_reason:
-                err_msg = f"Payload governance fail-closed: {gov_reason}"
+                if "token accounting" in gov_reason or "tokenizer" in gov_reason:
+                    err_msg = f"Payload governance fail-closed: token accounting dependency missing ({gov_reason})"
+                else:
+                    err_msg = f"Payload governance fail-closed: {gov_reason}"
                 logger.error("chat_harness: %s", err_msg)
                 yield _sse_error(err_msg)
                 yield _sse_done(False, err_msg)

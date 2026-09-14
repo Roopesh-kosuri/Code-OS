@@ -34,6 +34,7 @@ heavy_ai_packages = [
     'webdriver_manager',
     'PIL',
     'numpy',
+    'tiktoken',
 ]
 
 for pkg in heavy_ai_packages:

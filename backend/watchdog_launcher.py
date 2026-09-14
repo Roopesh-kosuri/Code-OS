@@ -58,6 +58,19 @@ os.environ["TORCH_HOME"] = str(CACHE_DIR / "torch")
 os.environ["PYTHONUNBUFFERED"] = "1"
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 
+# Wire TIKTOKEN_CACHE_DIR for offline token encoding
+if "TIKTOKEN_CACHE_DIR" not in os.environ:
+    bundle_dir = Path(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)))
+    for tk_cand in (
+        bundle_dir / "resources" / "tiktoken",
+        bundle_dir / "tiktoken",
+        Path(__file__).resolve().parent.parent / "resources" / "tiktoken",
+        Path(__file__).resolve().parent / "resources" / "tiktoken",
+    ):
+        if tk_cand.is_dir():
+            os.environ["TIKTOKEN_CACHE_DIR"] = str(tk_cand)
+            break
+
 # Setup line buffering for stdout/stderr
 for stream in (sys.stdout, sys.stderr):
     if hasattr(stream, "reconfigure"):

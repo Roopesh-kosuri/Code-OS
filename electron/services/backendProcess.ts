@@ -166,20 +166,24 @@ function buildBackendEnv(extras: Record<string, string> = {}): NodeJS.ProcessEnv
       }
     }
 
-    // 4. Bundled Tiktoken Cache
-    const tiktokenCandidates = [
-      path.join(process.resourcesPath, "tiktoken"),
-      path.join(process.resourcesPath, "backend", "tiktoken"),
-    ];
-    for (const tkDir of tiktokenCandidates) {
-      if (fs.existsSync(tkDir)) {
-        base.TIKTOKEN_CACHE_DIR = tkDir;
-        break;
-      }
-    }
   }
   pathParts.push(process.env.PATH || "");
   base.PATH = pathParts.join(path.delimiter);
+
+  // 4. Bundled Tiktoken Cache (wired in both dev and packaged modes)
+  const tiktokenCandidates = [
+    path.join(process.resourcesPath, "tiktoken"),
+    path.join(process.resourcesPath, "backend", "tiktoken"),
+    path.join(app.getAppPath(), "resources", "tiktoken"),
+    path.join(__dirname, "..", "..", "resources", "tiktoken"),
+  ];
+  for (const tkDir of tiktokenCandidates) {
+    if (fs.existsSync(tkDir)) {
+      base.TIKTOKEN_CACHE_DIR = tkDir;
+      break;
+    }
+  }
+
   Object.assign(base, extras);
   for (const k of Object.keys(base)) { if (base[k] === "") delete base[k]; }
   return base;

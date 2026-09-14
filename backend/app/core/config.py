@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     strict_sandbox: bool = False
     use_semantic_rag: bool = True
+    # Payload governor fail mode: 'conservative' (default: ceil(utf8_bytes/2) safe overestimate) or 'closed' (strict fail-closed)
+    governor_fail_mode: str = "conservative"
 
     model_config = SettingsConfigDict(env_prefix="CODE_OS_")
 

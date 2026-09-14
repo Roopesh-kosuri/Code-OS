@@ -36,3 +36,4 @@ selenium==4.15.2
 webdriver-manager==4.0.1
 pystray==0.19.5
 bandit==1.7.5
+tiktoken==0.14.0

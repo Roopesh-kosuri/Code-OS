@@ -1,5 +1,6 @@
 import { spawn, execSync } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs";
 
 function getPythonVersion(cmd) {
   try {
@@ -56,10 +57,15 @@ let currentProc = null;
 
 function startBackend() {
   console.log("[dev:backend] Spawning Uvicorn backend supervisor...");
+  const tiktokenDir = path.resolve("resources", "tiktoken");
+  const spawnEnv = { ...process.env, PYTHONPATH: backendDir };
+  if (fs.existsSync(tiktokenDir)) {
+    spawnEnv.TIKTOKEN_CACHE_DIR = tiktokenDir;
+  }
   currentProc = spawn(pythonCmd, args, {
     stdio: "inherit",
     cwd: backendDir,
-    env: { ...process.env, PYTHONPATH: backendDir }
+    env: spawnEnv
   });
 
   currentProc.on("exit", (code, signal) => {

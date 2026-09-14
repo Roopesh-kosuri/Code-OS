@@ -7,6 +7,20 @@ if sys.platform == "win32":
         pass
 import os
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
+
+# Auto-wire bundled TIKTOKEN_CACHE_DIR if present and not explicitly set
+if "TIKTOKEN_CACHE_DIR" not in os.environ:
+    _root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    _tk_candidates = [
+        os.path.join(_root_dir, "resources", "tiktoken"),
+        os.path.join(sys.prefix, "resources", "tiktoken"),
+        os.path.join(os.path.dirname(sys.executable), "resources", "tiktoken"),
+    ]
+    for _cand in _tk_candidates:
+        if os.path.isdir(_cand):
+            os.environ["TIKTOKEN_CACHE_DIR"] = _cand
+            break
+
 import asyncio
 from contextlib import asynccontextmanager
 import logging
@@ -182,10 +196,38 @@ def _get_git_sha_and_build_time() -> tuple[str, str]:
     return git_sha, build_time
 
 
+def check_tiktoken_health() -> bool:
+    """Verify that tiktoken is available at boot. Log a loud warning if missing (E2)."""
+    try:
+        import tiktoken
+        tiktoken.get_encoding("cl100k_base")
+        logger.info("boot: tiktoken available and verified (cl100k_base loaded)")
+        return True
+    except ImportError:
+        logger.warning(
+            "\n" + "=" * 78 + "\n"
+            "⚠️  [BOOT WARNING] MISSING DEPENDENCY: 'tiktoken' is not installed!\n"
+            "Payload governance will fall back to conservative byte estimation.\n"
+            "Fix immediately: run 'pip install tiktoken' in your Python environment.\n"
+            + "=" * 78
+        )
+        return False
+    except Exception as exc:
+        logger.warning(
+            "\n" + "=" * 78 + "\n"
+            "⚠️  [BOOT WARNING] 'tiktoken' failed to load encoding: %s\n"
+            "Fix: ensure TIKTOKEN_CACHE_DIR points to valid blobs or run 'pip install tiktoken'.\n"
+            + "=" * 78,
+            exc,
+        )
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     git_sha, build_time = _get_git_sha_and_build_time()
     logger.info("backend starting up - git_sha: %s, build_time: %s", git_sha, build_time)
+    check_tiktoken_health()
     # Startup: Initialize shared DB and run schema migrations
     await init_db()
     db = await get_db()
