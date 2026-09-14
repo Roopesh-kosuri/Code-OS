@@ -109,11 +109,57 @@ jobs:
         env:
           PYTHONPATH: backend
 
+  mac-ci-build:
+    name: macOS Build, Sign, Notarize & Gatekeeper Verify
+    runs-on: macos-latest
+    timeout-minutes: 30
+    needs: [security-gates]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r backend/requirements.txt
+          npm install
+
+      - name: Build macOS Artifacts
+        run: npm run build:mac
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Verify Gatekeeper Assessment (spctl)
+        run: |
+          echo "Running Gatekeeper verification via spctl on built application..."
+          spctl --assess -vv --type install release/mac*/"CODE OS.app" || spctl -a -vv -t install release/mac*/"CODE OS.app"
+        continue-on-error: false
+
+      - name: Guard Release Channel Artifacts
+        run: node scripts/release-guard.js --channel=release release
+        continue-on-error: false
+
   release-signing-verification:
     name: Release Signing Verification
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [ci-checks, security-gates]
+    needs: [ci-checks, security-gates, mac-ci-build]
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -133,3 +179,4 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

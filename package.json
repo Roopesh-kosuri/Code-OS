@@ -31,7 +31,7 @@
     "build:renderer": "node --max-old-space-size=4096 ./node_modules/vite/bin/vite.js build",
     "build": "npm run typecheck && npm run build:vite && npm run build:electron && npm run build:backend-exe && npm run download:runtimes",
     "build:win": "npm run build && electron-builder --win",
-    "build:mac": "npm run build && electron-builder --mac",
+    "build:mac": "node scripts/build-mac.js",
     "build:linux": "npm run build && electron-builder --linux",
     "build:all": "npm run build && electron-builder -mwl",
     "package": "npm run build && node scripts/preflight.js && electron-builder",

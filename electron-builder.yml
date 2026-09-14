@@ -66,9 +66,18 @@ mac:
       arch:
         - x64
         - arm64
+    - target: zip
+      arch:
+        - x64
+        - arm64
   category: public.app-category.developer-tools
   hardenedRuntime: true
   gatekeeperAssess: false
+  entitlements: "build/entitlements.mac.plist"
+  entitlementsInherit: "build/entitlements.mac.inherit.plist"
+  identity: "${CSC_LINK}"
   notarize: true
   appleId: "${APPLE_ID}"
   appleIdPassword: "${APPLE_APP_SPECIFIC_PASSWORD}"
+  teamId: "${APPLE_TEAM_ID}"
+  artifactName: "${productName}-${version}-${os}-${arch}${env.MAC_BUILD_SUFFIX}.${ext}"

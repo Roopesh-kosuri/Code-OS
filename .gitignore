@@ -11,6 +11,7 @@ backend/dist/
 build/*
 !build/icon.png
 !build/icon.ico
+!build/entitlements.mac*.plist
 .next/
 scratch/
 
