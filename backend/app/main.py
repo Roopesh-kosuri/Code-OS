@@ -302,7 +302,7 @@ async def lifespan(app: FastAPI):
     logger.info("backend stopped")
 
 
-VERSION: str = "5.0.0"
+VERSION: str = "5.0.0"  # CODE OS v5.0.0
 
 app = FastAPI(title="CODE OS Backend", version=VERSION, lifespan=lifespan)
 
