@@ -1,8 +1,17 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 from pydantic import BaseModel
+import os
 # D2: hoisted from function-level to avoid repeated inline import (no circular import risk)
 from ..providers.constants import PRESET_TO_PROVIDER as _PRESET_TO_PROVIDER
+
+DEFAULT_AGENT_WAIT_TIMEOUT = float(os.getenv("CODE_OS_AGENT_WAIT_TIMEOUT", "60.0"))
+
+def _get_agent_wait_timeout() -> float:
+    try:
+        return float(os.getenv("CODE_OS_AGENT_WAIT_TIMEOUT", str(DEFAULT_AGENT_WAIT_TIMEOUT)))
+    except Exception:
+        return DEFAULT_AGENT_WAIT_TIMEOUT
 
 
 class AgentOutput(BaseModel):
@@ -103,8 +112,13 @@ class BaseAgent(ABC):
         await update_task_status(task_id, "waiting")
         await add_job_log(job_id, f"Agent [{self.role}] is waiting for permission to: {details}")
         
-        # Block until event is set
-        await event.wait()
+        # Block until event is set or timeout occurs
+        timeout_sec = _get_agent_wait_timeout()
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            await add_job_log(job_id, f"Agent [{self.role}] permission wait timed out after {timeout_sec}s (default DENIED).")
+            perm_state.pending_permission_decisions[task_id] = "reject"
         
         # Cleanup
         perm_state.pending_permission_events.pop(task_id, None)
@@ -140,7 +154,12 @@ class BaseAgent(ABC):
         await update_task_status(task_id, "waiting")
         await add_job_log(job_id, f"Agent [{self.role}] paused due to LLM failure: {exc}")
         
-        await event.wait()
+        timeout_sec = _get_agent_wait_timeout()
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            await add_job_log(job_id, f"Agent [{self.role}] LLM failure recovery wait timed out after {timeout_sec}s (default CANCEL).")
+            perm_state.pending_permission_decisions[task_id] = "cancel"
         
         perm_state.pending_permission_events.pop(task_id, None)
         decision = perm_state.pending_permission_decisions.pop(task_id, "cancel")
@@ -179,8 +198,13 @@ class BaseAgent(ABC):
         await update_task_status(task_id, "waiting")
         await add_job_log(job_id, f"Agent [{self.role}] is waiting for user clarification: {question}")
         
-        # Block until user answers or cancels via API
-        await event.wait()
+        # Block until user answers, cancels via API, or timeout occurs
+        timeout_sec = _get_agent_wait_timeout()
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout_sec)
+        except asyncio.TimeoutError:
+            await add_job_log(job_id, f"Agent [{self.role}] clarification wait timed out after {timeout_sec}s.")
+            perm_state.pending_permission_decisions[task_id] = "reject"
         
         perm_state.pending_permission_events.pop(task_id, None)
         decision = perm_state.pending_permission_decisions.pop(task_id, "reject")

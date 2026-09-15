@@ -320,6 +320,7 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
             ...existingTasks[idx],
             status: data.status || existingTasks[idx].status,
             assigned_agent: data.role || existingTasks[idx].assigned_agent,
+            started_at: data.started_at ?? existingTasks[idx].started_at,
             duration_seconds: data.duration_seconds ?? existingTasks[idx].duration_seconds,
             errors: data.error || existingTasks[idx].errors,
           };
@@ -331,6 +332,7 @@ export const useTeamStore = create<TeamStoreState>((set, get) => ({
             assigned_agent: data.role || "coder",
             dependencies: data.dependencies || [],
             status: data.status || "running",
+            started_at: data.started_at,
             duration_seconds: data.duration_seconds,
             errors: data.error,
           });

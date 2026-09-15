@@ -55,6 +55,7 @@ class SubmitTeamJobRequest(BaseModel):
     workspace: str = ""
     user_request: str = ""
     task: Optional[str] = None
+    prompt: Optional[str] = None
     context: Optional[Any] = None
     files: Optional[Any] = None
     escalation_reason: Optional[str] = None
@@ -90,6 +91,7 @@ class ActiveJobState:
         self.job_id = job_id
         self.workspace = workspace
         self.orchestrator = orchestrator
+        self.tasks: list[TeamTask] = []
         self.subscribers: set[asyncio.Queue] = set()
         self.status: str = "queued"
         self.is_paused: bool = False
@@ -418,26 +420,27 @@ async def submit_team_job(payload: SubmitTeamJobRequest) -> dict[str, Any]:
             await create_task(task.task_id, job_id, task.title, role_val, dependencies=task.dependencies)
     else:
         # Default Team Pipeline: Architect -> Coder -> Tester -> Reviewer
-        arch_ctx: dict[str, Any] = {}
-        coder_ctx: dict[str, Any] = {}
+        original_prompt = payload.user_request or payload.task or payload.prompt or ""
+        base_ctx: dict[str, Any] = {
+            "original_prompt": original_prompt,
+            "workspace": payload.workspace,
+        }
         if attached_files_data:
-            arch_ctx["attached_files"] = attached_files_data
-            arch_ctx["attached_files_xml"] = attached_context_xml
-            arch_ctx["file_ids"] = payload.file_ids
-            coder_ctx["attached_files"] = attached_files_data
-            coder_ctx["attached_files_xml"] = attached_context_xml
-            coder_ctx["file_ids"] = payload.file_ids
+            base_ctx["attached_files"] = attached_files_data
+            base_ctx["attached_files_xml"] = attached_context_xml
+            base_ctx["file_ids"] = payload.file_ids
 
-        t1 = TeamTask(task_id=f"{job_id}_arch", job_id=job_id, title="Decompose Specification", role=TeamRole.ARCHITECT, dependencies=[], context=arch_ctx)
-        t2 = TeamTask(task_id=f"{job_id}_code", job_id=job_id, title="Implement Solution", role=TeamRole.CODER, dependencies=[t1.task_id], context=coder_ctx)
-        t3 = TeamTask(task_id=f"{job_id}_test", job_id=job_id, title="Run Test Suite & Verify", role=TeamRole.TESTER, dependencies=[t2.task_id])
-        t4 = TeamTask(task_id=f"{job_id}_rev", job_id=job_id, title="Code Review Audit", role=TeamRole.REVIEWER, dependencies=[t3.task_id])
+        t1 = TeamTask(task_id=f"{job_id}_arch", job_id=job_id, title="Decompose Specification", role=TeamRole.ARCHITECT, dependencies=[], context=dict(base_ctx))
+        t2 = TeamTask(task_id=f"{job_id}_code", job_id=job_id, title="Implement Solution", role=TeamRole.CODER, dependencies=[t1.task_id], context=dict(base_ctx))
+        t3 = TeamTask(task_id=f"{job_id}_test", job_id=job_id, title="Run Test Suite & Verify", role=TeamRole.TESTER, dependencies=[t2.task_id], context=dict(base_ctx))
+        t4 = TeamTask(task_id=f"{job_id}_rev", job_id=job_id, title="Code Review Audit", role=TeamRole.REVIEWER, dependencies=[t3.task_id], context=dict(base_ctx))
         tasks = [t1, t2, t3, t4]
         for t in tasks:
             await create_task(t.task_id, job_id, t.title, t.role.value, dependencies=t.dependencies)
 
     orchestrator = TeamOrchestrator(team_config=config, workspace=payload.workspace)
     active_job = get_or_create_active_job(job_id, workspace=payload.workspace, orchestrator=orchestrator)
+    active_job.tasks = tasks
     active_job.status = "running"
 
     # Forward orchestrator events to active SSE broadcaster & database
@@ -523,7 +526,7 @@ async def stream_team_events(job_id: str, snapshot_only: bool = False) -> Stream
             # 2. Yield events as they are broadcast
             while True:
                 try:
-                    msg = await asyncio.wait_for(q.get(), timeout=15.0)
+                    msg = await asyncio.wait_for(q.get(), timeout=5.0)
                     evt_name = msg.get("event", "team_event")
                     payload = msg.get("data", {})
                     yield f"event: {evt_name}\ndata: {json.dumps(payload)}\n\n"
@@ -532,7 +535,13 @@ async def stream_team_events(job_id: str, snapshot_only: bool = False) -> Stream
                     if evt_name == "team_status" and payload.get("status") in ("completed", "failed", "cancelled"):
                         break
                 except asyncio.TimeoutError:
-                    # Keep-alive heartbeat
+                    # Keep-alive heartbeat every 5s with job metadata
+                    hb_data = {
+                        "job_id": job_id,
+                        "timestamp": time.time(),
+                        "status": active_job.status,
+                    }
+                    yield f"event: heartbeat\ndata: {json.dumps(hb_data)}\n\n"
                     yield ": keepalive\n\n"
         except asyncio.CancelledError:
             pass

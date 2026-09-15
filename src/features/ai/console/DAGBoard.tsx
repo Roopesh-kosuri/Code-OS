@@ -50,6 +50,14 @@ export const DAGBoard: React.FC = () => {
   const [pan, setPan] = useState({ x: 40, y: 40 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
+  const [now, setNow] = useState(() => Date.now());
+
+  React.useEffect(() => {
+    const hasRunning = tasks.some((t) => t.status === "running");
+    if (!hasRunning) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [tasks]);
 
   const NODE_WIDTH = 230;
   const NODE_HEIGHT = 90;
@@ -457,6 +465,11 @@ export const DAGBoard: React.FC = () => {
                         <>
                           <Clock size={10} />
                           <span>{task.duration_seconds.toFixed(1)}s</span>
+                        </>
+                      ) : task.status === "running" && task.started_at ? (
+                        <>
+                          <Clock size={10} className="animate-spin text-cyan-400" />
+                          <span className="text-cyan-300">{Math.max(0, Math.floor((now / 1000) - task.started_at))}s</span>
                         </>
                       ) : (
                         <span>id: {task.id.slice(0, 6)}</span>

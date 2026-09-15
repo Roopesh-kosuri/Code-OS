@@ -187,6 +187,8 @@ class TeamOrchestrator:
                     )
 
         tasks_by_id = {t.task_id: t for t in tasks}
+        self._tasks_by_id = tasks_by_id
+        self._all_tasks = tasks
         all_task_ids = set(tasks_by_id.keys())
         running_tasks: dict[str, asyncio.Task] = {}
 
@@ -266,8 +268,8 @@ class TeamOrchestrator:
                         self.failed_task_ids.add(tid)
                 break
 
-            # Await the next task completion
-            done, _ = await asyncio.wait(running_tasks.values(), return_when=asyncio.FIRST_COMPLETED)
+            # Await the next task completion with bounded 120s timeout
+            done, _ = await asyncio.wait(running_tasks.values(), return_when=asyncio.FIRST_COMPLETED, timeout=120.0)
             for dt in done:
                 # Find matching task_id
                 tid = next(k for k, v in running_tasks.items() if v == dt)
@@ -290,15 +292,15 @@ class TeamOrchestrator:
         final_status = "completed" if not self.failed_task_ids else "failed"
         verif_res: Optional[dict[str, Any]] = None
 
-        # ── Verification Gate Execution ─────────────────────────────────────
-        if not self.failed_task_ids and self.team_config.auto_verify:
-            from .verifier import VerificationGate
+        # Collect modified files from diff handoffs
+        modified_files: set[str] = set()
+        for h in self.task_handoffs.values():
+            if h.type == HandoffType.DIFFS:
+                modified_files.update(h.payload.get("modified_files", []))
 
-            # Collect modified files from diff handoffs
-            modified_files: set[str] = set()
-            for h in self.task_handoffs.values():
-                if h.type == HandoffType.DIFFS:
-                    modified_files.update(h.payload.get("modified_files", []))
+        # ── Verification Gate Execution ─────────────────────────────────────
+        if not self.failed_task_ids and self.team_config.auto_verify and modified_files:
+            from .verifier import VerificationGate
 
             verifier = VerificationGate(
                 event_emitter=self.emit_event,
@@ -391,6 +393,7 @@ class TeamOrchestrator:
                 "status": "running",
                 "role": role_str,
                 "active_concurrency": self.active_concurrency,
+                "started_at": task.started_at,
             })
 
             # ── 1. Step Tracker Durability: Log Pending & Running ───────
@@ -450,6 +453,44 @@ class TeamOrchestrator:
             try:
                 # ── 2. Execute Task Logic ───────────────────────────────
                 result = await self._execute_task_dispatch(task, prior_handoffs)
+
+                # ── 2.5 Verification Gate between Coder and Reviewer ────
+                role_val = (task.role.value if isinstance(task.role, TeamRole) else str(task.role)).lower()
+                if role_val == "tester":
+                    test_res = result.get("test_results") or {}
+                    passed = test_res.get("passed", True) if isinstance(test_res, dict) else True
+                    if not passed:
+                        coder_dep_id = next((d for d in task.dependencies if "code" in d.lower() or "coder" in d.lower()), None)
+                        if coder_dep_id and not getattr(task, "_has_retried_coder", False):
+                            task._has_retried_coder = True
+                            coder_task = getattr(self, "_tasks_by_id", {}).get(coder_dep_id)
+                            if coder_task:
+                                logger.warning("Tester detected failure; looping back to coder %s", coder_dep_id)
+                                self.emit_event("team_step_update", {
+                                    "task_id": task.task_id,
+                                    "status": "retrying",
+                                    "role": role_str,
+                                    "error": "Tests failed; re-invoking coder.",
+                                })
+                                coder_task.context["test_failure_output"] = str(test_res.get("output", result.get("reasoning", "")))
+                                await self._run_task_with_semaphore(coder_task, prior_handoffs)
+                                coder_handoff = self.task_handoffs.get(coder_dep_id)
+                                new_handoffs = [coder_handoff] if coder_handoff else prior_handoffs
+                                result = await self._execute_task_dispatch(task, new_handoffs)
+                                test_res = result.get("test_results") or {}
+                                passed = test_res.get("passed", True) if isinstance(test_res, dict) else True
+
+                        if not passed:
+                            task.status = "blocked"
+                            task.error = "Tester verification failed after retry. Blocking reviewer."
+                            self.failed_task_ids.add(task.task_id)
+                            self.emit_event("team_step_update", {
+                                "task_id": task.task_id,
+                                "status": "blocked",
+                                "role": role_str,
+                                "error": task.error,
+                            })
+                            return
 
                 # ── 3. Step Tracker Durability: Mark Completed ──────────
                 if step_logged:
@@ -580,7 +621,11 @@ class TeamOrchestrator:
         agent = AgentFactory.create_agent(role_str, provider_config=provider_config)
 
         # If agent implements execute:
-        full_context = task.context.copy()
+        full_context = task.context.copy() if task.context else {}
+        if self.workspace and "workspace" not in full_context:
+            full_context["workspace"] = self.workspace
+        if "task_title" not in full_context:
+            full_context["task_title"] = task.title
         if handoff_prompt:
             full_context["handoff_context"] = handoff_prompt
 
