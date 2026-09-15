@@ -6,6 +6,7 @@ from typing import AsyncIterator, List
 import httpx
 
 from ..schemas import ChatMessage, ContextOverflowError, ModelDto, ProviderHealth
+from ..provider_health import provider_health_tracker
 from .base import AIProvider, ProviderRequestError, ProviderStreamEvent, ProviderToolCall
 
 logger = logging.getLogger(__name__)
@@ -100,15 +101,23 @@ class AnthropicProvider(AIProvider):
                 if tool.get("function", {}).get("name")
             ]
 
+        is_open, remaining, msg = provider_health_tracker.is_circuit_open("anthropic")
+        if is_open:
+            raise ProviderRequestError(
+                f"Circuit breaker is OPEN for provider 'anthropic'. Cooldown remaining: {remaining:.1f}s",
+                status_code=503, category="circuit_open"
+            )
+
         emitted = False
         for attempt in range(self.max_retries + 1):
             try:
-                timeout = httpx.Timeout(self.timeout_seconds, connect=min(15.0, self.timeout_seconds))
+                timeout = httpx.Timeout(self.timeout_seconds, connect=min(3.0, self.timeout_seconds))
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     async with client.stream(
                         "POST", f"{self.base_url}/messages", json=payload, headers=self.headers
                     ) as response:
                         response.raise_for_status()
+                        provider_health_tracker.record_outcome("anthropic", True)
                         tool_deltas: dict[int, dict[str, str]] = {}
                         finish_reason: str | None = None
                         async for line in response.aiter_lines():
@@ -218,6 +227,7 @@ class AnthropicProvider(AIProvider):
 
                 category = "rate_limit" if is_rate_limit else ("transient" if is_transient else "unknown")
                 logger.error("Anthropic stream_chat error: %s", exc)
+                provider_health_tracker.record_outcome("anthropic", False, str(exc))
                 raise ProviderRequestError(_format_anthropic_error(exc), status_code=status, body=body, category=category) from exc
             except Exception as exc:
                 if isinstance(exc, (ProviderRequestError, ContextOverflowError)):

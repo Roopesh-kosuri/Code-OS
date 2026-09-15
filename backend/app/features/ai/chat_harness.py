@@ -71,8 +71,30 @@ from .sessions.server_manager import (
     _cleanup_server_sessions,
     _handle_server_session,
 )
-from app.features.settings.service import get_api_key
+from app.features.settings.service import get_api_key, list_settings
+from .url_fetcher import extract_user_urls, fetch_user_url
+from app.features.ai.intelligence.task_classifier import classify_task
 from app.features.terminal.service import _build_safe_environment
+
+_settings_cache: dict[str, Any] | None = None
+_settings_cache_time: float = 0.0
+
+
+async def _get_cached_settings() -> dict[str, Any]:
+    global _settings_cache, _settings_cache_time
+    now = time.monotonic()
+    if _settings_cache is not None and (now - _settings_cache_time) < 10.0:
+        return _settings_cache
+    try:
+        settings = await list_settings()
+        _settings_cache = settings
+        _settings_cache_time = now
+        return settings
+    except Exception:
+        if _settings_cache is not None:
+            return _settings_cache
+        return {}
+
 from .vision_service import capture_screenshot, analyze_image_with_vlm, resolve_default_vision_model
 from .artifact_auditor import audit_generated_artifact, ArtifactAuditReport
 from .agents.agent_tools import (
@@ -292,17 +314,14 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         workspace = "."
 
     try:
-        user_messages = [m for m in request.messages if m.get("role") == "user"]
-        user_query = user_messages[-1]["content"] if user_messages else ""
+        user_messages = [m for m in request.messages if (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "user"]
+        user_query = (user_messages[-1]["content"] if isinstance(user_messages[-1], dict) else getattr(user_messages[-1], "content", "")) if user_messages else ""
         turn_number = len(user_messages) or 1
 
         # Phase 2: Secure URL context injection (user messages only)
-        from .url_fetcher import extract_user_urls, fetch_user_url
-        from app.features.settings.service import list_settings
-
         user_urls = []
         try:
-            settings_dict = await list_settings()
+            settings_dict = await _get_cached_settings()
             allow_links = settings_dict.get("ai.allow_link_fetch", "true").lower() != "false"
             if allow_links and user_query:
                 clean_for_links = re.sub(r'<attached_files[\s\S]*?</attached_files>', '', user_query, flags=re.IGNORECASE)
@@ -331,7 +350,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 + "\n\n".join(fetched_url_blocks)
             )
             if user_messages:
-                user_messages[-1]["content"] = user_query
+                if isinstance(user_messages[-1], dict):
+                    user_messages[-1]["content"] = user_query
+                else:
+                    setattr(user_messages[-1], "content", user_query)
 
         # Collect attached file names to prevent accidental mutation proposals on user uploads
         attached_filenames: set[str] = set()
@@ -349,9 +371,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         # ── Step 1: Adaptive Effort Routing Classifier ───────────────────────
         tier, tier_label, tier_reason = _classify_task_effort(
             user_query,
-            request.attached_paths,
-            request.is_agent_mode,
-            has_images=bool(request.attached_images),
+            getattr(request, "attached_paths", None),
+            getattr(request, "is_agent_mode", getattr(request, "agent_mode", False)),
+            has_images=bool(getattr(request, "attached_images", None)),
         )
         if tier == 0 and _is_codebase_inquiry(user_query):
             tier = 1
@@ -365,9 +387,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         if effective_prov_key == "openai-compatible" and request.provider in ("groq", "gemini", "nvidia-nim", "openai", "anthropic", "deepseek", "mistral"):
             effective_prov_key = request.provider
 
-        # Check adaptive escalation recommendation and gate the turn (E1)
+        # Check adaptive escalation recommendation (non-blocking notification)
         try:
-            from app.features.ai.intelligence.task_classifier import classify_task
             task_cls = classify_task(
                 user_query,
                 context={"workspace": workspace, "file_list": request.attached_paths},
@@ -378,21 +399,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             conf = float(task_cls.get("escalation_confidence", 0.8))
             reasoning = task_cls.get("escalation_reasoning", "")
             if rec and conf > 0.6:
-                from .harness.approval_coordinator import (
-                    PendingEscalation,
-                    register_pending_escalation,
-                    remove_pending_escalation,
-                )
                 action_id = f"esc_{uuid.uuid4().hex[:12]}"
-                pending_esc = PendingEscalation(
-                    action_id=action_id,
-                    task=user_query,
-                    reasoning=reasoning,
-                    confidence=conf,
-                    workspace=workspace,
-                )
-                register_pending_escalation(pending_esc)
-
                 yield _sse_escalation_recommendation(
                     recommended=True,
                     reasoning=reasoning,
@@ -400,44 +407,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     action_id=action_id,
                 )
                 yield _sse_status(
-                    "escalation_gate",
-                    "Complex task detected: Escalation recommended. Pausing before tool execution awaiting user decision...",
+                    "escalation_recommended",
+                    f"Complex task detected: Escalation to 5-agent team recommended ({reasoning})",
                     action_id=action_id,
                     confidence=conf,
                 )
-
-                try:
-                    # Gating: wait for user decision ([Escalate] vs [Continue with Rony])
-                    await asyncio.wait_for(pending_esc.event.wait(), timeout=300.0)
-                except asyncio.TimeoutError:
-                    logger.info("chat_harness: escalation gate timed out, defaulting to continue with Rony")
-                    pending_esc.decision = "continue"
-                finally:
-                    remove_pending_escalation(action_id)
-
-                if pending_esc.decision == "escalate":
-                    logger.info("chat_harness: turn escalated to 5-agent team; halting single-agent execution without tools")
-                    handoff_msg = (
-                        f"🎯 **Task Escalated to Agent Console**\n\n"
-                        f"This complex task exceeds single-agent capability and has been handed off to the 5-Agent Team (Planner, Coder, Tester, Reviewer, Documenter).\n\n"
-                        f"**Reasoning**: {reasoning}\n\n"
-                        f"Monitor real-time progress and DAG execution in the Agent Console."
-                    )
-                    yield _sse_token(handoff_msg)
-                    yield _sse_status("escalation_handoff", "Task successfully escalated to 5-Agent Team DAG.", status="escalated")
-                    _append_activity_log(workspace, {
-                        "action_type": "escalation_handoff",
-                        "target": user_query[:100],
-                        "outcome": "escalated",
-                        "tier": tier,
-                        "token_count": 0,
-                        "details": f"Escalated to 5-agent team: {reasoning}",
-                    })
-                    yield _sse_done(True, "Task escalated to Agent Console. 5-Agent Team has assumed execution.")
-                    return
-                else:
-                    logger.info("chat_harness: user chose to continue with Rony; proceeding with execution")
-                    yield _sse_status("escalation_resumed", "Resuming task execution with Rony Agent...")
         except Exception as exc:
             logger.debug("Escalation check in harness stream error: %s", exc)
 

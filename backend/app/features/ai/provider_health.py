@@ -35,9 +35,9 @@ class RateLimitError(RuntimeError):
 HEALTH_WINDOW_SECONDS = 3600.0
 # Circuit breaker trip threshold
 CIRCUIT_BREAKER_FAILURES = 5
-# Circuit breaker cooldown (5 minutes)
-# Circuit breaker cooldown base (5 minutes). Doubles on each successive trip, capped at 2 hours.
-CIRCUIT_BREAKER_COOLDOWN_BASE = 300.0
+# Circuit breaker cooldown (60 seconds)
+# Circuit breaker cooldown base (60 seconds). Doubles on each successive trip, capped at 2 hours.
+CIRCUIT_BREAKER_COOLDOWN_BASE = 60.0
 CIRCUIT_BREAKER_COOLDOWN_MAX = 7200.0
 
 from .catalog import TIER_ROUTING

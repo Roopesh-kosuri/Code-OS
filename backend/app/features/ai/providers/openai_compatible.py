@@ -8,6 +8,7 @@ import re
 import httpx
 
 from ..schemas import ChatMessage, ModelDto, ProviderHealth, ContextOverflowError
+from ..provider_health import provider_health_tracker
 from .base import AIProvider, ProviderRequestError, ProviderStreamEvent, ProviderToolCall
 
 logger = logging.getLogger(__name__)
@@ -196,11 +197,17 @@ class OpenAICompatibleProvider(AIProvider):
             r in model.lower() for r in ("kimi-k3", "kimi-k2", "deepseek", "qwq")
         )
         idle_read_timeout = 120.0 if _is_nim_reasoning else 35.0
+        is_open, remaining, msg = provider_health_tracker.is_circuit_open(self.id)
+        if is_open:
+            raise ProviderRequestError(
+                f"Circuit breaker is OPEN for provider '{self.id}'. Cooldown remaining: {remaining:.1f}s",
+                status_code=503, category="circuit_open"
+            )
 
         for attempt in range(max_attempts):
             try:
                 timeout = httpx.Timeout(
-                    connect=15.0,
+                    connect=3.0,
                     read=idle_read_timeout,
                     write=30.0,
                     pool=30.0,
@@ -208,6 +215,8 @@ class OpenAICompatibleProvider(AIProvider):
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     async with client.stream("POST", f"{self.base_url}/chat/completions", json=payload, headers=self.headers) as response:
                         status = response.status_code
+                        if status == 200:
+                            provider_health_tracker.record_outcome(self.id, True)
 
                         # Non-200 responses: read body and log reality (B4)
                         if status != 200:
@@ -547,6 +556,7 @@ class OpenAICompatibleProvider(AIProvider):
                     continue
                 else:
                     logger.error("OpenAICompatible stream_chat exhausted %d attempts: %s", max_attempts, exc)
+                    provider_health_tracker.record_outcome(self.id, False, str(exc))
                     raise ProviderRequestError(
                         f"Provider connection issue on '{self.id}': {exc}", category="transient"
                     ) from exc
