@@ -25,7 +25,7 @@ from .activity_logger import (
 )
 from .compaction_manager import (
     _compact_conversation_history, CompactionManager, _clean_response_text, _is_response_truncated,
-    _generate_diff_summary, strip_meta_narration,
+    _generate_diff_summary, strip_meta_narration, PATCH_STYLE_RETRY_DIRECTIVE, format_truncation_exhausted_error,
 )
 from .plan_parser import (
     DAGPlanStep, PlanParser, _parse_plan, _parse_plan_dag, _replan_on_failure,
@@ -58,6 +58,8 @@ from .prompt_builder import (
 )
 from .stage_finalizer import _finalize_staged_changes
 from .duo_escalator import _escalate_to_duo
+from .patch_applicator import apply_atomic_patch_sequence
+from .size_guard import check_rewrite_size_guard, is_whole_file_rewrite_intent, LARGE_REWRITE_LINE_THRESHOLD
 from .payload_governor import (
     govern_payload, estimate_request_tokens, _truncate_attachment_in_text,
     estimate_payload_breakdown, GovernanceResult,

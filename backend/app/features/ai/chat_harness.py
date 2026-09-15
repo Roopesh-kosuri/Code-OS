@@ -146,6 +146,8 @@ from .harness import (
     _load_activity_log, _get_interrupted_state_path, _save_interrupted_state,
     _load_interrupted_state, _clear_interrupted_state,
     _compact_conversation_history, _clean_response_text, _is_response_truncated,
+    PATCH_STYLE_RETRY_DIRECTIVE, format_truncation_exhausted_error,
+    check_rewrite_size_guard, is_whole_file_rewrite_intent,
     _generate_diff_summary,
     DAGPlanStep, _parse_plan, _parse_plan_dag, _replan_on_failure,
     _classify_rules, _classify_task_effort, _is_deep_query, _is_quick_task_query,
@@ -382,6 +384,20 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
         yield _sse_tier_routing(tier, tier_label, reason=tier_reason)
         yield _sse_status("tier_routing", f"Routing: {tier_reason}", tier=tier, label=tier_label)
+
+        # E4.2 Whole-file rewrite intent on Quick Task auto-suggests tier upgrade in UI
+        if tier == 1 and is_whole_file_rewrite_intent(user_query, tier=1):
+            yield _sse_event("tier_suggestion", {
+                "suggested_tier": 2,
+                "tier_name": "Deep Task",
+                "message": "This looks like a multi-part change — run as Deep Task?",
+            })
+            yield _sse_status(
+                "tier_suggestion",
+                "This looks like a multi-part change — run as Deep Task?",
+                tier=2,
+                label="Deep Task",
+            )
 
         effective_prov_key = request.api_key_provider or ("nvidia-nim" if request.provider == "nvidia-nim" else request.provider)
         if effective_prov_key == "openai-compatible" and request.provider in ("groq", "gemini", "nvidia-nim", "openai", "anthropic", "deepseek", "mistral"):
@@ -1051,40 +1067,30 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 if response_text.strip():
                     messages.append(ChatMessage(role="assistant", content=_clean_response_text(response_text)))
                 truncation_retries += 1
-                if truncation_retries == 1:
+                turn_toks = _message_token_count(messages, effective_prov_key, chat_request.model)
+                if truncation_retries <= 2:
+                    logger.info(
+                        "[TRUNCATION_METRIC] model=%s tokens=%d retry_count=%d final_status=retrying",
+                        chat_request.model, turn_toks, truncation_retries
+                    )
                     yield _sse_status(
                         "thinking",
-                        "Tool call was truncated by token limit — requesting complete continuation chunk...",
+                        f"Response was cut off or timed out (output truncated by model limit, retry {truncation_retries}/2) — requesting patch-style edits...",
                     )
                     messages.append(ChatMessage(
                         role="user",
-                        content=(
-                            "Your previous structured tool call was incomplete and was NOT executed due to length truncation. "
-                            "Emit ONE tool call only, with complete valid JSON arguments. For a large file, "
-                            "use the next sequential write_file/edit_file or append_file chunk; do not repeat prior chunks."
-                        ),
-                    ))
-                    iteration += 1
-                    continue
-                elif truncation_retries == 2:
-                    yield _sse_status(
-                        "thinking",
-                        "Tool call was truncated twice — auto-splitting into per-function edits...",
-                    )
-                    messages.append(ChatMessage(
-                        role="user",
-                        content=(
-                            "Your output was truncated twice due to length limits. "
-                            "AUTO-SPLIT REQUIRED: Do NOT write or edit the whole file or module at once. "
-                            "Split your implementation into small, per-function or per-section edits using sequential "
-                            "`edit_file` or `append_file` calls. Focus on the first function now."
-                        ),
+                        content=PATCH_STYLE_RETRY_DIRECTIVE,
                     ))
                     iteration += 1
                     continue
                 else:
-                    yield _sse_error("Tool call remained incomplete after continuation and auto-split attempts; no partial action was executed.")
-                    yield _sse_done(False, "Task stopped: provider repeatedly truncated a structured tool call.")
+                    logger.info(
+                        "[TRUNCATION_METRIC] model=%s tokens=%d retry_count=%d final_status=exhausted",
+                        chat_request.model, turn_toks, truncation_retries
+                    )
+                    err_msg = format_truncation_exhausted_error(chat_request.model)
+                    yield _sse_error(err_msg)
+                    yield _sse_done(False, err_msg)
                     return
             # Strip status retries, reasoning blocks, and think tags before saving to history
             clean_hist = re.sub(r"\[STATUS_RETRY:[^\]]*\]\n?", "", response_text)
@@ -1187,6 +1193,35 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 iteration += 1
                 continue
 
+            # ── Truncation / Timeout Detection & Recovery Guard ────────────────
+            if _is_response_truncated(response_text, stream_finish_reason) or "[TRUNCATED" in response_text or stream_finish_reason == "length":
+                truncation_retries += 1
+                curr_tokens = _message_token_count(messages, effective_prov_key, chat_request.model)
+                if truncation_retries <= 2:
+                    logger.info(
+                        "[TRUNCATION_METRIC] model=%s tokens=%d retry_count=%d final_status=retrying",
+                        chat_request.model, curr_tokens, truncation_retries
+                    )
+                    yield _sse_status(
+                        "thinking",
+                        f"Response was cut off or timed out (output truncated by model limit, retry {truncation_retries}/2) — requesting patch-style edits...",
+                    )
+                    messages.append(ChatMessage(
+                        role="user",
+                        content=PATCH_STYLE_RETRY_DIRECTIVE,
+                    ))
+                    iteration += 1
+                    continue
+                else:
+                    logger.info(
+                        "[TRUNCATION_METRIC] model=%s tokens=%d retry_count=%d final_status=exhausted",
+                        chat_request.model, curr_tokens, truncation_retries
+                    )
+                    err_msg = format_truncation_exhausted_error(chat_request.model)
+                    yield _sse_error(err_msg)
+                    yield _sse_done(False, err_msg)
+                    return
+
             # ── Raw Tool Call Loop Breaker (S7) ──────────────────────────────
             raw_tc_match = re.search(
                 r"\[TOOL_CALL:\s*([a-zA-Z0-9_\-]+)[\s\S]*?(?:\[/TOOL_CALL\]|$)",
@@ -1237,37 +1272,6 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     yield _sse_done(False, "Stopped: Detected repeated near-identical response loop.")
                     return
             prev_response_prefix = curr_prefix
-
-            # ── Truncation / Timeout Detection & Recovery Guard ────────────────
-            if _is_response_truncated(response_text) or "[TRUNCATED" in response_text or stream_finish_reason == "length":
-                truncation_retries += 1
-                if truncation_retries == 1:
-                    yield _sse_status("thinking", "Response was cut off or timed out (truncated by token limit) — requesting structured continuation...")
-                    messages.append(ChatMessage(
-                        role="user",
-                        content=(
-                            "Your previous output was cut off and was NOT executed. "
-                            "Emit ONE complete tool call with valid JSON only. For a large file, write the next sequential chunk "
-                            "using edit_file for its first chunk or append_file for later chunks. Do not write multiple files in one turn."
-                        )
-                    ))
-                    iteration += 1
-                    continue
-                elif truncation_retries == 2:
-                    yield _sse_status("thinking", "Output cut off twice — auto-splitting into per-function edits...")
-                    messages.append(ChatMessage(
-                        role="user",
-                        content=(
-                            "Output was cut off twice. AUTO-SPLIT REQUIRED: Do not attempt to write the entire file or large blocks at once. "
-                            "Split the implementation into smaller per-function edits. Stage the first function or component only."
-                        )
-                    ))
-                    iteration += 1
-                    continue
-                else:
-                    yield _sse_error("output too large for one response — chunking required")
-                    yield _sse_done(False, "Task stopped: Output repeatedly exceeded provider limit.")
-                    return
 
             # ── Plan Parsing & Dynamic Tracking ──────────────────────────────
             if dag_plan_steps is None:
@@ -2005,6 +2009,17 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         elif tc.name == "edit_file":
                             consecutive_failed_edits_per_path[target_clean] = consecutive_failed_edits_per_path.get(target_clean, 0) + 1
                             parsed_updated = tc.arguments.get("updated", "")
+                            # E4: Check rewrite size guard (>60 lines)
+                            exceeded_guard, guard_reason, tier_sugg = check_rewrite_size_guard(
+                                path=raw_target,
+                                updated=str(parsed_updated or ""),
+                                tier=tier,
+                                query=user_query,
+                            )
+                            if tier_sugg:
+                                yield _sse_event("tier_suggestion", tier_sugg)
+                                yield _sse_status("tier_suggestion", tier_sugg["message"], tier=tier_sugg["suggested_tier"])
+
                             model_emitted_updated = parsed_updated
                             if tc.raw_text:
                                 try:
@@ -2832,6 +2847,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     "token_count": tokens_used,
                     "details": f"Completed in {iteration + 1} iterations, {total_tools_executed} tools",
                 })
+                if truncation_retries > 0:
+                    logger.info("[TRUNCATION_METRIC] model=%s tokens=%d retry_count=%d final_status=recovered", chat_request.model, tokens_used, truncation_retries)
                 yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
                 yield _sse_done(True, "All tasks completed and verified successfully.")
                 return

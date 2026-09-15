@@ -264,6 +264,8 @@ export function AIChatPanel() {
   const currentTier = useAIStore((s) => s.currentTier);
   const currentTierLabel = useAIStore((s) => s.currentTierLabel);
   const currentTokensUsed = useAIStore((s) => s.currentTokensUsed);
+  const tierSuggestion = useAIStore((s) => s.tierSuggestion);
+  const clearTierSuggestion = useAIStore((s) => s.clearTierSuggestion);
   const interruptedState = useAIStore((s) => s.interruptedState);
   const checkInterruptedState = useAIStore((s) => s.checkInterruptedState);
   const resumeInterruptedRun = useAIStore((s) => s.resumeInterruptedRun);
@@ -592,6 +594,38 @@ export function AIChatPanel() {
             <span className="truncate">Agent</span>
           </button>
         </div>
+
+        {/* Tier Upgrade Suggestion Banner (Phase 10.20 E4.2) */}
+        {tierSuggestion && (
+          <div
+            data-testid="tier-suggestion-banner"
+            className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-on-surface animate-in fade-in"
+          >
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-amber-400 shrink-0">💡</span>
+              <span className="font-medium text-[11px] truncate">{tierSuggestion.message}</span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  clearTierSuggestion();
+                }}
+                className="px-2 py-0.5 rounded text-[10px] font-semibold bg-primary text-on-primary hover:bg-primary/90 transition-colors cursor-pointer"
+              >
+                Deep Task
+              </button>
+              <button
+                type="button"
+                onClick={clearTierSuggestion}
+                className="p-1 text-on-surface-variant hover:text-on-surface text-[10px] cursor-pointer"
+                title="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Row 3: Model Selector Button / Popover */}
         {!showProviderConfig ? (

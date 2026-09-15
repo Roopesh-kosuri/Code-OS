@@ -743,6 +743,42 @@ def response_is_done(response: str | None) -> bool:
 
 # ── Executor ─────────────────────────────────────────────────────────────────
 
+def _execute_single_tool(
+    call: ToolCall,
+    workspace: str,
+    staged_changes: list,
+    agent_role: str | None = None,
+) -> ToolResult:
+    """Execute a single tool call and return its ToolResult."""
+    if agent_role and not is_tool_allowed_for_role(call.name, agent_role):
+        allowed = get_role_manifest(agent_role)
+        err_msg = (
+            f"Permission denied: role '{agent_role}' is not allowed to use tool '{call.name}'. "
+            f"This role is restricted to read-only tools: {sorted(allowed)}"
+        )
+        logger.warning("agent_tools permission denied: %s", err_msg)
+        return ToolResult(tool_name=call.name, success=False, output="", error=err_msg)
+
+    if call.name == "read_file":
+        return _handle_read_file(workspace, call.arguments)
+    elif call.name == "list_directory":
+        return _handle_list_directory(workspace, call.arguments)
+    elif call.name == "search_code":
+        return _handle_search_code(workspace, call.arguments)
+    elif call.name == "run_test":
+        return _handle_run_test(workspace, call.arguments)
+    elif call.name == "edit_file":
+        return _handle_edit_file(workspace, call.arguments, staged_changes)
+    elif call.name == "run_command":
+        return _handle_run_command(workspace, call.arguments)
+    elif call.name == "get_diagnostics":
+        return _handle_get_diagnostics(workspace, call.arguments)
+    elif call.name in ("take_screenshot", "inspect_visuals"):
+        return _handle_take_screenshot(workspace, call.arguments)
+    else:
+        return ToolResult(tool_name=call.name, success=False, output="", error=f"Unknown tool: {call.name}")
+
+
 def execute_tool_calls(
     calls: list[ToolCall],
     workspace: str,
@@ -753,49 +789,53 @@ def execute_tool_calls(
 
     *staged_changes* is a mutable list that edit_file appends FileChange objects to.
     *agent_role* if specified enforces role-level tool permissions (e.g. read-only for reviewer/documenter).
+    When multiple sequential edit_file calls occur in one turn, enforces atomic multi-patch
+    application with intermediate on-disk reads and full checkpoint rollback on failure (Phase 10.20 Part E3).
     """
     if not calls:
         return ""
 
     results: list[str] = []
+    edit_indices = [i for i, c in enumerate(calls) if c.name == "edit_file"]
+
+    # Phase 10.20 Part E3: Atomic Multi-Patch sequence
+    if len(edit_indices) > 1:
+        if agent_role and not is_tool_allowed_for_role("edit_file", agent_role):
+            allowed = get_role_manifest(agent_role)
+            err_msg = (
+                f"Permission denied: role '{agent_role}' is not allowed to use tool 'edit_file'. "
+                f"This role is restricted to read-only tools: {sorted(allowed)}"
+            )
+            for call in calls:
+                if call.name == "edit_file":
+                    results.append(f"[TOOL_RESULT: edit_file]\nERROR: {err_msg}\n[/TOOL_RESULT]")
+                else:
+                    res = _execute_single_tool(call, workspace, staged_changes, agent_role)
+                    results.append(f"[TOOL_RESULT: {call.name}]\n{res.output if res.success else f'ERROR: {res.error}'}\n[/TOOL_RESULT]")
+            return "\n\n".join(results)
+
+        from ..harness.patch_applicator import apply_atomic_patch_sequence
+        edit_calls = [calls[i] for i in edit_indices]
+        ok, msg, _ = apply_atomic_patch_sequence(workspace, edit_calls, staged_changes=staged_changes)
+        for call in calls:
+            if call.name == "edit_file":
+                if ok:
+                    p = call.arguments.get("path", "")
+                    results.append(f"[TOOL_RESULT: edit_file]\n✓ Staged patch: {p}\n[/TOOL_RESULT]")
+                else:
+                    results.append(f"[TOOL_RESULT: edit_file]\nERROR: {msg}\n[/TOOL_RESULT]")
+            else:
+                res = _execute_single_tool(call, workspace, staged_changes, agent_role)
+                results.append(f"[TOOL_RESULT: {call.name}]\n{res.output if res.success else f'ERROR: {res.error}'}\n[/TOOL_RESULT]")
+        return "\n\n".join(results)
 
     for call in calls:
         logger.info("agent_tools: executing %s(%s) [role=%s]", call.name, list(call.arguments.keys()), agent_role)
-
-        # Enforce role tool permissions if role is specified
-        if agent_role and not is_tool_allowed_for_role(call.name, agent_role):
-            allowed = get_role_manifest(agent_role)
-            err_msg = (
-                f"Permission denied: role '{agent_role}' is not allowed to use tool '{call.name}'. "
-                f"This role is restricted to read-only tools: {sorted(allowed)}"
-            )
-            logger.warning("agent_tools permission denied: %s", err_msg)
-            results.append(f"[TOOL_RESULT: {call.name}]\nERROR: {err_msg}\n[/TOOL_RESULT]")
-            continue
-
-        if call.name == "read_file":
-            result = _handle_read_file(workspace, call.arguments)
-        elif call.name == "list_directory":
-            result = _handle_list_directory(workspace, call.arguments)
-        elif call.name == "search_code":
-            result = _handle_search_code(workspace, call.arguments)
-        elif call.name == "run_test":
-            result = _handle_run_test(workspace, call.arguments)
-        elif call.name == "edit_file":
-            result = _handle_edit_file(workspace, call.arguments, staged_changes)
-        elif call.name == "run_command":
-            result = _handle_run_command(workspace, call.arguments)
-        elif call.name == "get_diagnostics":
-            result = _handle_get_diagnostics(workspace, call.arguments)
-        elif call.name in ("take_screenshot", "inspect_visuals"):
-            result = _handle_take_screenshot(workspace, call.arguments)
+        res = _execute_single_tool(call, workspace, staged_changes, agent_role)
+        if res.success:
+            results.append(f"[TOOL_RESULT: {call.name}]\n{res.output}\n[/TOOL_RESULT]")
         else:
-            result = ToolResult(tool_name=call.name, success=False, output="", error=f"Unknown tool: {call.name}")
-
-        if result.success:
-            results.append(f"[TOOL_RESULT: {call.name}]\n{result.output}\n[/TOOL_RESULT]")
-        else:
-            results.append(f"[TOOL_RESULT: {call.name}]\nERROR: {result.error}\n[/TOOL_RESULT]")
+            results.append(f"[TOOL_RESULT: {call.name}]\nERROR: {res.error}\n[/TOOL_RESULT]")
 
     return "\n\n".join(results)
 
@@ -866,3 +906,6 @@ IMPORTANT RULES:
 - When you are finished (all changes made, no more tools needed), output [DONE] on its own line.
 - You can make multiple tool calls in a single response.
 - Maximum 5 tool calls per response, maximum 6 rounds of tool use."""
+
+
+from ..harness.patch_applicator import apply_atomic_patch_sequence

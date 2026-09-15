@@ -247,6 +247,8 @@ type AIState = {
   currentTierLabel: string | null;
   currentTierReason: string | null;
   currentTokensUsed: number | null;
+  tierSuggestion: { suggested_tier: number; tier_name: string; message: string } | null;
+  clearTierSuggestion: () => void;
   retryStatus: { message: string; retry_delay_seconds?: number; attempt?: number; max_attempts?: number; is_rate_limit?: boolean } | null;
   recoveryPayload: AIRecoveryPayload | null;
   clearRecovery: () => void;
@@ -399,6 +401,10 @@ export function createSSEStreamHandler(
         currentTier: tierVal,
         currentTierLabel: labelVal,
         currentTierReason: reasonVal,
+      }));
+    } else if (eventType === "tier_suggestion") {
+      set(() => ({
+        tierSuggestion: data,
       }));
     } else if (eventType === "rag_context") {
       const ragInfo: RAGContextInfo = {
@@ -758,6 +764,8 @@ export const useAIStore = create<AIState>((set, get) => ({
   currentTierLabel: null,
   currentTierReason: null,
   currentTokensUsed: null,
+  tierSuggestion: null,
+  clearTierSuggestion: () => set({ tierSuggestion: null }),
   retryStatus: null,
   recoveryPayload: null,
   clearRecovery: () => set({ recoveryPayload: null, retryStatus: null }),
@@ -798,6 +806,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       currentTierLabel: null,
       currentTierReason: null,
       currentTokensUsed: null,
+      tierSuggestion: null,
       interruptedState: null,
       agentStatus: null,
       agentPlan: null,
