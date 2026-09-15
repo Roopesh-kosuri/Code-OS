@@ -63,18 +63,20 @@ const args = [
   // Without this, uvicorn watches ALL of backend/ including tests, harness state,
   // and any .code_os / vector_index files written during agent turns → crash loop.
   "--reload-dir", path.resolve(backendDir, "app"),
-  // Exclude generated/state file patterns that are never Python source
-  "--reload-exclude", "*.db",
-  "--reload-exclude", "*.sqlite3",
-  "--reload-exclude", "*.sqlite3-wal",
-  "--reload-exclude", "*.sqlite3-shm",
-  "--reload-exclude", "*.log",
-  "--reload-exclude", "*.pyc",
-  "--reload-exclude", "__pycache__",
-  "--reload-exclude", ".code_os",
-  "--reload-exclude", "vector_index",
-  "--reload-exclude", "*.bin",
-  "--reload-exclude", "*.onnx",
+  // Exclude generated/state file patterns that are never Python source.
+  // Note: Must use '--reload-exclude=<pattern>' syntax on Windows so Python CRT does not
+  // expand wildcards like *.db against local directory contents into unexpected extra arguments.
+  "--reload-exclude=*.db",
+  "--reload-exclude=*.sqlite3",
+  "--reload-exclude=*.sqlite3-wal",
+  "--reload-exclude=*.sqlite3-shm",
+  "--reload-exclude=*.log",
+  "--reload-exclude=*.pyc",
+  "--reload-exclude=__pycache__",
+  "--reload-exclude=.code_os",
+  "--reload-exclude=vector_index",
+  "--reload-exclude=*.bin",
+  "--reload-exclude=*.onnx",
 ];
 
 let shouldRestart = true;
