@@ -464,8 +464,23 @@ ipcMain.handle("backend:getStatus", () => {
     running: !!backend.sessionToken,
     error: backend.lastError,
     token: backend.sessionToken,
+    circuitBreakerTripped: backend.circuitBreakerTripped,
   };
 });
+
+ipcMain.handle("backend:restart", async () => {
+  console.log("[main] IPC backend:restart requested");
+  await backend.restart();
+  return { ok: true };
+});
+
+backend.onCircuitBreakerTripped = () => {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send("backend:circuit-breaker");
+    }
+  } catch {}
+};
 
 ipcMain.handle("vision:capture", async (_event, req) => {
   return await captureService.handleCapture(req);

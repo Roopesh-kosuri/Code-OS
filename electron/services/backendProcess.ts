@@ -4,7 +4,23 @@ import fs from "node:fs";
 import os from "node:os";
 import { app, dialog } from "electron";
 
-const isDev = !app.isPackaged;
+const isDev = Boolean(!app || !app.isPackaged);
+
+function getUserDataPath(): string {
+  try {
+    return app?.getPath ? app.getPath("userData") : path.join(os.homedir(), ".code_os");
+  } catch {
+    return path.join(os.homedir(), ".code_os");
+  }
+}
+
+function getAppPathSafe(): string {
+  try {
+    return app?.getAppPath ? app.getAppPath() : process.cwd();
+  } catch {
+    return process.cwd();
+  }
+}
 
 export interface BackendSpawnOptions {
   cwd?: string;
@@ -174,7 +190,7 @@ function buildBackendEnv(extras: Record<string, string> = {}): NodeJS.ProcessEnv
   const tiktokenCandidates = [
     path.join(process.resourcesPath, "tiktoken"),
     path.join(process.resourcesPath, "backend", "tiktoken"),
-    path.join(app.getAppPath(), "resources", "tiktoken"),
+    path.join(getAppPathSafe(), "resources", "tiktoken"),
     path.join(__dirname, "..", "..", "resources", "tiktoken"),
   ];
   for (const tkDir of tiktokenCandidates) {
@@ -189,15 +205,48 @@ function buildBackendEnv(extras: Record<string, string> = {}): NodeJS.ProcessEnv
   return base;
 }
 
+const CRASH_LOG_DIR = path.join(os.homedir(), ".code_os");
+const CRASH_LOG_PATH = path.join(CRASH_LOG_DIR, "backend_crash.log");
+
+function appendCrashLog(msg: string): void {
+  try {
+    if (!fs.existsSync(CRASH_LOG_DIR)) {
+      fs.mkdirSync(CRASH_LOG_DIR, { recursive: true });
+    }
+    const timestamp = new Date().toISOString();
+    fs.appendFileSync(CRASH_LOG_PATH, `[${timestamp}] ${msg}\n`);
+  } catch (err) {
+    console.error("[backend] Failed to write crash log:", err);
+  }
+}
+
 export class BackendProcess {
   private process: ChildProcessWithoutNullStreams | null = null;
   lastError: string | null = null;
   sessionToken: string | null = null;
+  restartTimestamps: number[] = [];
+  isStopping: boolean = false;
+  circuitBreakerTripped: boolean = false;
+  onCircuitBreakerTripped?: () => void;
   private _tokenReady: Promise<string>;
   private _tokenResolve!: (token: string) => void;
 
   constructor() {
     this._tokenReady = new Promise<string>((resolve) => { this._tokenResolve = resolve; });
+    this._checkPriorCrashLog();
+  }
+
+  private _checkPriorCrashLog(): void {
+    try {
+      if (fs.existsSync(CRASH_LOG_PATH)) {
+        const content = fs.readFileSync(CRASH_LOG_PATH, "utf-8").trim();
+        if (content) {
+          const lines = content.split("\n");
+          const recent = lines.slice(-5).join("\n  ");
+          console.warn(`[backend] Prior crash log detected (${lines.length} lines):\n  ${recent}`);
+        }
+      }
+    } catch {}
   }
 
   waitForToken(timeoutMs = 30_000): Promise<string> {
@@ -251,7 +300,7 @@ export class BackendProcess {
     this.lastError = null;
     const findToken = (): string | null => {
       const candidates = [
-        path.join(app.getPath("userData"), "session_token"),
+        path.join(getUserDataPath(), "session_token"),
         path.join(process.env.APPDATA || "", "code_os", "session_token"),
         path.join(os.homedir(), ".code-os", "session_token"),
         path.join(os.homedir(), ".code_os", "session_token"),
@@ -292,8 +341,8 @@ export class BackendProcess {
       await this._spawnProcess(bin, [], {
         cwd: path.dirname(bin),
         env: buildBackendEnv({
-          CODE_OS_DATA_DIR: app.getPath("userData"),
-          CODE_OS_HOME: app.getPath("userData"),
+          CODE_OS_DATA_DIR: getUserDataPath(),
+          CODE_OS_HOME: getUserDataPath(),
         }),
       });
       return;
@@ -325,7 +374,7 @@ export class BackendProcess {
 
     await this._spawnProcess(pythonCmd, uvicornArgs, {
       cwd: backendDir,
-      env: buildBackendEnv({ CODE_OS_HOME: app.getPath("userData"), PYTHONPATH: backendDir }),
+      env: buildBackendEnv({ CODE_OS_HOME: getUserDataPath(), PYTHONPATH: backendDir }),
     });
   }
 
@@ -354,14 +403,53 @@ export class BackendProcess {
 
     this.process.stderr.on("data", (data: Buffer) => {
       const msg = data.toString().trim();
-      if (msg) console.error(`[backend] ${msg}`);
+      if (msg) {
+        console.error(`[backend] ${msg}`);
+        appendCrashLog(`[STDERR] ${msg}`);
+      }
       if (msg.includes("Error:") || msg.includes("Traceback") || msg.includes("ModuleNotFoundError")) this.lastError = msg;
     });
 
-    this.process.on("exit", (code) => {
-      console.log(`[backend] exited with code ${code}`);
-      if (code !== 0 && code !== null) this.lastError = `Backend process exited unexpectedly with code ${code}`;
+    this.process.on("exit", (code, signal) => {
+      console.log(`[backend] exited with code ${code}, signal ${signal}`);
       this.process = null;
+
+      if (this.isStopping) {
+        console.log("[backend] Intentional shutdown complete");
+        return;
+      }
+
+      const exitReason = `Backend process exited unexpectedly (code: ${code}, signal: ${signal})`;
+      this.lastError = exitReason;
+      appendCrashLog(`[CRASH] ${exitReason}`);
+
+      const now = Date.now();
+      this.restartTimestamps = this.restartTimestamps.filter((t) => now - t <= 60_000);
+
+      if (this.restartTimestamps.length >= 3) {
+        this.circuitBreakerTripped = true;
+        const alertMsg = "Backend crashed 3 times, please restart app.";
+        this.lastError = alertMsg;
+        appendCrashLog(`[CIRCUIT BREAKER] ${alertMsg}`);
+        console.error(`[backend] ${alertMsg}`);
+        try {
+          dialog.showErrorBox("CODE OS - Backend Crash Loop", alertMsg);
+        } catch {}
+        if (this.onCircuitBreakerTripped) {
+          this.onCircuitBreakerTripped();
+        }
+        return;
+      }
+
+      this.restartTimestamps.push(now);
+      console.log(`[backend] Auto-restarting in 1000ms (restart attempt ${this.restartTimestamps.length}/3 in 60s window)...`);
+      setTimeout(() => {
+        if (!this.isStopping && !this.circuitBreakerTripped) {
+          void this.start().catch((err) => {
+            console.error("[backend] Auto-restart failed:", err);
+          });
+        }
+      }, 1000);
     });
   }
 
@@ -371,6 +459,7 @@ export class BackendProcess {
   }
 
   stop(): void {
+    this.isStopping = true;
     if (!this.process) return;
     try {
       this.process.kill("SIGTERM");
@@ -386,5 +475,16 @@ export class BackendProcess {
       this.process.kill();
     }
     this.process = null;
+  }
+
+  async restart(): Promise<void> {
+    console.log("[backend] Manual restart initiated via supervision IPC");
+    this.stop();
+    this.isStopping = false;
+    this.circuitBreakerTripped = false;
+    this._tokenReady = new Promise<string>((resolve) => { this._tokenResolve = resolve; });
+    this.sessionToken = null;
+    await new Promise((r) => setTimeout(r, 1000));
+    await this.start();
   }
 }

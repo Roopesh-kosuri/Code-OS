@@ -46,6 +46,7 @@ export const useBackendStore = create<BackendState>((set, get) => ({
   setBootPhase: (phase: BootPhase) => set({ bootPhase: phase }),
 
   recordSuccess: () => {
+    const wasDisconnected = get().status !== "connected";
     if (_retryCountdownTimer) {
       clearInterval(_retryCountdownTimer);
       _retryCountdownTimer = null;
@@ -58,6 +59,26 @@ export const useBackendStore = create<BackendState>((set, get) => ({
       errorMessage: null,
       lastChecked: Date.now(),
     });
+
+    if (wasDisconnected) {
+      void (async () => {
+        try {
+          const wsStore = (window as any).useWorkspaceStore?.getState?.();
+          if (wsStore) {
+            if (wsStore.activeWorkspaces && wsStore.activeWorkspaces.length > 0) {
+              await wsStore.refreshTree();
+            } else {
+              await wsStore.restoreLastWorkspace();
+            }
+          }
+        } catch (err) {
+          console.error("[backendStore] Refresh after reconnect failed:", err);
+        }
+        try {
+          await fetch("http://127.0.0.1:8000/api/warmup").catch(() => {});
+        } catch {}
+      })();
+    }
   },
 
   recordFailure: (err) => {
@@ -80,12 +101,23 @@ export const useBackendStore = create<BackendState>((set, get) => ({
       }
     }
 
+    let errMsg = err instanceof Error ? err.message : "Backend not running";
+    if (nextCount >= 3) {
+      errMsg = "Backend disconnected, restarting...";
+      if ((window as any).codeOS?.restartBackend) {
+        console.warn("[backendStore] 3 consecutive failures reached; triggering backend restart via IPC");
+        void (window as any).codeOS.restartBackend().catch((e: any) => {
+          console.error("[backendStore] IPC restart error:", e);
+        });
+      }
+    }
+
     set({
       status: "disconnected",
       bootPhase: nextBootPhase,
       retryCount: nextCount,
       nextRetryInSeconds: delay,
-      errorMessage: err instanceof Error ? err.message : "Backend not running",
+      errorMessage: errMsg,
       lastChecked: Date.now(),
     });
 

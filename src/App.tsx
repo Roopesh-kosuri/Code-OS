@@ -166,22 +166,33 @@ export function App() {
     void useEditorStore.getState().loadEditorSettings();
   }, []);
 
-  // Consolidate backend health & freshness checks with document visibility awareness
+  // Consolidate backend health (5s ping) & freshness checks with document visibility awareness
   useEffect(() => {
     const backend = useBackendStore.getState();
     void backend.checkHealth();
 
+    let healthTimer: number | null = null;
     let freshnessTimer: number | null = null;
 
-    const startFreshnessPolling = () => {
-      if (freshnessTimer !== null) return;
-      void useBackendStore.getState().checkFreshness();
-      freshnessTimer = window.setInterval(() => {
+    const startPolling = () => {
+      if (healthTimer === null) {
+        healthTimer = window.setInterval(() => {
+          void useBackendStore.getState().checkHealth();
+        }, 5000);
+      }
+      if (freshnessTimer === null) {
         void useBackendStore.getState().checkFreshness();
-      }, 10000);
+        freshnessTimer = window.setInterval(() => {
+          void useBackendStore.getState().checkFreshness();
+        }, 10000);
+      }
     };
 
-    const stopFreshnessPolling = () => {
+    const stopPolling = () => {
+      if (healthTimer !== null) {
+        window.clearInterval(healthTimer);
+        healthTimer = null;
+      }
       if (freshnessTimer !== null) {
         window.clearInterval(freshnessTimer);
         freshnessTimer = null;
@@ -190,19 +201,28 @@ export function App() {
 
     const handleVisibilityChange = () => {
       if (document.hidden) {
-        stopFreshnessPolling();
+        stopPolling();
       } else {
-        startFreshnessPolling();
+        startPolling();
       }
     };
 
     if (!document.hidden) {
-      startFreshnessPolling();
+      startPolling();
     }
+
+    const unbindCircuitBreaker = window.codeOS?.onBackendCircuitBreaker?.(() => {
+      console.error("[app] Circuit breaker tripped by backend supervisor");
+      useBackendStore.setState({
+        status: "disconnected",
+        errorMessage: "Backend crashed 3 times, please restart app.",
+      });
+    });
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
-      stopFreshnessPolling();
+      stopPolling();
+      unbindCircuitBreaker?.();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);

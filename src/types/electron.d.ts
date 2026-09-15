@@ -25,7 +25,9 @@ export type CodeOSDesktopApi = {
    * Authorization headers.  Call once at startup and keep in memory only.
    */
   getSessionToken: () => Promise<string | null>;
-  getBackendStatus?: () => Promise<{ running: boolean; error: string | null; token: string | null }>;
+  getBackendStatus?: () => Promise<{ running: boolean; error: string | null; token: string | null; circuitBreakerTripped?: boolean }>;
+  restartBackend?: () => Promise<{ ok: boolean }>;
+  onBackendCircuitBreaker?: (callback: () => void) => () => void;
   visionCapture?: (req: { mode?: "preview" | "app_window"; target?: string; workspace?: string; width?: number; height?: number }) => Promise<{ success: boolean; image_base64?: string; format?: string; error?: string }>;
   windowControls?: {
     minimize: () => Promise<void>;

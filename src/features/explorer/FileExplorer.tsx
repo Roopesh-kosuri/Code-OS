@@ -536,8 +536,28 @@ export function FileExplorer() {
                       onRenameBlur={handleRenameSubmit}
                     />
                     {treeNode.children && treeNode.children.length === 0 && (
-                      <div className="px-4 py-2 text-[11px] text-on-surface-variant/50 italic">
-                        Empty folder. Click "New File" above to create files.
+                      <div className="px-4 py-4 text-center space-y-2.5">
+                        <span className="text-xs text-on-surface-variant/70 block font-medium">
+                          No files in workspace.
+                        </span>
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            data-testid="empty-create-file-btn"
+                            onClick={() => void runAction("new-file", treeNode)}
+                            className="text-[11px] bg-surface-container-high hover:bg-surface-variant text-on-surface px-2.5 py-1 rounded flex items-center gap-1.5 cursor-pointer border border-outline-variant/30 font-medium transition-colors"
+                          >
+                            <FilePlus size={12} className="text-primary" />
+                            <span>Create File</span>
+                          </button>
+                          <button
+                            data-testid="empty-create-folder-btn"
+                            onClick={() => void runAction("new-folder", treeNode)}
+                            className="text-[11px] bg-surface-container-high hover:bg-surface-variant text-on-surface px-2.5 py-1 rounded flex items-center gap-1.5 cursor-pointer border border-outline-variant/30 font-medium transition-colors"
+                          >
+                            <FolderPlus size={12} className="text-primary" />
+                            <span>Create Folder</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </>
@@ -557,15 +577,34 @@ export function FileExplorer() {
             );
           })
         ) : (
-          <div className="flex h-full flex-col items-center justify-center p-6 text-center space-y-3">
-            <span className="text-xs text-on-surface-variant/50">No active workspace folder.</span>
-            <button
-              onClick={() => void openWorkspace()}
-              className="bg-primary-container text-[#001f24] font-ui-label-bold text-xs px-4 py-2 rounded-full flex items-center gap-1.5 shadow-sm hover:bg-primary-fixed transition-colors cursor-pointer"
-            >
-              <FolderPlus size={13} />
-              <span>Open Folder</span>
-            </button>
+          <div className="flex h-full flex-col items-center justify-center p-6 text-center space-y-4">
+            <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary mb-1">
+              <FolderPlus size={20} />
+            </div>
+            <div className="space-y-1">
+              <span className="text-xs font-semibold text-on-surface block">Get Started with CODE OS</span>
+              <p className="text-[11px] text-on-surface-variant/70 leading-relaxed max-w-[200px]">
+                Open an existing project folder or create a new workspace to start coding.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 w-full max-w-[180px]">
+              <button
+                data-testid="get-started-open-folder"
+                onClick={() => void openWorkspace()}
+                className="w-full bg-primary text-[#001f24] font-semibold text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 shadow-sm hover:brightness-110 transition-all cursor-pointer"
+              >
+                <FolderOpen size={13} />
+                <span>Open Folder</span>
+              </button>
+              <button
+                data-testid="get-started-create-workspace"
+                onClick={() => void openWorkspace()}
+                className="w-full bg-surface-container-high hover:bg-surface-variant text-on-surface text-xs py-2 px-3 rounded-lg flex items-center justify-center gap-1.5 border border-outline-variant/30 font-medium transition-colors cursor-pointer"
+              >
+                <Plus size={13} />
+                <span>Create Workspace</span>
+              </button>
+            </div>
           </div>
         )}
       </div>

@@ -69,8 +69,15 @@ const api = {
   // keeps it in memory only.
   getSessionToken: (): Promise<string | null> =>
     ipcRenderer.invoke("session:getToken"),
-  getBackendStatus: (): Promise<{ running: boolean; error: string | null; token: string | null }> =>
+  getBackendStatus: (): Promise<{ running: boolean; error: string | null; token: string | null; circuitBreakerTripped?: boolean }> =>
     ipcRenderer.invoke("backend:getStatus"),
+  restartBackend: (): Promise<{ ok: boolean }> =>
+    ipcRenderer.invoke("backend:restart"),
+  onBackendCircuitBreaker: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on("backend:circuit-breaker", listener);
+    return () => ipcRenderer.removeListener("backend:circuit-breaker", listener);
+  },
   visionCapture: (req: { mode?: "preview" | "app_window"; target?: string; workspace?: string; width?: number; height?: number }): Promise<{ success: boolean; image_base64?: string; format?: string; error?: string }> =>
     ipcRenderer.invoke("vision:capture", req),
   windowControls: {
