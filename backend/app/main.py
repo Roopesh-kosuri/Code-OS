@@ -75,6 +75,16 @@ from app.features.ai.marathon import marathon_router
 from app.core.monitoring import monitor
 from app.core.errors import AppError, app_error_handler
 _START_TIME = time.time()
+_T_PROCESS_START = time.perf_counter()
+_startup_timings: dict[str, float] = {
+    "process_start": _T_PROCESS_START,
+    "app_created": 0.0,
+    "db_connected": 0.0,
+    "routers_registered": 0.0,
+    "lifespan_ready": 0.0,
+    "first_health": 0.0,
+}
+_startup_reported = False
 
 # Generate the session token BEFORE the app processes any requests.
 generate_and_store_token()
@@ -200,6 +210,7 @@ async def lifespan(app: FastAPI):
     check_tiktoken_health()
     # Startup: Initialize shared DB and run schema migrations
     await init_db()
+    _startup_timings["db_connected"] = time.perf_counter()
     db = await get_db()
 
     # Clean up orphaned running/queued jobs from previous session crashes
@@ -248,6 +259,7 @@ async def lifespan(app: FastAPI):
     register_subscribers()
     wal_worker_task = asyncio.create_task(_wal_checkpoint_worker())
 
+    _startup_timings["lifespan_ready"] = time.perf_counter()
     yield
 
     # Shutdown: Stop services safely with isolated try/except blocks
@@ -283,6 +295,7 @@ async def lifespan(app: FastAPI):
 VERSION: str = "5.0.0"  # CODE OS v5.0.0
 
 app = FastAPI(title="CODE OS Backend", version=VERSION, lifespan=lifespan)
+_startup_timings["app_created"] = time.perf_counter()
 
 
 class RequestIdMiddleware:
@@ -530,6 +543,33 @@ async def health() -> HealthCheckResponse:
         open_connections=open_conns,
     )
 
+    global _startup_reported
+    if not _startup_reported:
+        _startup_reported = True
+        _startup_timings["first_health"] = time.perf_counter()
+        t0 = _startup_timings["process_start"]
+        t_app = _startup_timings["app_created"]
+        t_routes = _startup_timings["routers_registered"]
+        t_db = _startup_timings["db_connected"]
+        t_ready = _startup_timings["lifespan_ready"]
+        t_health = _startup_timings["first_health"]
+
+        logger.info(
+            "=== STARTUP TIMING BREAKDOWN ===\n"
+            "  • Process Start -> App Created:       %.2f ms\n"
+            "  • App Created -> Routers Registered:  %.2f ms\n"
+            "  • Lifespan DB Connected:              %.2f ms\n"
+            "  • Lifespan Ready:                     %.2f ms\n"
+            "  • Time to First /api/health Response: %.2f ms (%.3f s)\n"
+            "================================",
+            (t_app - t0) * 1000 if (t_app and t0) else 0,
+            (t_routes - t_app) * 1000 if (t_routes and t_app) else 0,
+            (t_db - t0) * 1000 if (t_db and t0) else 0,
+            (t_ready - t0) * 1000 if (t_ready and t0) else 0,
+            (t_health - t0) * 1000 if t0 else 0,
+            (t_health - t0) if t0 else 0,
+        )
+
     return HealthCheckResponse(
         status="healthy" if is_healthy else "degraded",
         version=VERSION,
@@ -537,6 +577,48 @@ async def health() -> HealthCheckResponse:
         subsystems=subsystems,
         metrics=metrics,
     )
+
+
+async def _warmup_background_tasks():
+    logger.info("[warmup] Starting asynchronous background warmup...")
+    t0 = time.perf_counter()
+    # 1. Warm up connection pool reads
+    try:
+        from app.db.database import get_pool
+        pool = await get_pool()
+        await pool.read_query("SELECT 1;")
+    except Exception as exc:
+        logger.debug("[warmup] DB pool warmup skipped: %s", exc)
+
+    # 2. Warm up embedding function
+    try:
+        from app.features.ai.rag.vector_index_service import _get_embedding_function
+        _get_embedding_function()
+    except Exception as exc:
+        logger.debug("[warmup] Embedding function warmup skipped: %s", exc)
+
+    # 3. Warm up active workspace index
+    try:
+        from app.features.workspaces.service import get_active_workspace
+        from app.features.ai.rag import reconcile_workspace_index
+        active_ws = await get_active_workspace()
+        if active_ws and os.path.isdir(active_ws):
+            await reconcile_workspace_index(active_ws)
+    except Exception as exc:
+        logger.debug("[warmup] Active workspace RAG warmup skipped: %s", exc)
+
+    logger.info("[warmup] Background warmup completed in %.2f ms", (time.perf_counter() - t0) * 1000)
+
+
+@app.get("/api/warmup")
+async def warmup_endpoint() -> dict:
+    """Asynchronously warm up vector database, models, and connection pools in background."""
+    asyncio.create_task(_warmup_background_tasks())
+    return {
+        "status": "warming_up",
+        "tasks": ["chromadb", "memory_store", "connection_pool"],
+        "timestamp": time.time(),
+    }
 
 
 @app.get("/api/system/readiness", response_model=ReadinessStatus)
@@ -659,3 +741,4 @@ app.include_router(intelligence_router, prefix="/api/intelligence", tags=["intel
 app.include_router(marathon_router, tags=["marathon"])
 
 install_budget_guard_hook()
+_startup_timings["routers_registered"] = time.perf_counter()

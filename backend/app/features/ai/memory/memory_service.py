@@ -19,10 +19,11 @@ import re
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-import chromadb
-from chromadb.api.models.Collection import Collection
+if TYPE_CHECKING:
+    import chromadb
+    from chromadb.api.models.Collection import Collection
 
 from app.db.database import get_db
 from app.features.ai.rag.vector_index_service import _get_embedding_function, _normalize_workspace_path
@@ -30,8 +31,8 @@ from app.features.ai.rag.vector_index_service import _get_embedding_function, _n
 logger = logging.getLogger(__name__)
 
 # Cache of ChromaDB clients and collections per workspace
-_memory_clients: Dict[str, chromadb.PersistentClient] = {}
-_memory_collections: Dict[str, Collection] = {}
+_memory_clients: Dict[str, Any] = {}
+_memory_collections: Dict[str, Any] = {}
 
 VALID_CATEGORIES = frozenset({
     "rejected_edit",
@@ -43,7 +44,7 @@ VALID_CATEGORIES = frozenset({
 })
 
 
-def _get_memory_collection(workspace: str) -> Optional[Collection]:
+def _get_memory_collection(workspace: str) -> Optional[Any]:
     """Retrieve or initialize the ChromaDB persistent collection for workspace memories."""
     try:
         norm_ws = _normalize_workspace_path(workspace)
@@ -53,6 +54,7 @@ def _get_memory_collection(workspace: str) -> Optional[Collection]:
         persist_dir = Path(norm_ws) / ".code_os" / "memory"
         persist_dir.mkdir(parents=True, exist_ok=True)
 
+        import chromadb
         client = chromadb.PersistentClient(path=str(persist_dir))
         _memory_clients[norm_ws] = client
 

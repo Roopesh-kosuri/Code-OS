@@ -15,14 +15,17 @@ _db_lock: Optional[asyncio.Lock] = None
 
 
 class ConnectionPool:
-    """aiosqlite connection pool with 3 read connections and 1 serialized write connection."""
-    def __init__(self, db_path: Path, read_count: int = 3) -> None:
+    """aiosqlite connection pool with async connection pooling (min_size=2, max_size=10) and serialized write connection."""
+    def __init__(self, db_path: Path, read_count: int = 2, min_size: int = 2, max_size: int = 10) -> None:
         self.db_path = db_path
-        self.read_count = read_count
+        self.min_size = min_size
+        self.max_size = max_size
+        self.read_count = max(min_size, read_count)
         self._read_queue: Optional[asyncio.Queue[aiosqlite.Connection]] = None
         self._write_conn: Optional[aiosqlite.Connection] = None
         self._write_lock: Optional[asyncio.Lock] = None
         self._all_conns: List[aiosqlite.Connection] = []
+        self._total_read_conns: int = 0
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def initialize(self) -> aiosqlite.Connection:
@@ -33,6 +36,7 @@ class ConnectionPool:
         self._read_queue = asyncio.Queue()
         self._write_lock = asyncio.Lock()
         self._all_conns.clear()
+        self._total_read_conns = 0
 
         try:
             # 1. Initialize write connection
@@ -41,13 +45,14 @@ class ConnectionPool:
             self._write_conn.row_factory = aiosqlite.Row
             await self._configure_pragmas(self._write_conn)
 
-            # 2. Initialize read connections
-            for _ in range(self.read_count):
+            # 2. Initialize pre-warmed min_size read connections
+            for _ in range(self.min_size):
                 r_conn = await aiosqlite.connect(self.db_path)
                 self._all_conns.append(r_conn)
                 r_conn.row_factory = aiosqlite.Row
                 await self._configure_pragmas(r_conn)
                 await r_conn.execute("PRAGMA query_only=ON;")
+                self._total_read_conns += 1
                 await self._read_queue.put(r_conn)
 
             return self._write_conn
@@ -72,6 +77,17 @@ class ConnectionPool:
     async def acquire_read(self) -> aiosqlite.Connection:
         if self._read_queue is None:
             return self._write_conn
+        if self._read_queue.empty() and self._total_read_conns < self.max_size:
+            try:
+                r_conn = await aiosqlite.connect(self.db_path)
+                self._all_conns.append(r_conn)
+                r_conn.row_factory = aiosqlite.Row
+                await self._configure_pragmas(r_conn)
+                await r_conn.execute("PRAGMA query_only=ON;")
+                self._total_read_conns += 1
+                return r_conn
+            except Exception as exc:
+                logger.debug("Failed dynamic connection spawn: %s", exc)
         return await self._read_queue.get()
 
     async def release_read(self, conn: aiosqlite.Connection) -> None:
@@ -655,7 +671,7 @@ async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
         _pool = None
         _db = None
 
-    _pool = ConnectionPool(db_path, read_count=4)
+    _pool = ConnectionPool(db_path, min_size=2, max_size=10)
     try:
         _db = await _pool.initialize()
     except (sqlite3.DatabaseError, Exception) as init_err:
@@ -668,7 +684,7 @@ async def init_db(db_path: Path | str | None = None) -> aiosqlite.Connection:
                 db_path.rename(corrupt_backup)
         except Exception as ren_err:
             logger.warning("Could not rename corrupted db file: %s", ren_err)
-        _pool = ConnectionPool(db_path, read_count=4)
+        _pool = ConnectionPool(db_path, min_size=2, max_size=10)
         _db = await _pool.initialize()
 
     await _db.executescript(

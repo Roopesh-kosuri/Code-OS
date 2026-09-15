@@ -15,11 +15,11 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-import chromadb
-from chromadb.api.models.Collection import Collection
-from chromadb.utils import embedding_functions
+if TYPE_CHECKING:
+    import chromadb
+    from chromadb.api.models.Collection import Collection
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,7 @@ def _get_embedding_function():
 
     # 2. Fall back to ChromaDB's built-in ONNX DefaultEmbeddingFunction
     try:
+        from chromadb.utils import embedding_functions
         _embedding_fn = embedding_functions.DefaultEmbeddingFunction()
         logger.info("Using ChromaDB DefaultEmbeddingFunction(all-MiniLM-L6-v2 ONNX)")
         return _embedding_fn
@@ -109,7 +110,13 @@ def _get_embedding_function():
         logger.warning("Falling back to dummy embedding function: %s", exc)
 
     # 3. Fallback dummy function for constrained test environments
-    class SimpleEmbeddingFunction(embedding_functions.EmbeddingFunction):
+    try:
+        from chromadb.utils import embedding_functions
+        base_cls = embedding_functions.EmbeddingFunction
+    except Exception:
+        base_cls = object
+
+    class SimpleEmbeddingFunction(base_cls):
         def __call__(self, input_texts: List[str]) -> List[List[float]]:
             res = []
             for text in input_texts:
@@ -158,6 +165,7 @@ def init_vector_store(workspace: str, collection_name: str = "codebase_rag") -> 
     persist_dir = Path(norm_ws) / ".code_os" / "vector_index"
     persist_dir.mkdir(parents=True, exist_ok=True)
 
+    import chromadb
     client = chromadb.PersistentClient(path=str(persist_dir))
     _clients[norm_ws] = client
 
