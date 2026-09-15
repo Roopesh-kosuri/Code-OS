@@ -31,8 +31,8 @@ import { useTeamStore, type TeamMessage, type HandoffArtifact } from "./teamStor
 import { HandoffInspector } from "./HandoffInspector";
 import { useRAGStore } from "../../rag/ragStore";
 import { useWorkspaceStore } from "../../../stores/workspaceStore";
-import { useFileUploadStore } from "../../files/fileUploadStore";
 import { useMemoryStore } from "../../memory/memoryStore";
+import { sanitizeDisplayText } from "../../../lib/sanitizer";
 
 const ROLE_ICONS: Record<string, LucideIcon> = {
   architect: Layers,
@@ -490,7 +490,7 @@ export const TeamChatPanel: React.FC = () => {
                 >
                   <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/5 text-[10px] font-mono text-on-surface-variant max-w-md text-center">
                     <Sparkles size={11} className="text-on-surface-variant shrink-0" />
-                    <span>{msg.content}</span>
+                    <span>{sanitizeDisplayText(msg.content)}</span>
                   </div>
                 </div>
               );
@@ -532,7 +532,7 @@ export const TeamChatPanel: React.FC = () => {
                   </div>
 
                   <p className="text-on-surface leading-relaxed text-xs font-medium select-text">
-                    {msg.content}
+                    {sanitizeDisplayText(msg.content)}
                   </p>
 
                   <div className="border-t border-white/5 pt-2 flex flex-col gap-1.5">
@@ -599,7 +599,7 @@ export const TeamChatPanel: React.FC = () => {
 
                   <div className="flex items-start justify-between gap-2">
                     <p className="text-on-surface font-mono text-xs leading-relaxed select-text">
-                      {msg.content}
+                      {sanitizeDisplayText(msg.content)}
                     </p>
                   </div>
 
@@ -638,7 +638,7 @@ export const TeamChatPanel: React.FC = () => {
                     </span>
                   </div>
 
-                  <p className="text-on-surface font-mono text-xs select-text">{msg.content}</p>
+                  <p className="text-on-surface font-mono text-xs select-text">{sanitizeDisplayText(msg.content)}</p>
 
                   <div className="flex items-center gap-2 pt-1 border-t border-white/5">
                     {status === "approved" ? (
@@ -691,7 +691,7 @@ export const TeamChatPanel: React.FC = () => {
                   </div>
 
                   <p className="text-on-surface font-mono text-xs leading-relaxed select-text">
-                    {msg.content}
+                    {sanitizeDisplayText(msg.content)}
                   </p>
                 </div>
               );
@@ -748,7 +748,7 @@ export const TeamChatPanel: React.FC = () => {
                 </div>
 
                 <p className="text-on-surface leading-relaxed text-xs font-ui-label-reg select-text">
-                  {msg.content}
+                  {sanitizeDisplayText(msg.content)}
                 </p>
               </div>
             );

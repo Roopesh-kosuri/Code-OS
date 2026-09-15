@@ -62,7 +62,9 @@ def strip_meta_narration(text: str) -> str:
 
 def _clean_response_text(text: str) -> str:
     """Remove tool call markers, plan blocks, error tags, control tags, and meta-narration for display prose."""
-    cleaned = _EXTENDED_TOOL_RE.sub("", text)
+    from app.features.ai.harness.sse_streamer import sanitize_displayed_text
+    cleaned = sanitize_displayed_text(text)
+    cleaned = _EXTENDED_TOOL_RE.sub("", cleaned)
     cleaned = _CODEBLOCK_TOOL_RE.sub("", cleaned)
     # Clean up incomplete or unclosed tool call blocks (e.g. cut off or truncated)
     cleaned = _INCOMPLETE_TOOL_RE.sub("", cleaned)

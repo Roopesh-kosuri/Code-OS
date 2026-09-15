@@ -195,3 +195,92 @@ async def test_apply_proposal_idempotent_no_op():
         result = await apply_proposal("prop-already-applied")
         assert result.id == "prop-already-applied"
         assert result.status == "applied"
+
+
+def test_universal_marker_sanitization():
+    """Verify universal marker sanitization strips proposals, tool calls, and control tokens (Phase 10.19 Part B)."""
+    from app.features.ai.harness.sse_streamer import sanitize_displayed_text, StreamReasoningFilter
+
+    raw = """
+<|im_start|>assistant
+Here is my explanation of the solution.
+[TOOL_CALL: run_command]
+{"command": "pytest"}
+[/TOOL_CALL]
+[PROPOSAL: main.py]
+<<<< ORIGINAL
+x = 1
+====
+x = 2
+>>>>
+All done!
+[DONE]
+<|im_end|>
+"""
+    cleaned = sanitize_displayed_text(raw)
+    assert "[PROPOSAL:" not in cleaned
+    assert "<<<<" not in cleaned
+    assert "====" not in cleaned
+    assert ">>>>" not in cleaned
+    assert "[TOOL_CALL:" not in cleaned
+    assert "[/TOOL_CALL]" not in cleaned
+    assert "[DONE]" not in cleaned
+    assert "<|im_start|>" not in cleaned
+    assert "<|im_end|>" not in cleaned
+    assert "Here is my explanation of the solution." in cleaned
+    assert "All done!" in cleaned
+
+    # Verify StreamReasoningFilter streaming behavior
+    srf = StreamReasoningFilter()
+    events = []
+    tokens = ["Hello ", "world! ", "[PROPOSAL: foo.py]\n<<<<\n====\n>>>>\n", "Have a great day! ", "[DONE]"]
+    for t in tokens:
+        events.extend(srf.feed(t))
+    events.extend(srf.flush())
+
+    streamed_text = "".join(ev[1] for ev in events if ev[0] == "token")
+    assert "[PROPOSAL:" not in streamed_text
+    assert "[DONE]" not in streamed_text
+    assert "Hello world!" in streamed_text
+    assert "Have a great day!" in streamed_text
+
+
+def test_text_tool_call_validation_and_screenshot_rejection(tmp_path):
+    """Verify text tool call parsing converts valid tools, drops invalid/unallowed, and validates arguments (Phase 10.19 Part B2)."""
+    from app.features.ai.agents.agent_tools import parse_tool_calls, execute_tool_calls
+
+    # 1. Valid edit_file call
+    valid_text = """[TOOL_CALL: edit_file]
+{"path": "app.py", "original": "", "updated": "print('hello')"}
+[/TOOL_CALL]"""
+    calls = parse_tool_calls(valid_text, agent_role="coder")
+    assert len(calls) == 1
+    assert calls[0].name == "edit_file"
+    assert calls[0].arguments["path"] == "app.py"
+
+    # 2. Invalid role permission -> dropped with warning
+    calls_reviewer = parse_tool_calls(valid_text, agent_role="reviewer")
+    assert calls_reviewer == [], "Reviewer is not allowed to call edit_file"
+
+    # 3. Malformed / empty args -> dropped with warning
+    malformed_text = """[TOOL_CALL: edit_file]
+{"path": "app.py", "original": "", "updated": ""}
+[/TOOL_CALL]"""
+    calls_malformed = parse_tool_calls(malformed_text, agent_role="coder")
+    assert calls_malformed == [], "edit_file with empty updated should be dropped"
+
+    # 4. Semantic argument error: take_screenshot requires UI/web target; reject .py/.json
+    bad_screenshot_text = """[TOOL_CALL: take_screenshot]
+{"target": "main.py"}
+[/TOOL_CALL]"""
+    calls_shot = parse_tool_calls(bad_screenshot_text, agent_role="coder")
+    assert calls_shot == [], "take_screenshot with .py target should be dropped during parse"
+
+    # Also test execution guard directly
+    staged = []
+    res = execute_tool_calls([
+        type("TC", (), {"name": "take_screenshot", "arguments": {"target": "data.json", "mode": "preview"}})()
+    ], str(tmp_path), staged)
+    assert "requires a UI/web target" in res
+    assert "ERROR" in res
+

@@ -43,6 +43,7 @@ import { PROVIDER_PRESETS } from "../../lib/providerPresets";
 import { CustomSelect, type CustomSelectOption } from "../../components/ui/CustomSelect";
 import { LiquidGlassModelSelector } from "../../components/ui/LiquidGlassModelSelector";
 import { TeamConsole } from "./console/TeamConsole";
+import { sanitizeDisplayText } from "../../lib/sanitizer";
 import { MarathonDashboard } from "../marathon/MarathonDashboard";
 import { useMarathonStore } from "../marathon/marathonStore";
 import { FileUploadZone } from "../files/FileUploadZone";
@@ -1265,10 +1266,12 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
               <div className="flex-1 overflow-y-auto font-mono text-[11px] space-y-1.5 pr-2 leading-relaxed">
                 {activeJob?.logs && activeJob.logs.length > 0 ? (
                   activeJob.logs.map((log, i) => {
-                    const isInfo = log.includes("INFO:") || log.includes("[INFO]");
-                    const isSuccess = log.includes("SUCCESS:") || log.includes("completed");
-                    const isWarn = log.includes("WARN:") || log.includes("[WARNING]");
-                    const isHalt = log.includes("HALT:") || log.includes("ERROR:") || log.includes("[ERROR]");
+                    const cleanLog = sanitizeDisplayText(log);
+                    if (!cleanLog) return null;
+                    const isInfo = cleanLog.includes("INFO:") || cleanLog.includes("[INFO]");
+                    const isSuccess = cleanLog.includes("SUCCESS:") || cleanLog.includes("completed");
+                    const isWarn = cleanLog.includes("WARN:") || cleanLog.includes("[WARNING]");
+                    const isHalt = cleanLog.includes("HALT:") || cleanLog.includes("ERROR:") || cleanLog.includes("[ERROR]");
 
                     return (
                       <div key={i} className="flex gap-2">
@@ -1283,7 +1286,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                                   ? "text-error font-semibold"
                                   : "text-on-surface-variant"
                         }`}>
-                          {log}
+                          {cleanLog}
                         </span>
                       </div>
                     );
@@ -1319,13 +1322,13 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                         disabled={isSteeringSubmitting}
                         className="px-2.5 py-1 rounded bg-amber-400 text-black font-bold text-[11px] hover:bg-amber-300 transition-colors cursor-pointer shrink-0"
                       >
-                        Resume
+                        Resume Task
                       </button>
                     </div>
                   )}
 
                   {/* Steering Quick Action Chips */}
-                  <div className="space-y-1">
+                  <div className="space-y-1.5 pt-1">
                     <span className="text-[10px] uppercase font-bold text-on-surface-variant/70 tracking-wider">
                       Quick Steering Actions
                     </span>
@@ -1334,25 +1337,25 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                         type="button"
                         onClick={() => handleSendSteering("continue")}
                         disabled={!activeJob || isSteeringSubmitting}
-                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                        className="px-2.5 py-1 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface text-[11px] font-medium border border-white/5 transition-colors cursor-pointer disabled:opacity-40"
                       >
-                        ⚡ Continue what you stopped
+                        ▶ Continue
                       </button>
                       <button
                         type="button"
                         onClick={() => handleSendSteering("retry")}
                         disabled={!activeJob || isSteeringSubmitting}
-                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                        className="px-2.5 py-1 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface text-[11px] font-medium border border-white/5 transition-colors cursor-pointer disabled:opacity-40"
                       >
-                        ↺ Retry current step
+                        ↺ Retry Last Step
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleSendSteering("skip_tests", "Skip unit test phase and proceed to finalization")}
+                        onClick={() => handleSendSteering("skip_tests", "Skip unit test phase and proceed directly to review")}
                         disabled={!activeJob || isSteeringSubmitting}
-                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
+                        className="px-2.5 py-1 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface text-[11px] font-medium border border-white/5 transition-colors cursor-pointer disabled:opacity-40"
                       >
-                        ⏩ Skip tests & finalize
+                        ⚡ Skip Tests
                       </button>
                     </div>
                   </div>
@@ -1378,7 +1381,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                             </div>
                             {item.directive && (
                               <p className="text-xs text-on-surface mt-0.5 leading-tight font-sans">
-                                {item.directive}
+                                {sanitizeDisplayText(item.directive)}
                               </p>
                             )}
                           </div>

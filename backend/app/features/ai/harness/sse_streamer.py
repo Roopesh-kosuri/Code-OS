@@ -171,6 +171,36 @@ def _sse_error(message: str, **kwargs: Any) -> str:
     return _sse_event("error", payload)
 
 
+_SAN_PATTERNS = [
+    re.compile(r"\[PROPOSAL:\s*[^\]]+\][\s\S]*?(?:>{2,}|(?=\[(?:PROPOSAL|TOOL_CALL)|\Z))", re.IGNORECASE),
+    re.compile(r"\[TOOL_CALL:\s*[a-zA-Z0-9_\-]+\][\s\S]*?(?:\[/TOOL_CALL\]|(?=\[(?:PROPOSAL|TOOL_CALL)|\Z))", re.IGNORECASE),
+    re.compile(r"\[/TOOL_CALL\]", re.IGNORECASE),
+    re.compile(r"<{4,}\s*(?:ORIGINAL)?", re.IGNORECASE),
+    re.compile(r"={4,}", re.IGNORECASE),
+    re.compile(r">{4,}", re.IGNORECASE),
+    re.compile(r"\[DONE\]", re.IGNORECASE),
+    re.compile(r"<\|(?:im_start|im_end|start|end|pad|eot|fim_prefix|fim_suffix|fim_middle).*?\|>", re.IGNORECASE),
+    re.compile(r"<\|(?:start|to=).*?>", re.IGNORECASE),
+]
+
+
+def sanitize_displayed_text(text: str | None) -> str:
+    """Universal marker sanitization for all agent display surfaces (Phase 10.19 Part B).
+    Strips:
+    - [PROPOSAL: ...], <<<<, ====, >>>>
+    - [TOOL_CALL: ...], [/TOOL_CALL]
+    - [DONE]
+    - Leaked model control tokens (<|im_start|>, <|end|>, etc.)
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    s = text
+    for pat in _SAN_PATTERNS:
+        s = pat.sub("", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
 class StreamReasoningFilter:
     """Stream filter that intercepts reasoning tags, machine tool-call blocks, and channel tokens.
     Routes reasoning text to thinking events, suppresses machine tool calls from user prose, and emits clean user text to token events.
@@ -186,6 +216,7 @@ class StreamReasoningFilter:
         self.last_reported_thought_tokens = 0
         self.in_tool_call = False
         self.tool_tag_close = ""
+        self.in_proposal = False
 
     def feed(self, token: str) -> list[tuple[str, Any]]:
         events: list[tuple[str, Any]] = []
@@ -200,42 +231,59 @@ class StreamReasoningFilter:
                 self.buffer = self.buffer[:m_retry.start()] + self.buffer[m_retry.end():]
 
         while self.buffer:
-            if not self.in_thought and not self.in_tool_call:
+            if not self.in_thought and not self.in_tool_call and not self.in_proposal:
                 # 1. Check for reasoning tag openers
                 m_open = re.search(r"(<think>|<thought>|<reasoning>|<\|start\|>thought|commentary\s+to=|<\|start\|>to=)", self.buffer, re.IGNORECASE)
                 # 2. Check for tool-call openers to suppress from chat bubble
                 m_tool = re.search(r"(\[TOOL_CALL:\s*[a-zA-Z0-9_\-]+|```(?:tool_call|json)?\s*\n?\s*\{\s*\"(?:tool|name|action)\"\s*:)", self.buffer, re.IGNORECASE)
+                # 3. Check for proposal openers to suppress from chat bubble prose
+                m_prop = re.search(r"(\[PROPOSAL:\s*[^\]]+\])", self.buffer, re.IGNORECASE)
+                # 4. Check for standalone [DONE] or control tokens
+                m_done = re.search(r"(\[DONE\]|<\|(?:im_start|im_end|start|end|pad|eot|fim_prefix|fim_suffix|fim_middle).*?\|>)", self.buffer, re.IGNORECASE)
 
-                if m_open and (not m_tool or m_open.start() < m_tool.start()):
-                    prefix = self.buffer[:m_open.start()]
-                    matched_str = m_open.group(0)
+                # Find earliest match among all blockers
+                candidates = []
+                if m_open: candidates.append(("open", m_open.start(), m_open))
+                if m_tool: candidates.append(("tool", m_tool.start(), m_tool))
+                if m_prop: candidates.append(("prop", m_prop.start(), m_prop))
+                if m_done: candidates.append(("done", m_done.start(), m_done))
+
+                if candidates:
+                    candidates.sort(key=lambda x: x[1])
+                    kind, start_pos, m_match = candidates[0]
+                    prefix = self.buffer[:start_pos]
                     if prefix:
                         events.append(("token", prefix))
-                    self.in_thought = True
-                    matched_lower = matched_str.lower()
-                    if "<|start|>thought" in matched_lower or "<|start|>to=" in matched_lower:
-                        self.thought_tag_close = "<|end|>"
-                    elif "<think>" in matched_lower:
-                        self.thought_tag_close = "</think>"
-                    elif "<thought>" in matched_lower:
-                        self.thought_tag_close = "</thought>"
-                    elif "<reasoning>" in matched_lower:
-                        self.thought_tag_close = "</reasoning>"
-                    elif "commentary" in matched_lower:
-                        self.thought_tag_close = "\n"
-                    self.buffer = self.buffer[m_open.end():]
-                elif m_tool:
-                    prefix = self.buffer[:m_tool.start()]
-                    if prefix:
-                        events.append(("token", prefix))
-                    self.in_tool_call = True
-                    if "[tool_call:" in m_tool.group(0).lower():
-                        self.tool_tag_close = "[/TOOL_CALL]"
-                    else:
-                        self.tool_tag_close = "```"
-                    self.buffer = self.buffer[m_tool.end():]
+
+                    if kind == "open":
+                        self.in_thought = True
+                        matched_lower = m_match.group(0).lower()
+                        if "<|start|>thought" in matched_lower or "<|start|>to=" in matched_lower:
+                            self.thought_tag_close = "<|end|>"
+                        elif "<think>" in matched_lower:
+                            self.thought_tag_close = "</think>"
+                        elif "<thought>" in matched_lower:
+                            self.thought_tag_close = "</thought>"
+                        elif "<reasoning>" in matched_lower:
+                            self.thought_tag_close = "</reasoning>"
+                        elif "commentary" in matched_lower:
+                            self.thought_tag_close = "\n"
+                        self.buffer = self.buffer[m_match.end():]
+                    elif kind == "tool":
+                        self.in_tool_call = True
+                        if "[tool_call:" in m_match.group(0).lower():
+                            self.tool_tag_close = "[/TOOL_CALL]"
+                        else:
+                            self.tool_tag_close = "```"
+                        self.buffer = self.buffer[m_match.end():]
+                    elif kind == "prop":
+                        self.in_proposal = True
+                        self.buffer = self.buffer[m_match.end():]
+                    elif kind == "done":
+                        # Simply consume and suppress [DONE] / leaked control tokens
+                        self.buffer = self.buffer[m_match.end():]
                 else:
-                    m_part = re.search(r"(<[^\n]{0,20}|commentary[^\n]{0,5}|\[[^\n]{0,15}|```[^\n]{0,10})$", self.buffer, re.IGNORECASE)
+                    m_part = re.search(r"(<[^\n]{0,20}|commentary[^\n]{0,5}|\[[^\n]{0,20}|```[^\n]{0,10})$", self.buffer, re.IGNORECASE)
                     if m_part:
                         safe_len = m_part.start()
                         if safe_len > 0:
@@ -258,6 +306,16 @@ class StreamReasoningFilter:
                         self.buffer = ""
                         break
                 else:
+                    self.buffer = ""
+                    break
+            elif self.in_proposal:
+                # Suppress proposal contents from token stream
+                m_end = re.search(r"(>{4,}|\[DONE\]|(?=\[PROPOSAL:)|(?=\[TOOL_CALL:))", self.buffer, re.IGNORECASE)
+                if m_end:
+                    self.buffer = self.buffer[m_end.end():]
+                    self.in_proposal = False
+                else:
+                    # Buffer inside proposal without leaking to token stream
                     self.buffer = ""
                     break
             else:
@@ -297,8 +355,10 @@ class StreamReasoningFilter:
     def flush(self) -> list[tuple[str, Any]]:
         events: list[tuple[str, Any]] = []
         if self.buffer:
-            if not self.in_thought and not self.in_tool_call:
-                events.append(("token", self.buffer))
+            if not self.in_thought and not self.in_tool_call and not self.in_proposal:
+                clean_buf = sanitize_displayed_text(self.buffer)
+                if clean_buf:
+                    events.append(("token", clean_buf))
             elif self.in_thought:
                 clean_thought = (self.accumulated_thought + self.buffer).strip()
                 if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):
@@ -309,6 +369,7 @@ class StreamReasoningFilter:
             self.buffer = ""
             self.in_tool_call = False
             self.tool_tag_close = ""
+            self.in_proposal = False
         elif self.in_thought and self.accumulated_thought:
             clean_thought = self.accumulated_thought.strip()
             if clean_thought and not clean_thought.startswith("functions.") and not clean_thought.startswith("{"):

@@ -41,6 +41,7 @@ import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink, AlertTriangle, Glob
 import { PromptEnhancerBar } from "../intelligence/PromptEnhancerBar";
 import { useIntelligenceStore } from "../../stores/intelligenceStore";
 import { MonacoDiffModal, type DiffData } from "../editor/MonacoDiffModal";
+import { sanitizeDisplayText } from "../../lib/sanitizer";
 
 function parseProposals(text: string) {
   const proposals: { path: string; original: string; updated: string }[] = [];
@@ -64,7 +65,7 @@ function parseProposals(text: string) {
   cleanText = cleanText.replace(/\[TOOL_RESULT:[^\]]+\][\s\S]*?\[\/TOOL_RESULT\]/gi, "");
   cleanText = cleanText.replace(/\[DONE\]/gi, "");
   cleanText = cleanText.replace(/\[ESCALATE\]/gi, "");
-  cleanText = cleanText.trim();
+  cleanText = sanitizeDisplayText(cleanText);
 
   return { cleanText, proposals };
 }
