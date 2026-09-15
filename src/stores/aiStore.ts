@@ -334,10 +334,14 @@ const savedApiKeyProvider = typeof window !== "undefined" ? localStorage.getItem
  */
 export function createSSEStreamHandler(
   set: (fn: (state: AIState) => Partial<AIState> | AIState) => void,
-  get: () => AIState
+  get: () => AIState,
+  timingContext?: { t_start?: number }
 ) {
   let tokenBuffer = "";
   let tokenFlushTimer: any = null;
+  let firstEventLogged = false;
+  let firstTokenLogged = false;
+  const t_start = timingContext?.t_start ?? performance.now();
 
   const flushTokens = () => {
     if (tokenFlushTimer) {
@@ -359,14 +363,27 @@ export function createSSEStreamHandler(
   };
 
   const handler = (eventType: string, data: any) => {
+    if (!firstEventLogged) {
+      firstEventLogged = true;
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`[latency] t_first_event: ${(performance.now() - t_start).toFixed(1)}ms (${eventType})`);
+      }
+    }
+
     if (eventType === "token") {
+      if (!firstTokenLogged) {
+        firstTokenLogged = true;
+        if (process.env.NODE_ENV !== "production") {
+          console.log(`[latency] t_first_token: ${(performance.now() - t_start).toFixed(1)}ms`);
+        }
+      }
       const tokenStr = typeof data === "string" ? data : (data?.content || "");
       tokenBuffer += tokenStr;
       if (!tokenFlushTimer) {
         tokenFlushTimer = setTimeout(() => {
           tokenFlushTimer = null;
           flushTokens();
-        }, 50);
+        }, 16);
       }
       return;
     }
@@ -1358,24 +1375,30 @@ export const useAIStore = create<AIState>((set, get) => ({
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
 
+    const t_start = performance.now();
     let threadId = get().currentThreadId;
     if (!threadId) {
       const id = crypto.randomUUID();
       const cleanTitle = content.trim().substring(0, 32) + (content.length > 32 ? "…" : "");
-      try {
-        const newT = await api.post<ChatThread>("/api/ai/threads", { id, workspace, title: cleanTitle });
-        if (typeof window !== "undefined") {
-          localStorage.setItem("code-os:active-chat-thread-id", id);
-        }
-        set((state) => ({
-          currentThreadId: id,
-          threads: [newT, ...state.threads],
-        }));
-        threadId = id;
-      } catch {
-        set({ error: "Failed to initialize thread" });
-        return;
+      const optimisticThread: ChatThread = {
+        id,
+        workspace,
+        title: cleanTitle,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      if (typeof window !== "undefined") {
+        localStorage.setItem("code-os:active-chat-thread-id", id);
       }
+      set((state) => ({
+        currentThreadId: id,
+        threads: [optimisticThread, ...state.threads],
+      }));
+      threadId = id;
+      // Fire background POST to initialize thread in DB without blocking UI echo
+      void api.post<ChatThread>("/api/ai/threads", { id, workspace, title: cleanTitle }).catch((err) => {
+        console.warn("Background thread initialization warning:", err);
+      });
     }
 
     const activeThread = get().threads.find((t) => t.id === threadId);
@@ -1432,10 +1455,19 @@ export const useAIStore = create<AIState>((set, get) => ({
   interruptedTasks: [],
     }));
 
-    try {
-      await api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages });
-    } catch (err) {
+    const t_echo = performance.now();
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[latency] t_echo: ${(t_echo - t_start).toFixed(1)}ms`);
+    }
+
+    // Persist messages in DB asynchronously in background without gating the SSE stream
+    void api.post(`/api/ai/threads/${threadId}/messages`, { messages: get().messages }).catch((err) => {
       console.warn("Messages out of sync in DB:", err);
+    });
+
+    const t_post = performance.now();
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[latency] t_post: ${(t_post - t_start).toFixed(1)}ms`);
     }
 
     const requestMessages = get().messages.slice(0, -1).map((m) => ({
@@ -1454,7 +1486,7 @@ export const useAIStore = create<AIState>((set, get) => ({
     );
 
     try {
-      const sseHandler = createSSEStreamHandler(set, get);
+      const sseHandler = createSSEStreamHandler(set, get, { t_start });
       await api.streamSSE(
         "/api/ai/chat-agent/stream",
         {
