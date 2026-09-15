@@ -1025,6 +1025,9 @@ export const useAIStore = create<AIState>((set, get) => ({
         always_allow: alwaysAllow,
         trust_pattern: trustPattern,
       });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("code-os:proposal-applied", { detail: actionId }));
+      }
     } catch (err) {
       console.warn("Approval endpoint notice:", err);
     } finally {
@@ -1041,6 +1044,9 @@ export const useAIStore = create<AIState>((set, get) => ({
   rejectAction: async (actionId: string) => {
     try {
       await api.post(`/api/ai/chat-agent/reject/${actionId}`);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("code-os:proposal-updated", { detail: actionId }));
+      }
     } catch (err) {
       console.warn("Reject endpoint notice:", err);
     } finally {
@@ -1593,4 +1599,27 @@ export const useAIStore = create<AIState>((set, get) => ({
     }
   },
 }));
+
+if (typeof window !== "undefined") {
+  const resolveMatchingApproval = (id: string) => {
+    if (!id) return;
+    useAIStore.setState((state) => {
+      const remaining = (state.pendingApprovals || []).filter(
+        (a) => a.action_id !== id && (a as any).proposal_id !== id && a.metadata?.proposal_id !== id
+      );
+      return {
+        pendingApprovals: remaining,
+        pendingApproval: remaining[0] || null,
+      };
+    });
+  };
+
+  window.addEventListener("code-os:proposal-applied", (e: Event) => {
+    resolveMatchingApproval((e as CustomEvent<string>).detail);
+  });
+
+  window.addEventListener("code-os:proposal-updated", (e: Event) => {
+    resolveMatchingApproval((e as CustomEvent<string>).detail);
+  });
+}
 

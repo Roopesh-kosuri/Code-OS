@@ -31,6 +31,7 @@ import { useTeamStore, type TeamMessage, type HandoffArtifact } from "./teamStor
 import { HandoffInspector } from "./HandoffInspector";
 import { useRAGStore } from "../../rag/ragStore";
 import { useWorkspaceStore } from "../../../stores/workspaceStore";
+import { useFileUploadStore } from "../../files/fileUploadStore";
 import { useMemoryStore } from "../../memory/memoryStore";
 import { sanitizeDisplayText } from "../../../lib/sanitizer";
 

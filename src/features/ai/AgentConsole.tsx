@@ -44,6 +44,7 @@ import { CustomSelect, type CustomSelectOption } from "../../components/ui/Custo
 import { LiquidGlassModelSelector } from "../../components/ui/LiquidGlassModelSelector";
 import { TeamConsole } from "./console/TeamConsole";
 import { sanitizeDisplayText } from "../../lib/sanitizer";
+import { InlineConsoleApprovalCard } from "./InlineConsoleApprovalCard";
 import { MarathonDashboard } from "../marathon/MarathonDashboard";
 import { useMarathonStore } from "../marathon/marathonStore";
 import { FileUploadZone } from "../files/FileUploadZone";
@@ -284,6 +285,9 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
   const openWorkspace = useWorkspaceStore((state) => state.openWorkspace);
   const globalModel = useAIStore((state) => state.model);
   const globalPreset = useAIStore((state) => state.preset);
+  const pendingApproval = useAIStore((state) => state.pendingApproval);
+  const approveAction = useAIStore((state) => state.approveAction);
+  const rejectAction = useAIStore((state) => state.rejectAction);
 
   const [instruction, setInstruction] = useState("");
   const [quickEdit, setQuickEdit] = useState(true);
@@ -1196,7 +1200,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
           </div>
 
           {/* Card 2: Live Terminal Logs & Task Steering Chat */}
-          <div className="bg-[#131315] rounded-xl border border-surface-container-high p-4 flex flex-col h-[320px] shadow-lg">
+          <div className={`bg-[#131315] rounded-xl border border-surface-container-high p-4 flex flex-col ${pendingApproval ? "min-h-[460px]" : "h-[320px]"} shadow-lg transition-all`}>
             <div className="flex justify-between items-center border-b border-surface-variant pb-2.5 mb-2.5">
               {/* Tab Selector */}
               <div className="flex items-center gap-1 bg-[#0d0f18] p-0.5 rounded-lg border border-white/5">
@@ -1260,6 +1264,15 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                 <span className={`w-2 h-2 rounded-full ${isRunning ? "bg-primary-container animate-pulse shadow-[0_0_8px_rgba(0,218,243,0.6)]" : "bg-surface-variant"}`} />
               </div>
             </div>
+
+            {/* Inline Approval Card (Phase 10.19 Part C) */}
+            {pendingApproval && (
+              <InlineConsoleApprovalCard
+                pendingApproval={pendingApproval}
+                onApprove={(actionId) => approveAction(actionId)}
+                onReject={(actionId) => rejectAction(actionId)}
+              />
+            )}
 
             {/* Content: Logs View */}
             {rightPanelTab === "logs" ? (
@@ -1337,25 +1350,25 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                         type="button"
                         onClick={() => handleSendSteering("continue")}
                         disabled={!activeJob || isSteeringSubmitting}
-                        className="px-2.5 py-1 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface text-[11px] font-medium border border-white/5 transition-colors cursor-pointer disabled:opacity-40"
+                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
                       >
-                        ▶ Continue
+                        ⚡ Continue what you stopped
                       </button>
                       <button
                         type="button"
                         onClick={() => handleSendSteering("retry")}
                         disabled={!activeJob || isSteeringSubmitting}
-                        className="px-2.5 py-1 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface text-[11px] font-medium border border-white/5 transition-colors cursor-pointer disabled:opacity-40"
+                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
                       >
-                        ↺ Retry Last Step
+                        ↺ Retry current step
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleSendSteering("skip_tests", "Skip unit test phase and proceed directly to review")}
+                        onClick={() => handleSendSteering("skip_tests", "Skip unit test phase and proceed to finalization")}
                         disabled={!activeJob || isSteeringSubmitting}
-                        className="px-2.5 py-1 rounded bg-surface-container-high hover:bg-surface-variant text-on-surface text-[11px] font-medium border border-white/5 transition-colors cursor-pointer disabled:opacity-40"
+                        className="px-2 py-1 rounded-md text-[11px] font-mono bg-white/5 hover:bg-white/10 text-on-surface border border-white/10 transition-colors cursor-pointer disabled:opacity-40"
                       >
-                        ⚡ Skip Tests
+                        ⏩ Skip tests & finalize
                       </button>
                     </div>
                   </div>
