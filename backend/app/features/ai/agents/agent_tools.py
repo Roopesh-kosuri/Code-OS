@@ -225,14 +225,55 @@ def _handle_edit_file(workspace: str, arguments: dict, staged_changes: list) -> 
 
     if not rel_path or rel_path == ".":
         return ToolResult(tool_name="edit_file", success=False, output="", error="Missing required parameter: path")
-    if not updated and not original:
-        return ToolResult(tool_name="edit_file", success=False, output="", error="Both 'original' and 'updated' are empty — nothing to do")
+
+    clean_orig = original.replace("\r\n", "\n")
+    clean_upd = updated.replace("\r\n", "\n")
+
+    # 1. UPDATED must be non-empty and differ from ORIGINAL
+    if not clean_upd.strip():
+        return ToolResult(tool_name="edit_file", success=False, output="", error="updated_empty_or_equal: 'updated' content cannot be empty")
+    if clean_upd.strip() == clean_orig.strip():
+        return ToolResult(tool_name="edit_file", success=False, output="", error="updated_empty_or_equal: 'updated' is identical to 'original'")
 
     # Validate path is within workspace
     try:
-        ensure_within_workspace(workspace, rel_path)
+        target_path = ensure_within_workspace(workspace, rel_path)
     except Exception as exc:
         return ToolResult(tool_name="edit_file", success=False, output="", error=f"Path rejected: {exc}")
+
+    # 2. Syntax validation
+    try:
+        from ..harness.content_integrity import validate_language_syntax
+        valid_syntax, syntax_err = validate_language_syntax(rel_path, updated)
+        if not valid_syntax:
+            return ToolResult(tool_name="edit_file", success=False, output="", error=f"syntax_error: {syntax_err}")
+    except Exception as syn_exc:
+        logger.debug("validate_language_syntax in edit_file: %s", syn_exc)
+
+    # 3. On-disk check for existing edits vs new files
+    if target_path.exists() and target_path.is_file():
+        try:
+            disk_text = target_path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+            if clean_orig.strip() != disk_text.strip() and clean_orig != disk_text:
+                logger.warning("original_mismatches_disk: Original content does not match %s on disk", rel_path)
+                return ToolResult(
+                    tool_name="edit_file",
+                    success=False,
+                    output="",
+                    error="original_mismatches_disk: Original section does not match current on-disk content"
+                )
+        except Exception as read_err:
+            logger.warning("Failed to read %s for disk check: %s", rel_path, read_err)
+            return ToolResult(tool_name="edit_file", success=False, output="", error=f"disk_read_error: {read_err}")
+    else:
+        if clean_orig.strip() != "":
+            logger.warning("original_must_be_empty for new file %s", rel_path)
+            return ToolResult(
+                tool_name="edit_file",
+                success=False,
+                output="",
+                error="original_must_be_empty: New file proposal must have empty 'original' section"
+            )
 
     change = FileChange(path=rel_path, original=original, updated=updated)
     staged_changes.append(change)

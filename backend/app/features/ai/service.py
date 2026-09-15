@@ -99,7 +99,80 @@ _CODE_EXTENSIONS = frozenset({
 })
 
 
-def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | None = None) -> list[FileChange]:
+def validate_proposal_candidate(
+    path: str,
+    original: str,
+    updated: str,
+    workspace: str | None = None
+) -> tuple[bool, str]:
+    """Validate a proposed file change against strict integrity rules (Phase 10.19):
+    - UPDATED must be non-empty, differ from ORIGINAL, and pass language syntax check. Empty/equal => reject.
+    - For new files: ORIGINAL must be empty string.
+    - For edits: If file exists on disk, ORIGINAL section MUST exactly match current on-disk bytes (normalized \\r\\n -> \\n).
+      Mismatch => reject with integrity event 'original_mismatches_disk'.
+    """
+    clean_updated = _strip_outer_fences(updated)
+    clean_orig = (original or "").replace("\r\n", "\n")
+    clean_upd = clean_updated.replace("\r\n", "\n")
+
+    # 1. UPDATED must be non-empty
+    if not clean_upd.strip():
+        return False, "updated_empty_or_equal: updated content is empty"
+
+    # 2. UPDATED must differ from ORIGINAL
+    if clean_upd.strip() == clean_orig.strip():
+        return False, "updated_empty_or_equal: updated content is identical to original"
+
+    # 3. UPDATED must pass language syntax check
+    try:
+        from .harness.content_integrity import validate_language_syntax
+        valid_syntax, syntax_err = validate_language_syntax(path, clean_updated)
+        if not valid_syntax:
+            return False, f"syntax_error: {syntax_err}"
+    except Exception as syn_exc:
+        logger.debug("validate_language_syntax error: %s", syn_exc)
+
+    # 4. On-disk check if workspace is provided or path exists
+    target_path = None
+    if workspace:
+        from ...core.paths import ensure_within_workspace
+        try:
+            target_path = ensure_within_workspace(workspace, path)
+        except Exception as exc:
+            return False, f"path_escapes_workspace: {exc}"
+    else:
+        try:
+            p = Path(path)
+            if p.is_file():
+                target_path = p
+        except Exception:
+            target_path = None
+
+    if target_path is not None:
+        if target_path.exists() and target_path.is_file():
+            # File exists on disk => This is an edit
+            try:
+                disk_content = target_path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+                if clean_orig.strip() != disk_content.strip() and clean_orig != disk_content:
+                    logger.warning("original_mismatches_disk: Proposed original does not match %s on disk", path)
+                    return False, "original_mismatches_disk"
+            except Exception as read_err:
+                logger.warning("Failed to read disk content for %s: %s", path, read_err)
+                return False, f"disk_read_error: {read_err}"
+        else:
+            # File does not exist on disk => This is a new file
+            if clean_orig.strip() != "":
+                logger.warning("original_must_be_empty: New file %s has non-empty original", path)
+                return False, "original_must_be_empty"
+
+    return True, ""
+
+
+def extract_proposals_robust(
+    raw_text: str | None,
+    planned_files: list[str] | None = None,
+    workspace: str | None = None,
+) -> list[FileChange]:
     """Extract code proposals from LLM output across multiple formats:
     1. Standard [PROPOSAL: path] <<<< ORIGINAL ==== updated >>>>
     2. Relaxed [PROPOSAL path] / [FILE path]
@@ -110,6 +183,10 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
     7. Unclosed code blocks (truncated responses)
     8. Search/Replace block format
     9. Aggressive raw code salvage for single planned file
+
+    Enforces Phase 10.19 strict integrity:
+    - Last-wins: exactly ONE proposal per path per turn (if multiple well-formed candidates exist, take the LAST).
+    - If explicit [PROPOSAL: ...] blocks exist but none are well-formed, discards all and returns [].
     """
     if not raw_text or not isinstance(raw_text, str):
         return []
@@ -118,16 +195,32 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
     seen_paths: set[str] = set()
 
     # 1. Primary: Strict [PROPOSAL: path] format
-    for match in PROPOSAL_RE.finditer(raw_text):
-        path = match.group("path").strip().strip("\"'`:")
-        if path and path not in seen_paths:
-            orig = match.group("original") or ""
-            updated = _strip_outer_fences(match.group("updated"))
-            if updated:
-                proposals.append(FileChange(path=path, original=orig, updated=updated))
-                seen_paths.add(path)
+    strict_matches = list(PROPOSAL_RE.finditer(raw_text))
+    if strict_matches:
+        candidates_by_path: dict[str, list[tuple[str, str]]] = {}
+        for match in strict_matches:
+            path = match.group("path").strip().strip("\"'`:")
+            if path:
+                orig = match.group("original") or ""
+                upd = match.group("updated") or ""
+                candidates_by_path.setdefault(path, []).append((orig, upd))
 
-    if proposals:
+        for path, candidate_list in candidates_by_path.items():
+            well_formed: list[tuple[str, str]] = []
+            for orig, upd in candidate_list:
+                valid, err = validate_proposal_candidate(path, orig, upd, workspace=workspace)
+                if valid:
+                    well_formed.append((orig, _strip_outer_fences(upd)))
+                else:
+                    logger.warning("extract_proposals_robust: candidate for '%s' rejected: %s", path, err)
+            if well_formed:
+                if len(well_formed) > 1:
+                    logger.info("extract_proposals_robust: path '%s' had %d well-formed candidates; selecting LAST and discarding earlier", path, len(well_formed))
+                last_orig, last_upd = well_formed[-1]
+                proposals.append(FileChange(path=path, original=last_orig, updated=last_upd))
+            else:
+                logger.info("extract_proposals_robust: path '%s' had %d candidates, but none were well-formed", path, len(candidate_list))
+
         return proposals
 
     # 2. Secondary: Relaxed [PROPOSAL: path] or [FILE: path] format
@@ -135,18 +228,29 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
         r"\[(?:PROPOSAL|FILE|CREATE|UPDATE)(?::\s*|\s+)(?P<path>[^\]\n]+)\]\s*(?:<<<<(?: ORIGINAL)?\r?\n?(?P<original>.*?)====\r?\n?)?(?P<updated>.*?)(?:>{2,}|(?=\[(?:PROPOSAL|FILE|CREATE|UPDATE)|\Z))",
         re.DOTALL | re.IGNORECASE
     )
-    for match in relaxed_re.finditer(raw_text):
-        path = match.group("path").strip().strip("\"'`:")
-        if any(path.endswith(ext) for ext in _CODE_EXTENSIONS) or "." in path:
-            if path not in seen_paths:
+    relaxed_matches = list(relaxed_re.finditer(raw_text))
+    if relaxed_matches:
+        candidates_by_path = {}
+        for match in relaxed_matches:
+            path = match.group("path").strip().strip("\"'`:")
+            if any(path.endswith(ext) for ext in _CODE_EXTENSIONS) or "." in path:
                 orig = match.group("original") or ""
-                updated = match.group("updated") or ""
-                updated_clean = _strip_outer_fences(updated)
-                if updated_clean.strip():
-                    proposals.append(FileChange(path=path, original=orig, updated=updated_clean))
-                    seen_paths.add(path)
+                upd = match.group("updated") or ""
+                candidates_by_path.setdefault(path, []).append((orig, upd))
 
-    if proposals:
+        for path, candidate_list in candidates_by_path.items():
+            well_formed = []
+            for orig, upd in candidate_list:
+                valid, err = validate_proposal_candidate(path, orig, upd, workspace=workspace)
+                if valid:
+                    well_formed.append((orig, _strip_outer_fences(upd)))
+                else:
+                    logger.warning("extract_proposals_robust: relaxed candidate for '%s' rejected: %s", path, err)
+            if well_formed:
+                if len(well_formed) > 1:
+                    logger.info("extract_proposals_robust: path '%s' had %d well-formed relaxed candidates; selecting LAST", path, len(well_formed))
+                last_orig, last_upd = well_formed[-1]
+                proposals.append(FileChange(path=path, original=last_orig, updated=last_upd))
         return proposals
 
     # 3. Tertiary: Header + Code Block (e.g. `### notewatch.py\n```python...` or `- File: app/main.py\n```...`)
@@ -300,11 +404,13 @@ def extract_proposals_robust(raw_text: str | None, planned_files: list[str] | No
     return proposals
 
 
-def parse_proposals_from_llm(raw_text: str | None) -> tuple[list[FileChange], str]:
+def parse_proposals_from_llm(raw_text: str | None, workspace: str | None = None) -> tuple[list[FileChange], str]:
     """Parse raw LLM output for [PROPOSAL: ...] blocks and return FileChange list + summary."""
     if not raw_text or not isinstance(raw_text, str):
         return [], "Proposed code modifications"
-    changes = extract_proposals_robust(raw_text)
+    changes = extract_proposals_robust(raw_text, workspace=workspace)
+    if not changes and (PROPOSAL_RE.search(raw_text) or "[PROPOSAL" in raw_text or "<<<<" in raw_text):
+        return [], "model output did not contain a valid proposal"
     clean_summary = PROPOSAL_RE.sub("", raw_text).strip()
     if len(clean_summary) > 200:
         clean_summary = clean_summary[:200] + "..."
@@ -753,8 +859,11 @@ def _strip_code_fences(text: str) -> str:
 
 async def apply_proposal(proposal_id: str) -> EditProposalDto:
     proposal = await get_proposal(proposal_id)
+    if proposal.status == "applied":
+        # Single-resolve guard (Phase 10.19 C2): applying twice must no-op safely
+        return proposal
     if proposal.status != "pending":
-        raise HTTPException(status_code=409, detail="Proposal is not pending")
+        raise HTTPException(status_code=409, detail=f"Proposal is not pending (status: {proposal.status})")
         
     from ...core.paths import normalize_workspace, ensure_within_workspace
     root = normalize_workspace(proposal.workspace)

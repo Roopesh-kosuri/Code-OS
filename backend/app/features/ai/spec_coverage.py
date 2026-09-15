@@ -5,6 +5,7 @@ Used as a final validation gate before marking a job as completed.
 """
 import re
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -80,10 +81,40 @@ def extract_requirements(user_request: str) -> list[str]:
 
 def check_coverage(requirements: list[str],
                    manifest_entries: dict[str, dict],
-                   completed_tasks: list[dict]) -> dict:
+                   completed_tasks: list[dict],
+                   workspace: str | None = None) -> dict:
     """Check which requirements from the original spec are covered."""
     if not requirements:
-        return {"covered": [], "uncovered": [], "coverage_ratio": 1.0}
+        return {"covered": [], "uncovered": [], "coverage_ratio": 1.0, "test_file_missing": False}
+
+    # Check for referenced test files (Phase 10.19 Part D)
+    test_file_pattern = re.compile(r"\b([a-zA-Z0-9_\-./\\]*(?:test_[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+_test)\.[a-zA-Z0-9]+)\b", re.IGNORECASE)
+    all_referenced_test_files = set()
+    for req in requirements:
+        for m in test_file_pattern.finditer(req):
+            all_referenced_test_files.add(m.group(1))
+    for t in completed_tasks:
+        for m in test_file_pattern.finditer(t.get("title", "") + " " + t.get("reasoning_summary", "")):
+            all_referenced_test_files.add(m.group(1))
+
+    missing_tests = []
+    for tf in all_referenced_test_files:
+        exists = any(tf.lower() in k.lower() or Path(k).name.lower() == Path(tf).name.lower() for k in manifest_entries)
+        if not exists and workspace:
+            from app.core.paths import ensure_within_workspace
+            try:
+                full_p = ensure_within_workspace(workspace, tf)
+                exists = full_p.exists() and full_p.is_file()
+            except Exception:
+                exists = False
+            if not exists:
+                try:
+                    full_p_base = ensure_within_workspace(workspace, Path(tf).name)
+                    exists = full_p_base.exists() and full_p_base.is_file()
+                except Exception:
+                    exists = False
+        if not exists:
+            missing_tests.append(tf)
 
     corpus_parts = []
     for path, entry in manifest_entries.items():
@@ -115,7 +146,13 @@ def check_coverage(requirements: list[str],
                     uncovered.append(req)
 
     ratio = len(covered) / len(requirements) if requirements else 1.0
-    return {"covered": covered, "uncovered": uncovered, "coverage_ratio": round(ratio, 2)}
+    return {
+        "covered": covered,
+        "uncovered": uncovered,
+        "coverage_ratio": round(ratio, 2),
+        "test_file_missing": bool(missing_tests),
+        "missing_test_files": missing_tests,
+    }
 
 
 def _find_evidence(req: str, manifest_entries: dict, completed_tasks: list) -> str:
@@ -130,10 +167,14 @@ def _find_evidence(req: str, manifest_entries: dict, completed_tasks: list) -> s
     return "matched in corpus"
 
 
-def format_coverage_report(coverage: dict) -> str:
+def format_coverage_report(coverage: dict, verifications_run: list[str] | None = None) -> str:
     lines = []
     ratio = coverage.get("coverage_ratio", 0)
-    if ratio >= 1.0:
+    if coverage.get("test_file_missing"):
+        lines.append("Spec coverage: unverified: test file missing")
+        for tf in coverage.get("missing_test_files", []):
+            lines.append(f"  [MISSING TEST] Referenced test file not found: '{tf}'")
+    elif ratio >= 1.0:
         lines.append(f"Spec coverage: {ratio:.0%} -- all extracted requirements appear addressed.")
     else:
         lines.append(f"Spec coverage: {ratio:.0%} -- some requirements may not be addressed:")
@@ -141,4 +182,10 @@ def format_coverage_report(coverage: dict) -> str:
             lines.append(f"  [MISSING] Not found in output: '{req}'")
     if coverage.get("covered"):
         lines.append(f"  [OK] Covered ({len(coverage['covered'])} requirements matched)")
+
+    # Metric log line listing which verifications actually ran (Phase 10.19 Part D2)
+    verifs = verifications_run or coverage.get("verifications_run")
+    if verifs is None:
+        verifs = ["read_back_hash", "syntax_check"] if not coverage.get("test_file_missing") else ["syntax_check"]
+    lines.append(f"[VERIFICATIONS RUN] {', '.join(verifs)}")
     return "\n".join(lines)

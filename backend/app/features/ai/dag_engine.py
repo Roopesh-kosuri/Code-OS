@@ -57,7 +57,7 @@ class DAGEngine:
                         user_req = job_data.get("user_request") or job_data.get("workflow") or ""
                         if user_req:
                             reqs = extract_requirements(user_req)
-                            cov = check_coverage(reqs, manifest.get_entries(), tasks)
+                            cov = check_coverage(reqs, manifest.get_entries(), tasks, workspace=job_data.get("workspace"))
                             cov_report = format_coverage_report(cov)
                             await add_job_log(job_id, cov_report)
                             if cov.get("coverage_ratio", 1.0) < 0.6 and cov.get("uncovered"):
@@ -259,8 +259,46 @@ class DAGEngine:
                         )
                 await update_job_manifest(job_id, manifest.to_json())
             
+            # Truthful completion claim gating (Phase 10.19 Part D)
+            is_verified = True
+            verifications_run: list[str] = []
+            if output.proposals:
+                from ..core.paths import ensure_within_workspace
+                from .harness.content_integrity import validate_language_syntax
+                import hashlib
+                for p in output.proposals:
+                    p_path = p.get("path") if isinstance(p, dict) else getattr(p, "path", "")
+                    p_code = p.get("updated") if isinstance(p, dict) else getattr(p, "updated", "")
+                    if not p_path or not p_code:
+                        is_verified = False
+                        break
+                    try:
+                        fp = ensure_within_workspace(workspace, p_path)
+                        if not fp.exists() or not fp.is_file():
+                            is_verified = False
+                            break
+                        disk_bytes = fp.read_bytes()
+                        expected_bytes = p_code.encode("utf-8")
+                        if hashlib.sha256(disk_bytes.replace(b"\r\n", b"\n")).digest() != hashlib.sha256(expected_bytes.replace(b"\r\n", b"\n")).digest():
+                            is_verified = False
+                            break
+                        verifications_run.append("read_back_hash")
+                        val_syn, syn_msg = validate_language_syntax(p_path, p_code)
+                        if not val_syn:
+                            is_verified = False
+                            break
+                        verifications_run.append(f"syntax_check:{Path(p_path).suffix or 'generic'}")
+                    except Exception:
+                        is_verified = False
+                        break
+
             await update_task_status(task_id, "completed", reasoning_summary=output.reasoning_summary, structured_data=output.structured_data)
-            await add_job_log(job_id, f"Agent [{role}] successfully completed task '{task['title']}'.")
+            if is_verified:
+                await add_job_log(job_id, f"Agent [{role}] successfully completed task '{task['title']}'.")
+                if verifications_run:
+                    await add_job_log(job_id, f"[VERIFICATIONS RUN] {', '.join(sorted(set(verifications_run)))}")
+            else:
+                await add_job_log(job_id, f"Agent [{role}] finished task '{task['title']}' (unverified / proposal not confirmed on disk).")
             self._notify_job_update(job_id)
             await event_bus.publish("task_completed", {"job_id": job_id, "task_id": task_id})
             
