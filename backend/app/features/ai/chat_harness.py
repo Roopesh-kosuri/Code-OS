@@ -648,10 +648,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 )
                 and iteration >= 1
             ):
-                tier = 2
-                max_iterations = MAX_AGENT_ITERATIONS
-                tier_label = "Deep Task"
-                yield _sse_tier_routing(2, tier_label, reason="Escalated: task involves code edits/multi-step tool orchestration")
+                tier = 3 if _classify_rules(user_query.lower(), request.attached_paths)[0] >= 3 else 2
+                max_iterations = MAX_HUGE_TASK_ITERATIONS if tier >= 3 else MAX_AGENT_ITERATIONS
+                tier_label = "Deep Task / Architect" if tier >= 3 else "Deep Task"
+                yield _sse_tier_routing(tier, tier_label, reason="Escalated: task involves code edits/multi-step tool orchestration")
                 yield _sse_status("thinking", "Escalated to deep task — loading full DAG planning and grounding...")
                 if not project_memory:
                     project_memory = _load_project_memory(workspace)

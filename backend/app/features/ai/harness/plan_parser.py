@@ -160,10 +160,12 @@ def _classify_rules(q_lower: str, attached_paths: list[str] | None = None, is_ag
     reason = res.get("reasoning") or "; ".join(res.get("reasons", [])) or "Classified by unified task classifier"
 
     from .prompt_builder import _is_codebase_inquiry
-    if (effort == 0 or diff == "FAST") and not _is_codebase_inquiry(q_lower):
-        return 0, "Fast Answer", reason
+    if effort >= 3:
+        return 3, "Deep Task / Architect", reason
     elif effort == 2 or tier_name == "HARD":
         return 2, "Deep think", reason
+    elif (effort == 0 or diff == "FAST") and not _is_codebase_inquiry(q_lower):
+        return 0, "Fast Answer", reason
     else:
         return 1, "Quick Task", reason
 

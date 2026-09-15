@@ -25,7 +25,8 @@ HARD_KEYWORDS = frozenset({
     "auth", "authentication", "encryption", "crypto", "payment", "stripe",
     "algorithm", "security", "parser", "compiler", "optimization", "jwt",
     "oauth", "concurrency", "deadlock", "distributed", "consensus", "sandbox",
-    "vulnerability", "invariant", "microkernel", "zero-knowledge", "assembly"
+    "vulnerability", "invariant", "microkernel", "zero-knowledge", "assembly",
+    "architect", "cross-layer", "multi-file", "refactoring",
 })
 
 EASY_KEYWORDS = frozenset({
@@ -387,7 +388,7 @@ def _heuristic_classify(features: dict[str, Any]) -> dict[str, Any]:
     # Scope words in text
     tier2_scope_words = (
         "clone", "entire", "full", "complete", "website", "dashboard",
-        "portfolio", "from scratch", "architecture", "entire codebase", "all files",
+        "portfolio", "from scratch", "entire codebase", "all files",
         "across the project", "full system", "redesign", "port to", "migrate",
         "rewrite", "debug and fix all", "refactor",
     )
@@ -395,6 +396,21 @@ def _heuristic_classify(features: dict[str, Any]) -> dict[str, Any]:
         if re.search(rf"\b{re.escape(word)}\b", text):
             hard_score += 3.5
             reasons.append(f"Deep think: scope keyword '{word}' detected")
+
+    if re.search(r"\barchitect(ure)?\b", text):
+        hard_score += 3.5
+        reasons.append("Deep think: scope keyword 'architect(ure)' detected")
+
+    # Migration boost when combined with schema, database, or multi-file prompts
+    if re.search(r"\b(migration|migrate)\b", text):
+        if any(w in text for w in ("schema", "database", "db", "postgres", "sql", "table", "tables")) or file_count > 1 or "multi-file" in text or "across" in text:
+            hard_score += 6.0
+            reasons.append("Deep think: schema/database or multi-file migration detected")
+
+    # Multi-file and cross-layer explicit pattern boost
+    if re.search(r"\bacross\s+\d+\s+files\b", text) or "multi-file" in text or "cross-layer" in text:
+        hard_score += 6.0
+        reasons.append("Deep think: multi-file/cross-layer scope detected")
 
     # Quick action verbs (single-target actions)
     quick_task_verbs = (
@@ -413,11 +429,12 @@ def _heuristic_classify(features: dict[str, Any]) -> dict[str, Any]:
         reasons.append(f"Quick task: single-target action '{matched_quick_verb}'")
 
     if hard_score > 0 and hard_score >= easy_score and hard_score >= medium_score:
-        confidence = min(0.95, 0.70 + (hard_score * 0.05))
+        confidence = min(0.99, 0.70 + (hard_score * 0.05))
+        effort_tier = 3 if (hard_score >= 8.0 or file_count > 5) else 2
         return {
             "tier": "HARD",
             "difficulty": "HARD",
-            "effort_tier": 2,
+            "effort_tier": effort_tier,
             "confidence": round(confidence, 2),
             "score": hard_score,
             "reasons": reasons,
@@ -531,7 +548,7 @@ def classify_task(
     else:
         difficulty = tier
         if tier == "HARD":
-            effort_tier = 2
+            effort_tier = 3 if (score >= 8.0 or features["file_count"] > 5) else 2
         elif tier == "EASY":
             effort_tier = 1 if features["file_count"] > 0 or features["total_loc"] > 0 else 0
         else:
