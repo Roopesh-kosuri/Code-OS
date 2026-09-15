@@ -21,6 +21,9 @@ from fastapi import HTTPException
 IGNORED_DIRS = {
     ".git",
     ".venv",
+    "venv",
+    "env",
+    ".env",
     "__pycache__",
     "node_modules",
     "dist",
@@ -32,6 +35,11 @@ IGNORED_DIRS = {
     "coverage",
     ".next",
     ".turbo",
+    "resources",
+    "site-packages",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
 }
 
 

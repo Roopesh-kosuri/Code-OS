@@ -409,9 +409,14 @@ async def _gather_budgeted_rag_context(
     # 2. Semantic Search for Top matches
     semantic_results: list[dict] = []
     try:
-        raw_semantic = await semantic_search(workspace, query, limit=SEMANTIC_SEARCH_TOP_K)
+        raw_semantic = await asyncio.wait_for(
+            semantic_search(workspace, query, limit=SEMANTIC_SEARCH_TOP_K),
+            timeout=3.0,
+        )
         if raw_semantic:
             semantic_results = raw_semantic
+    except asyncio.TimeoutError:
+        logger.warning("chat_harness: semantic_search in budgeted RAG timed out after 3.0s — proceeding without RAG")
     except Exception as exc:
         logger.warning("chat_harness: semantic_search in budgeted RAG failed: %s", exc)
 

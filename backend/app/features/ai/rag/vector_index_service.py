@@ -32,8 +32,8 @@ CODE_EXTENSIONS = frozenset({
 # Ignored directory names during scanning
 IGNORED_DIRS = frozenset({
     "node_modules", ".git", ".code_os", "__pycache__", ".pytest_cache",
-    ".venv", "venv", "dist", "dist-electron", "build", "release", "out",
-    ".next", ".husky", "coverage", ".turbo", "uploads",
+    ".venv", "venv", "env", "dist", "dist-electron", "build", "release", "out",
+    ".next", ".husky", "coverage", ".turbo", "uploads", "resources", "site-packages",
 })
 
 
@@ -41,9 +41,22 @@ def is_ignored_rag_path(file_path: str | Path) -> bool:
     """Check if a path belongs to an excluded or polluted directory."""
     norm = str(file_path).replace("\\", "/").strip().lower()
     parts = [p.lower() for p in Path(norm).parts]
-    if any(p in IGNORED_DIRS or p in (".code_os", "uploads", ".git", "node_modules", ".pytest_cache", "release", "dist-electron") for p in parts):
+    if any(p in IGNORED_DIRS or p in (".code_os", "uploads", ".git", "node_modules", ".pytest_cache", "release", "dist-electron", "resources", "site-packages") for p in parts):
         return True
-    if ".code_os" in norm or "/uploads/" in norm or norm.startswith("uploads/") or norm.endswith("/uploads") or norm == "uploads" or "/release/" in norm or norm.startswith("release/"):
+    if (
+        ".code_os" in norm
+        or "/uploads/" in norm
+        or norm.startswith("uploads/")
+        or norm.endswith("/uploads")
+        or norm == "uploads"
+        or "/release/" in norm
+        or norm.startswith("release/")
+        or "/resources/" in norm
+        or norm.startswith("resources/")
+        or "/site-packages/" in norm
+        or "resources" in parts
+        or "site-packages" in parts
+    ):
         return True
     return False
 
@@ -759,6 +772,9 @@ def schedule_rag_reindex(
     try:
         safe_file_path = _ensure_within_workspace(workspace, file_path)
     except PermissionError:
+        return
+
+    if is_ignored_rag_path(file_path) or is_ignored_rag_path(str(safe_file_path)):
         return
 
     ext = safe_file_path.suffix.lower()

@@ -22,13 +22,21 @@ class LoggingEventHandler(FileSystemEventHandler):
             return
         src = str(event.src_path).replace("\\", "/")
         parts = [p.lower() for p in Path(src).parts]
+        lowered_ignored = {d.lower() for d in IGNORED_DIRS} | {
+            "resources", "site-packages", "lib", "venv", ".venv", "env",
+            ".code_os", "uploads", ".git", "node_modules", ".pytest_cache",
+            "dist", "release", "build", "coverage", ".next", ".turbo",
+        }
         if (
-            any(part in IGNORED_DIRS or part in (".code_os", "uploads", ".git", "node_modules", ".pytest_cache") for part in parts)
+            any(part in lowered_ignored for part in parts)
             or ".code_os" in src
             or "/uploads/" in src
             or src.endswith("/uploads")
+            or "/resources/" in src
+            or "/site-packages/" in src
         ):
             return
+
         logger.info("workspace file event: %s %s", event.event_type, event.src_path)
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(index_manager.schedule_file_change(self.workspace, event.src_path), self.loop)
