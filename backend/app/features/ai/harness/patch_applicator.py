@@ -246,4 +246,7 @@ def apply_atomic_patch_sequence(
                 staged_changes.append(FileChange(path=rel_p, original=orig_before, updated=final_upd))
 
     success_msg = f"✓ Successfully applied {len(normalized_patches)} patch(es) atomically across {len(touched_paths)} file(s)."
+    # F3: Release in-memory byte snapshots immediately after success — these can be large.
+    initial_snapshots.clear()
+    initial_texts.clear()
     return True, success_msg, touched_paths

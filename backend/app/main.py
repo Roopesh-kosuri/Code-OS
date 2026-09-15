@@ -146,25 +146,17 @@ async def _deferred_startup_tasks() -> None:
         logger.warning("Deferred startup catalog refresher: %s", exc)
 
     try:
-        from app.features.ai.rag import reconcile_workspace_index
+        # S3: Clean up leftover temp/pytest workspaces only (fast DB query).
+        # reconcile_workspace_index removed from startup — ChromaDB cold boot takes
+        # 30-90s and makes startup appear hung. RAG is reconciled lazily on workspace open.
         db = await get_db()
-        # Clean up any leftover temporary/pytest workspaces from db
         await db.execute(
             "DELETE FROM workspaces WHERE path LIKE '%temp%' OR path LIKE '%pytest%'"
         )
         await db.commit()
-
-        # Reconcile only active or most recently opened valid workspaces (max 3)
-        cursor = await db.execute(
-            "SELECT path FROM workspaces ORDER BY is_active DESC, last_opened_at DESC LIMIT 3"
-        )
-        rows = await cursor.fetchall()
-        for r in rows:
-            ws_path = r[0] if isinstance(r, (list, tuple)) else r["path"]
-            if ws_path and os.path.isdir(ws_path):
-                asyncio.create_task(reconcile_workspace_index(ws_path))
+        logger.info("[startup] Temp workspace cleanup complete")
     except Exception as exc:
-        logger.warning("Deferred startup RAG reconciliation: %s", exc)
+        logger.warning("Deferred startup temp cleanup: %s", exc)
 
 def _get_git_sha_and_build_time() -> tuple[str, str]:
     """Retrieve git commit SHA and build/start timestamp for operational traceability."""

@@ -433,7 +433,7 @@ export class BackendProcess {
         appendCrashLog(`[CIRCUIT BREAKER] ${alertMsg}`);
         console.error(`[backend] ${alertMsg}`);
         try {
-          dialog.showErrorBox("CODE OS - Backend Crash Loop", alertMsg);
+          dialog.showErrorBox("Backend crashed repeatedly — see crash log", alertMsg);
         } catch {}
         if (this.onCircuitBreakerTripped) {
           this.onCircuitBreakerTripped();
@@ -442,14 +442,17 @@ export class BackendProcess {
       }
 
       this.restartTimestamps.push(now);
-      console.log(`[backend] Auto-restarting in 1000ms (restart attempt ${this.restartTimestamps.length}/3 in 60s window)...`);
+      // S1: 1s, 2s, 4s exponential backoff on unexpected exit
+      const attempt = this.restartTimestamps.length;
+      const backoffMs = Math.min(4000, 1000 * Math.pow(2, attempt - 1));
+      console.log(`[backend] Auto-restarting in ${backoffMs}ms (restart attempt ${attempt}/3 in 60s window)...`);
       setTimeout(() => {
         if (!this.isStopping && !this.circuitBreakerTripped) {
           void this.start().catch((err) => {
             console.error("[backend] Auto-restart failed:", err);
           });
         }
-      }, 1000);
+      }, backoffMs);
     });
   }
 

@@ -54,7 +54,28 @@ function findPython() {
 
 const pythonCmd = findPython();
 const backendDir = path.resolve("backend");
-const args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000", "--reload"];
+const args = [
+  "-m", "uvicorn", "app.main:app",
+  "--host", "127.0.0.1",
+  "--port", "8000",
+  "--reload",
+  // F1: Restrict reloader to application source only.
+  // Without this, uvicorn watches ALL of backend/ including tests, harness state,
+  // and any .code_os / vector_index files written during agent turns → crash loop.
+  "--reload-dir", path.resolve(backendDir, "app"),
+  // Exclude generated/state file patterns that are never Python source
+  "--reload-exclude", "*.db",
+  "--reload-exclude", "*.sqlite3",
+  "--reload-exclude", "*.sqlite3-wal",
+  "--reload-exclude", "*.sqlite3-shm",
+  "--reload-exclude", "*.log",
+  "--reload-exclude", "*.pyc",
+  "--reload-exclude", "__pycache__",
+  "--reload-exclude", ".code_os",
+  "--reload-exclude", "vector_index",
+  "--reload-exclude", "*.bin",
+  "--reload-exclude", "*.onnx",
+];
 
 let shouldRestart = true;
 let currentProc = null;

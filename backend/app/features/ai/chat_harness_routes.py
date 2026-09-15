@@ -8,6 +8,7 @@ This is a dedicated router — does NOT modify any existing Agent Console routes
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from pathlib import Path
@@ -132,7 +133,10 @@ async def chat_agent_stream(payload: ChatAgentStreamRequest) -> StreamingRespons
     Runs adaptive tiered execution (Tier 0 Fast Answer, Tier 1 Quick Task, Tier 2 Deep Task)
     with tool execution, budgeted RAG, DAG planning, and verification.
     """
-    from .chat_harness import run_chat_agent, ChatAgentRequest
+    import app.features.ai.chat_harness_routes as _this_module
+    from .chat_harness import run_chat_agent as _run_chat_agent, ChatAgentRequest
+    # Allow tests to patch run_chat_agent at the module level
+    _run = getattr(_this_module, "run_chat_agent", _run_chat_agent)
     
     # Context injection for uploaded files with deterministic budget truncation (S4)
     effective_messages = [dict(m) for m in payload.messages]
@@ -173,9 +177,29 @@ async def chat_agent_stream(payload: ChatAgentStreamRequest) -> StreamingRespons
         vision_base_url=payload.vision_base_url,
         file_ids=payload.file_ids or [],
     )
-    
+
+    async def _safe_sse_generator():
+        """F2: Wraps run_chat_agent so any unhandled exception is caught, logged,
+        and returned as an error SSE event — never propagated to uvicorn's ASGI
+        layer which would otherwise kill the worker process."""
+        try:
+            async for chunk in _run(agent_request):
+                yield chunk
+        except Exception:
+            logger.exception(
+                "[SSE_CRASH] Unhandled exception in run_chat_agent for workspace=%s model=%s",
+                payload.workspace, payload.model,
+            )
+            error_payload = json.dumps({
+                "message": "An internal server error occurred. The agent turn was aborted. Please try again.",
+                "workspace": payload.workspace,
+            })
+            yield f"event: error\ndata: {error_payload}\n\n"
+            done_payload = json.dumps({"success": False, "message": "Agent turn aborted due to internal error."})
+            yield f"event: done\ndata: {done_payload}\n\n"
+
     return StreamingResponse(
-        run_chat_agent(agent_request),
+        _safe_sse_generator(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

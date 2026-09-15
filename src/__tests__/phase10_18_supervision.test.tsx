@@ -24,7 +24,7 @@ describe("Phase 10.18: Backend Process Supervision & Explorer UX", () => {
     vi.restoreAllMocks();
   });
 
-  it("A3: trips circuit breaker after 3 backend crashes within 60s", () => {
+  it("test_backend_auto_restart_with_backoff_then_modal: trips circuit breaker after 3 backend crashes within 60s", () => {
     const proc = new BackendProcess();
     expect(proc.circuitBreakerTripped).toBe(false);
     expect(proc.restartTimestamps.length).toBe(0);
@@ -81,7 +81,7 @@ describe("Phase 10.18: Backend Process Supervision & Explorer UX", () => {
     expect(restartMock).toHaveBeenCalledTimes(1);
   });
 
-  it("C1: reconnecting from disconnected state refreshes file tree and calls warmup", async () => {
+  it("test_health_ping_banner_and_recovery_refresh: reconnecting from disconnected state refreshes file tree and calls warmup", async () => {
     const refreshTreeMock = vi.fn().mockResolvedValue(undefined);
     const restoreLastMock = vi.fn().mockResolvedValue(undefined);
 
@@ -135,7 +135,7 @@ describe("Phase 10.18: Backend Process Supervision & Explorer UX", () => {
     expect(refreshTreeMock).not.toHaveBeenCalled();
   });
 
-  it("C2: empty workspace renders 'No files in workspace.' with Create File and Create Folder buttons", () => {
+  it("test_empty_workspace_get_started_buttons: empty workspace renders 'No files in workspace.' with Create File and Create Folder buttons", () => {
     vi.useRealTimers();
     const mockWorkspace = {
       path: "/test/empty",

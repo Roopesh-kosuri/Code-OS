@@ -1,5 +1,9 @@
 from __future__ import annotations
-_file_read_cache: dict[str, tuple[float, str]] = {}
+from collections import OrderedDict
+# F3: Use OrderedDict (LRU-style eviction) capped at 200 entries — was an unbounded plain dict
+# capped at 1000. Bounds memory during long agent sessions reading many files.
+_FILE_READ_CACHE_MAX = 200
+_file_read_cache: "OrderedDict[str, tuple[float, str]]" = OrderedDict()
 """
 tool_executor.py - Execution handlers for chat agent workspace tools.
 """
@@ -1074,10 +1078,13 @@ def _read_file_cached(full_path: Path) -> str:
         mtime = 0.0
     cached = _file_read_cache.get(str_path)
     if cached and cached[0] == mtime:
+        # LRU hit: promote to most-recently-used end
+        _file_read_cache.move_to_end(str_path)
         return cached[1]
     content = full_path.read_text(encoding="utf-8", errors="replace")
-    if len(_file_read_cache) >= 1000:
-        _file_read_cache.pop(next(iter(_file_read_cache)), None)
+    # Evict oldest entry (LRU) when at capacity
+    while len(_file_read_cache) >= _FILE_READ_CACHE_MAX:
+        _file_read_cache.popitem(last=False)
     _file_read_cache[str_path] = (mtime, content)
     return content
 

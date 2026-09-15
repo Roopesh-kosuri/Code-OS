@@ -71,11 +71,12 @@ function BackendStatusBanner() {
   const nextRetryInSeconds = useBackendStore((s) => s.nextRetryInSeconds);
   const retryNow = useBackendStore((s) => s.retryNow);
 
-  // Red banner renders ONLY when bootPhase === 'failed' OR disconnected AFTER ready
-  const shouldShow =
-    bootPhase === "failed" || (bootPhase === "ready" && status === "disconnected");
+  // Reconnecting banner: shown during normal reconnect after ready (non-alarming)
+  const isReconnecting = bootPhase === "ready" && status === "disconnected";
+  // Error banner: only shown when startup definitively failed (after 45s grace + 5 retries)
+  const isStartupFailed = bootPhase === "failed";
 
-  if (!shouldShow) return null;
+  if (!isReconnecting && !isStartupFailed) return null;
 
   return (
     <div
@@ -84,10 +85,21 @@ function BackendStatusBanner() {
     >
       <div className="flex items-center gap-2">
         <span className="inline-block w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-        <span className="font-semibold text-rose-300">Backend not running:</span>
-        <span className="text-on-surface-variant">
-          Please start it with <code className="bg-black/60 px-1.5 py-0.5 rounded text-cyan-300 font-mono text-[11px]">npm run dev</code> or <code className="bg-black/60 px-1.5 py-0.5 rounded text-cyan-300 font-mono text-[11px]">python -m uvicorn app.main:app --port 8000</code>
-        </span>
+        {isReconnecting ? (
+          <>
+            <span className="font-semibold text-amber-300">Backend not running (reconnecting…):</span>
+            <span className="text-on-surface-variant">
+              The backend process restarted. Reconnecting automatically.
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="font-semibold text-rose-300">Backend not running:</span>
+            <span className="text-on-surface-variant">
+              Please start it with <code className="bg-black/60 px-1.5 py-0.5 rounded text-cyan-300 font-mono text-[11px]">npm run dev</code> or <code className="bg-black/60 px-1.5 py-0.5 rounded text-cyan-300 font-mono text-[11px]">python -m uvicorn app.main:app --port 8000</code>
+            </span>
+          </>
+        )}
       </div>
       <div className="flex items-center gap-3">
         {nextRetryInSeconds > 0 && (

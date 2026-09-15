@@ -92,6 +92,7 @@ export const useBackendStore = create<BackendState>((set, get) => ({
     }
 
     const elapsed = Date.now() - current.bootStartTime;
+    // S2: 15s grace or 3 consecutive retries during boot transitions to 'failed'
     const isBootGraceExpired = elapsed >= 15_000;
     const isMaxBootRetries = nextCount >= 3;
     let nextBootPhase = current.bootPhase;
