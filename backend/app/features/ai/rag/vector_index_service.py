@@ -299,7 +299,7 @@ async def index_file(workspace: str, file_path: str) -> int:
 
     # 2. Delete existing chunks for this file
     try:
-        collection.delete(where={"file_path": rel_path})
+        await asyncio.to_thread(collection.delete, where={"file_path": rel_path})
     except Exception as exc:
         logger.debug("index_file: delete previous chunks failed/empty: %s", exc)
 
@@ -350,8 +350,8 @@ async def index_file(workspace: str, file_path: str) -> int:
             "mtime": mtime,
         })
 
-    # 3. Upsert to ChromaDB
-    collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+    # 3. Upsert to ChromaDB off-thread
+    await asyncio.to_thread(collection.upsert, ids=ids, documents=documents, metadatas=metadatas)
     return len(chunks)
 
 
@@ -362,7 +362,7 @@ async def remove_file(workspace: str, file_path: str) -> bool:
     rel_path = str(full_p.relative_to(Path(norm_ws))).replace("\\", "/")
     collection = init_vector_store(norm_ws)
     try:
-        collection.delete(where={"file_path": rel_path})
+        await asyncio.to_thread(collection.delete, where={"file_path": rel_path})
         return True
     except Exception as exc:
         logger.warning("remove_file failed for %s: %s", rel_path, exc)
@@ -893,38 +893,36 @@ async def reconcile_workspace_index(workspace: str, loop: Optional[asyncio.Abstr
 
     collection = init_vector_store(norm_ws)
 
-    # 1. Prune already-indexed polluted records (.code_os, uploads, node_modules, .git, .pytest_cache)
-    try:
-        data = collection.get(include=["metadatas"])
-        polluted_paths: set[str] = set()
-        for meta in data.get("metadatas") or []:
-            fp = meta.get("file_path")
-            if fp and is_ignored_rag_path(fp):
-                polluted_paths.add(fp)
-        for pp in polluted_paths:
-            try:
-                _ensure_within_workspace(norm_ws, pp)
-            except PermissionError:
-                continue
-            try:
-                collection.delete(where={"file_path": pp})
-                logger.info("reconcile_workspace_index: pruned polluted record %s", pp)
-            except Exception as p_err:
-                logger.debug("reconcile_workspace_index: failed to prune polluted record %s: %s", pp, p_err)
-    except Exception as exc:
-        logger.debug("reconcile_workspace_index: failed checking polluted metadatas: %s", exc)
-
-    # 2. Retrieve current collection metadata
+    # 1. Retrieve current collection metadata & batch-prune polluted records off-thread
     existing_file_meta: Dict[str, float] = {}
     try:
-        data = collection.get(include=["metadatas"])
-        for meta in data.get("metadatas") or []:
+        data = await asyncio.to_thread(collection.get, include=["metadatas"])
+        ids = data.get("ids") or []
+        metas = data.get("metadatas") or []
+        polluted_ids: List[str] = []
+        for doc_id, meta in zip(ids, metas):
+            if not meta:
+                continue
             fp = meta.get("file_path")
-            if fp and not is_ignored_rag_path(fp):
+            if fp and is_ignored_rag_path(fp):
+                polluted_ids.append(doc_id)
+            elif fp:
                 mt = float(meta.get("mtime") or 0.0)
                 existing_file_meta[fp] = max(existing_file_meta.get(fp, 0.0), mt)
+
+        if polluted_ids:
+            logger.info("reconcile_workspace_index: batch pruning %d polluted chunks", len(polluted_ids))
+            batch_size = 2000
+            for i in range(0, len(polluted_ids), batch_size):
+                batch = polluted_ids[i:i + batch_size]
+                try:
+                    await asyncio.to_thread(collection.delete, ids=batch)
+                except Exception as p_err:
+                    logger.debug("reconcile_workspace_index: failed to prune batch: %s", p_err)
+                await asyncio.sleep(0.01)
+            logger.info("reconcile_workspace_index: successfully pruned %d polluted chunks", len(polluted_ids))
     except Exception as exc:
-        logger.debug("reconcile_workspace_index: failed to load existing metadatas: %s", exc)
+        logger.debug("reconcile_workspace_index: failed checking collection metadatas: %s", exc)
 
     # 3. Scan disk files
     disk_files: Dict[str, Path] = {}
