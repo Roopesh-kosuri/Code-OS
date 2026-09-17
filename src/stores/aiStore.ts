@@ -96,6 +96,7 @@ export interface PendingApprovalState {
   reason: string;
   proposal_id?: string;
   path?: string;
+  diff?: string;
   diff_summary?: string;
   is_native_fallback?: boolean;
   agent_role?: string;

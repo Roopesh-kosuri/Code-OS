@@ -579,31 +579,13 @@ def _rerank_chunks(query: str, candidates: List[Dict[str, Any]], top_k: int = 5)
     return candidates[:top_k]
 
 
-async def semantic_search(
+def _sync_semantic_search(
     workspace: str,
     query: str,
-    top_k: int = 5,
-    limit: Optional[int] = None,
-    use_semantic: Optional[bool] = None,
-    collection_name: str = "codebase_rag",
+    target_k: int,
+    use_semantic: bool,
+    collection_name: str,
 ) -> List[Dict[str, Any]]:
-    """
-    Hybrid semantic code search combining ChromaDB MiniLM-L6-v2 embeddings (70%)
-    and keyword/symbol overlap (30%) with cross-encoder reranking.
-    When use_semantic is False, falls back to keyword-only retrieval.
-    """
-    if not query.strip():
-        return []
-
-    target_k = limit if limit is not None else top_k
-
-    if use_semantic is None:
-        try:
-            from app.core.config import get_settings
-            use_semantic = get_settings().use_semantic_rag
-        except Exception:
-            use_semantic = True
-
     norm_ws = _normalize_workspace_path(workspace)
     collection = init_vector_store(norm_ws, collection_name=collection_name)
 
@@ -656,6 +638,42 @@ async def semantic_search(
     # 5. Cross-encoder reranking down to target_k
     final_results = _rerank_chunks(query, merged_candidates, top_k=target_k)
     return [r for r in final_results if not is_ignored_rag_path(r.get("file_path", ""))]
+
+
+async def semantic_search(
+    workspace: str,
+    query: str,
+    top_k: int = 5,
+    limit: Optional[int] = None,
+    use_semantic: Optional[bool] = None,
+    collection_name: str = "codebase_rag",
+) -> List[Dict[str, Any]]:
+    """
+    Hybrid semantic code search combining ChromaDB MiniLM-L6-v2 embeddings (70%)
+    and keyword/symbol overlap (30%) with cross-encoder reranking.
+    When use_semantic is False, falls back to keyword-only retrieval.
+    Offloaded to a background thread to prevent blocking the asyncio event loop.
+    """
+    if not query.strip():
+        return []
+
+    target_k = limit if limit is not None else top_k
+
+    if use_semantic is None:
+        try:
+            from app.core.config import get_settings
+            use_semantic = get_settings().use_semantic_rag
+        except Exception:
+            use_semantic = True
+
+    return await asyncio.to_thread(
+        _sync_semantic_search,
+        workspace,
+        query,
+        target_k,
+        bool(use_semantic),
+        collection_name,
+    )
 
 
 async def get_file_context(workspace: str, file_path: str) -> List[Dict[str, Any]]:

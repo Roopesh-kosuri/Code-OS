@@ -386,7 +386,10 @@ async def _gather_budgeted_rag_context(
     symbol_hits: list[str] = []
     for sym in candidate_symbols:
         try:
-            def_matches = _handle_search_code(workspace, {"query": sym})
+            def_matches = await asyncio.wait_for(
+                asyncio.to_thread(_handle_search_code, workspace, {"query": sym}),
+                timeout=1.5,
+            )
             if def_matches.success and def_matches.output:
                 lines = [l for l in def_matches.output.splitlines() if not l.startswith("===")][:5]
                 if lines:

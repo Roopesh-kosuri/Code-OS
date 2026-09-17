@@ -1,3 +1,4 @@
+import os
 import re
 import time
 from pathlib import Path
@@ -50,13 +51,14 @@ def is_binary_file(path: Path) -> bool:
 def iter_project_files(workspace: str, limit: int = MAX_SCAN_FILES) -> list[Path]:
     root = normalize_path(workspace)
     files: list[Path] = []
-    for path in root.rglob("*"):
-        if any(part in IGNORED_SEARCH_DIRS for part in path.parts):
-            continue
-        if path.is_file() and not is_binary_file(path):
-            files.append(path)
-            if len(files) >= limit:
-                break
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_SEARCH_DIRS and not d.startswith(".")]
+        for f in filenames:
+            path = Path(dirpath) / f
+            if not is_binary_file(path):
+                files.append(path)
+                if len(files) >= limit:
+                    return files
     return files
 
 

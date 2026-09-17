@@ -228,6 +228,7 @@ export class BackendProcess {
   isStopping: boolean = false;
   circuitBreakerTripped: boolean = false;
   onCircuitBreakerTripped?: () => void;
+  private _restartTimer: NodeJS.Timeout | null = null;
   private _tokenReady: Promise<string>;
   private _tokenResolve!: (token: string) => void;
 
@@ -446,7 +447,8 @@ export class BackendProcess {
       const attempt = this.restartTimestamps.length;
       const backoffMs = Math.min(4000, 1000 * Math.pow(2, attempt - 1));
       console.log(`[backend] Auto-restarting in ${backoffMs}ms (restart attempt ${attempt}/3 in 60s window)...`);
-      setTimeout(() => {
+      this._restartTimer = setTimeout(() => {
+        this._restartTimer = null;
         if (!this.isStopping && !this.circuitBreakerTripped) {
           void this.start().catch((err) => {
             console.error("[backend] Auto-restart failed:", err);
@@ -463,10 +465,20 @@ export class BackendProcess {
 
   stop(): void {
     this.isStopping = true;
+    if (this._restartTimer) {
+      clearTimeout(this._restartTimer);
+      this._restartTimer = null;
+    }
     if (!this.process) return;
+    const proc = this.process;
+    this.process = null;
     try {
-      this.process.kill("SIGTERM");
-      const proc = this.process;
+      if (proc.pid && process.platform === "win32") {
+        try {
+          execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "ignore" });
+        } catch {}
+      }
+      proc.kill("SIGTERM");
       setTimeout(() => {
         try {
           if (proc && !proc.killed) {
@@ -475,19 +487,23 @@ export class BackendProcess {
         } catch {}
       }, 3000);
     } catch {
-      this.process.kill();
+      proc.kill();
     }
-    this.process = null;
   }
 
   async restart(): Promise<void> {
+    if (isDev) {
+      console.log("[backend] Dev mode: IPC restart received; dev backend is managed by runner");
+      return;
+    }
     console.log("[backend] Manual restart initiated via supervision IPC");
     this.stop();
+    // Keep isStopping true during shutdown delay to prevent exit handler race condition
+    await new Promise((r) => setTimeout(r, 1000));
     this.isStopping = false;
     this.circuitBreakerTripped = false;
     this._tokenReady = new Promise<string>((resolve) => { this._tokenResolve = resolve; });
     this.sessionToken = null;
-    await new Promise((r) => setTimeout(r, 1000));
     await this.start();
   }
 }

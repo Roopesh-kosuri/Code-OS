@@ -137,7 +137,7 @@ export const useBackendStore = create<BackendState>((set, get) => ({
 
   checkHealth: async () => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
     try {
       const res = await fetch("http://127.0.0.1:8000/health", {
         method: "GET",

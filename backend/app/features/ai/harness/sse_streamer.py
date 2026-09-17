@@ -233,13 +233,13 @@ class StreamReasoningFilter:
         while self.buffer:
             if not self.in_thought and not self.in_tool_call and not self.in_proposal:
                 # 1. Check for reasoning tag openers
-                m_open = re.search(r"(<think>|<thought>|<reasoning>|<\|start\|>thought|commentary\s+to=|<\|start\|>to=)", self.buffer, re.IGNORECASE)
+                m_open = re.search(r"(<think>|<thought>|<reasoning>|<\|start\|>\s*thought|commentary\s+to=|<\|start\|>\s*to=)", self.buffer, re.IGNORECASE)
                 # 2. Check for tool-call openers to suppress from chat bubble
                 m_tool = re.search(r"(\[TOOL_CALL:\s*[a-zA-Z0-9_\-]+|```(?:tool_call|json)?\s*\n?\s*\{\s*\"(?:tool|name|action)\"\s*:)", self.buffer, re.IGNORECASE)
                 # 3. Check for proposal openers to suppress from chat bubble prose
                 m_prop = re.search(r"(\[PROPOSAL:\s*[^\]]+\])", self.buffer, re.IGNORECASE)
                 # 4. Check for standalone [DONE] or control tokens
-                m_done = re.search(r"(\[DONE\]|<\|(?:im_start|im_end|start|end|pad|eot|fim_prefix|fim_suffix|fim_middle).*?\|>)", self.buffer, re.IGNORECASE)
+                m_done = re.search(r"(\[DONE\]|<\|start\|>assistant\n?|<\|(?:im_start|im_end|end|pad|eot|fim_prefix|fim_suffix|fim_middle).*?\|>)", self.buffer, re.IGNORECASE)
 
                 # Find earliest match among all blockers
                 candidates = []

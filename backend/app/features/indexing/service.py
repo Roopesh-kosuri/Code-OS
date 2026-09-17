@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -100,19 +101,16 @@ def _scan_workspace(workspace: str, previous: dict[str, tuple[int, int, str]]) -
     folder_counts: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     all_files = []
 
-    for path in root.rglob("*"):
-        if _is_ignored(path):
-            continue
-        if path.is_dir():
-            rel = _relative(root, path)
-            folder_counts[str(path)][1] += len([child for child in _safe_iterdir(path) if child.is_dir() and not _is_ignored(child)])
-            result.folders[str(path)] = (rel, folder_counts[str(path)][0], folder_counts[str(path)][1])
-            continue
-        if not path.is_file():
-            continue
-        parent = str(path.parent)
-        folder_counts[parent][0] += 1
-        all_files.append(path)
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS and not d.startswith(".")]
+        d_path = Path(dirpath)
+        folder_counts[str(d_path)][1] = len(dirnames)
+        for f in filenames:
+            if f.startswith(".") or f.endswith(".pyc"):
+                continue
+            path = d_path / f
+            folder_counts[str(d_path)][0] += 1
+            all_files.append(path)
 
     dependencies = _detect_dependencies(root)
     result.dependencies.extend(dependencies)

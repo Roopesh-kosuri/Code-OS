@@ -71,6 +71,8 @@ const args = [
   "--reload-exclude=*.sqlite3-wal",
   "--reload-exclude=*.sqlite3-shm",
   "--reload-exclude=*.log",
+  "--reload-exclude=*.json",
+  "--reload-exclude=*.jsonl",
   "--reload-exclude=*.pyc",
   "--reload-exclude=__pycache__",
   "--reload-exclude=.code_os",
@@ -89,7 +91,11 @@ function startBackend() {
   if (fs.existsSync(sitePackages)) {
     pythonPathParts.push(sitePackages);
   }
-  const spawnEnv = { ...process.env, PYTHONPATH: pythonPathParts.join(path.delimiter) };
+  const spawnEnv = {
+    ...process.env,
+    PYTHONPATH: pythonPathParts.join(path.delimiter),
+    PYTHONDONTWRITEBYTECODE: "1"
+  };
   currentProc = spawn(pythonCmd, args, {
     stdio: "inherit",
     cwd: backendDir,

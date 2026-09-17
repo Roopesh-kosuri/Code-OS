@@ -9,6 +9,7 @@ Security: All file access goes through core.paths.ensure_within_workspace().
 """
 
 import json
+import os
 import re
 import logging
 from dataclasses import dataclass, field
@@ -180,10 +181,14 @@ def _handle_search_code(workspace: str, arguments: dict) -> ToolResult:
 
     query_lower = query.lower()
 
-    for path in root.rglob("*"):
-        if any(part in IGNORED_DIRS or part.startswith(".") for part in path.parts):
-            continue
-        if path.is_file():
+    ignored_set = set(IGNORED_DIRS)
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune ignored and hidden directories so os.walk NEVER descends into them
+        dirnames[:] = [d for d in dirnames if d not in ignored_set and not d.startswith(".")]
+        for fname in filenames:
+            if fname.startswith("."):
+                continue
+            path = Path(dirpath) / fname
             try:
                 # Limit search to source code files under 1MB
                 if path.stat().st_size > 1_000_000:
@@ -200,6 +205,8 @@ def _handle_search_code(workspace: str, arguments: dict) -> ToolResult:
                                 break
             except OSError:
                 continue
+            if len(matches) >= max_results:
+                break
         if len(matches) >= max_results:
             break
 
