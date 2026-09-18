@@ -177,6 +177,8 @@ a = Analysis(
         'tkinter', 'test', '_tkinter', 'matplotlib',
         'PyQt5', 'PySide6', 'PyQt6', 'PySide2', 'qtpy',
         'IPython', 'notebook', 'scipy',
+        'torch', 'transformers', 'cv2', 'googleapiclient',
+        'playwright', 'ctranslate2', 'sympy', 'kubernetes',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

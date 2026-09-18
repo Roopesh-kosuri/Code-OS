@@ -3,8 +3,13 @@ productName: CODE OS
 directories:
   output: release
 
+asar: true
 asarUnpack:
   - "**/node_modules/node-pty/**"
+
+compression: "maximum"
+electronLanguages:
+  - "en"
 
 afterSign: "scripts/verify-release-signing.js"
 

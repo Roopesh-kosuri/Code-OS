@@ -56,10 +56,14 @@ jobs:
         continue-on-error: false
 
   ci-checks:
-    name: Frontend and Backend CI Checks
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: Frontend and Backend CI Checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     needs: [security-gates]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     env:
       NODE_OPTIONS: "--max-old-space-size=4096"
 
@@ -80,6 +84,7 @@ jobs:
           cache: 'pip'
 
       - name: Install System Dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg pkg-config xvfb
@@ -102,12 +107,24 @@ jobs:
       - name: Post-Bundle Runtime Assertion (Build Gate)
         run: python scripts/verify_bundle_runtime.py
 
-      - name: Run backend tests with coverage
+      - name: Run backend tests with coverage (Linux)
+        if: runner.os == 'Linux'
         run: |
           xvfb-run -a pytest backend/tests --cov=app.core.security \
                                --cov=app.core.paths \
                                --cov=app.core.rate_limiter \
                                --cov=app.features.ai.sandbox.policy \
+                               --cov-fail-under=80 -v
+        env:
+          PYTHONPATH: backend
+
+      - name: Run backend tests with coverage (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pytest backend/tests --cov=app.core.security `
+                               --cov=app.core.paths `
+                               --cov=app.core.rate_limiter `
+                               --cov=app.features.ai.sandbox.policy `
                                --cov-fail-under=80 -v
         env:
           PYTHONPATH: backend

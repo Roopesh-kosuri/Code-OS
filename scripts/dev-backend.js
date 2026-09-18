@@ -91,10 +91,12 @@ function startBackend() {
   if (fs.existsSync(sitePackages)) {
     pythonPathParts.push(sitePackages);
   }
+  const tiktokenDir = path.resolve("resources", "tiktoken");
   const spawnEnv = {
     ...process.env,
     PYTHONPATH: pythonPathParts.join(path.delimiter),
-    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONDONTWRITEBYTECODE: "1",
+    TIKTOKEN_CACHE_DIR: fs.existsSync(tiktokenDir) ? tiktokenDir : process.env.TIKTOKEN_CACHE_DIR,
   };
   currentProc = spawn(pythonCmd, args, {
     stdio: "inherit",
