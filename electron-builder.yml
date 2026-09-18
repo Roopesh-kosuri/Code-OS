@@ -9,7 +9,8 @@ asarUnpack:
 
 compression: "maximum"
 electronLanguages:
-  - "en"
+  - "en-US"
+  - "en-GB"
 
 afterSign: "scripts/verify-release-signing.js"
 

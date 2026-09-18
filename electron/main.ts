@@ -157,7 +157,7 @@ async function createWindow(): Promise<void> {
     titleBarStyle: "hidden",
     autoHideMenuBar: true,
     show: false,
-    icon: iconPath,
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     backgroundColor: "#101215",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
