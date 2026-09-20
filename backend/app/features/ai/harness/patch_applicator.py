@@ -96,6 +96,119 @@ def _find_anchor_matches(text: str, lines: list[str], anchor: str) -> list[tuple
     return matches
 
 
+def _resolve_patch_anchor(
+    current_text: str,
+    disk_lines: list[str],
+    start_line: int,
+    actual_end: int,
+    anchor: str,
+    rel_p: str = "",
+) -> tuple[bool, int, int, str | None, dict | None]:
+    """Resolve an anchor against disk content (Phase 12.5 H1.2 + Phase 12.5.1 G1).
+
+    Order of resolution:
+    (a) try line range; if disk slice == anchor -> apply (short anchors allowed for exact match).
+    (b) slice != anchor -> RELOCATE: search for anchor in file.
+        (c) 0 matches -> reject 'anchor not found: file drifted'.
+        (d) >1 matches -> reject 'anchor ambiguous'.
+        (e) 1 match -> guard relocation against generic/short anchors (G1).
+            If ok, relocate and return relocation_event.
+    """
+    total_lines = len(disk_lines)
+    disk_range = "\n".join(disk_lines[start_line - 1 : actual_end]) if start_line <= total_lines else ""
+
+    if start_line <= total_lines and _anchor_matches(disk_range, anchor):
+        return True, start_line, actual_end, None, None
+
+    # Slice != anchor -> RELOCATE: search for anchor in file
+    matches = _find_anchor_matches(current_text, disk_lines, anchor)
+    if len(matches) == 0:
+        return False, start_line, actual_end, "anchor not found: file drifted", None
+    elif len(matches) > 1:
+        return False, start_line, actual_end, "anchor ambiguous", None
+    else:
+        # Exactly 1 match found elsewhere -> guard relocation against generic/short anchors (Phase 12.5.1 G1)
+        is_ok, c_count, l_count = _is_anchor_size_ok(anchor)
+        if not is_ok:
+            return (
+                False,
+                start_line,
+                actual_end,
+                f"anchor_too_short: anchor too short for safe relocation (<{MIN_ANCHOR_CHARS} chars, <{MIN_ANCHOR_LINES} lines): risk of matching wrong site. Use read_range to obtain a longer anchor.",
+                None,
+            )
+        new_start, new_end = matches[0]
+        logger.info(
+            "[EDIT_RELOCATED] path=%s old_lines=%d-%d new_lines=%d-%d",
+            rel_p, start_line, actual_end, new_start, new_end
+        )
+        print(f"[EDIT_RELOCATED] path={rel_p} old_lines={start_line}-{actual_end} new_lines={new_start}-{new_end}")
+        relocation_event = {
+            "relocated": True,
+            "old_range": [start_line, actual_end],
+            "new_range": [new_start, new_end],
+            "reason": "relocated",
+            "reason_text": f"File drifted — edit relocated from lines {start_line}-{actual_end} to lines {new_start}-{new_end}",
+        }
+        return True, new_start, new_end, None, relocation_event
+
+
+def _simulate_sequence_anchors(
+    file_patches: list[dict],
+    initial_text: str,
+    resolved_ranges: list[tuple[int | None, int | None]],
+    rel_p: str,
+) -> tuple[bool, str | None]:
+    """Simulate applying patches sequentially in memory to verify subsequent anchors (Phase 12.5.1 G4).
+
+    Verifies subsequent patch anchors are neither destroyed nor made ambiguous.
+    """
+    sim_text = initial_text
+    for k in range(len(file_patches) - 1):
+        p_curr = file_patches[k]
+        r_curr = resolved_ranges[k]
+
+        # Record match count before for all subsequent anchored patches
+        subsequent_anchors: list[tuple[int, str, int]] = []
+        for j in range(k + 1, len(file_patches)):
+            p_next = file_patches[j]
+            anch_next = p_next.get("anchor")
+            if anch_next:
+                matches_before = len(_find_anchor_matches(sim_text, sim_text.splitlines(), anch_next))
+                subsequent_anchors.append((j, anch_next, matches_before))
+
+        # Simulate applying patch k on sim_text in-memory
+        anch_curr = p_curr.get("anchor")
+        if anch_curr:
+            m_sim = _find_anchor_matches(sim_text, sim_text.splitlines(), anch_curr)
+            if len(m_sim) == 1:
+                r_curr = m_sim[0]
+
+        upd = p_curr.get("updated", "")
+        if r_curr[0] is not None and r_curr[1] is not None:
+            s_k, e_k = r_curr
+            curr_lines = sim_text.splitlines()
+            new_lines = curr_lines[: s_k - 1] + upd.splitlines() + curr_lines[e_k:]
+            sim_text = "\n".join(new_lines)
+            if initial_text.endswith("\n"):
+                sim_text += "\n"
+        else:
+            orig = p_curr.get("original", "").replace("\r\n", "\n")
+            if orig in sim_text:
+                sim_text = sim_text.replace(orig, upd, 1)
+
+        # Verify subsequent patch anchors after simulated apply
+        sim_lines = sim_text.splitlines()
+        for j, anch_next, count_before in subsequent_anchors:
+            count_after = len(_find_anchor_matches(sim_text, sim_lines, anch_next))
+            if count_before == 1 and count_after > 1:
+                return False, f"Pre-apply conflict scan rejected '{rel_p}': seq_anchor_ambiguous: subsequent patch would become ambiguous after earlier patch."
+            if count_before == 1 and count_after == 0:
+                return False, f"Pre-apply conflict scan rejected '{rel_p}': overlapping edits in one turn: split into sequential turns (seq_anchor_destroyed: subsequent patch anchor would be destroyed by earlier patch)."
+
+    return True, None
+
+
 def apply_atomic_patch_sequence(
     workspace: str,
     patches: list[dict | Any],
@@ -224,68 +337,19 @@ def apply_atomic_patch_sequence(
                     continue
                 if anch:
                     act_e = min(e, len(initial_lines))
-                    slice_cand = "\n".join(initial_lines[s - 1 : act_e])
-                    if _anchor_matches(slice_cand, anch):
-                        resolved_ranges.append((s, act_e))
-                    else:
-                        m = _find_anchor_matches(initial_text, initial_lines, anch)
-                        if len(m) == 0:
-                            return False, f"Pre-apply conflict scan rejected '{rel_p}': anchor not found: file drifted.", []
-                        elif len(m) > 1:
-                            return False, f"Pre-apply conflict scan rejected '{rel_p}': anchor ambiguous.", []
-                        else:
-                            # Guard relocation fallback against generic/short anchors (Phase 12.5.1 G1)
-                            is_ok, c_count, l_count = _is_anchor_size_ok(anch)
-                            if not is_ok:
-                                return False, f"Pre-apply conflict scan rejected '{rel_p}': anchor_too_short: anchor too short for safe relocation (<{MIN_ANCHOR_CHARS} chars, <{MIN_ANCHOR_LINES} lines): risk of matching wrong site. Use read_range to obtain a longer anchor.", []
-                            resolved_ranges.append(m[0])
+                    a_ok, a_s, a_e, a_err, _ = _resolve_patch_anchor(
+                        initial_text, initial_lines, s, act_e, anch, rel_p
+                    )
+                    if not a_ok:
+                        return False, f"Pre-apply conflict scan rejected '{rel_p}': {a_err}.", []
+                    resolved_ranges.append((a_s, a_e))
                 else:
                     resolved_ranges.append((s, min(e, len(initial_lines))))
 
             # G4: Mid-sequence anchor invalidation scan (Phase 12.5.1 G4)
-            # Simulate applying patches sequentially in memory; verify subsequent patch anchors are neither destroyed nor made ambiguous.
-            sim_text = initial_text
-            for k in range(len(file_patches) - 1):
-                p_curr = file_patches[k]
-                r_curr = resolved_ranges[k]
-
-                # Record match count before for all subsequent anchored patches
-                subsequent_anchors: list[tuple[int, str, int]] = []
-                for j in range(k + 1, len(file_patches)):
-                    p_next = file_patches[j]
-                    anch_next = p_next.get("anchor")
-                    if anch_next:
-                        matches_before = len(_find_anchor_matches(sim_text, sim_text.splitlines(), anch_next))
-                        subsequent_anchors.append((j, anch_next, matches_before))
-
-                # Simulate applying patch k on sim_text in-memory
-                anch_curr = p_curr.get("anchor")
-                if anch_curr:
-                    m_sim = _find_anchor_matches(sim_text, sim_text.splitlines(), anch_curr)
-                    if len(m_sim) == 1:
-                        r_curr = m_sim[0]
-
-                upd = p_curr.get("updated", "")
-                if r_curr[0] is not None and r_curr[1] is not None:
-                    s_k, e_k = r_curr
-                    curr_lines = sim_text.splitlines()
-                    new_lines = curr_lines[: s_k - 1] + upd.splitlines() + curr_lines[e_k:]
-                    sim_text = "\n".join(new_lines)
-                    if initial_text.endswith("\n"):
-                        sim_text += "\n"
-                else:
-                    orig = p_curr.get("original", "").replace("\r\n", "\n")
-                    if orig in sim_text:
-                        sim_text = sim_text.replace(orig, upd, 1)
-
-                # Verify subsequent patch anchors after simulated apply
-                sim_lines = sim_text.splitlines()
-                for j, anch_next, count_before in subsequent_anchors:
-                    count_after = len(_find_anchor_matches(sim_text, sim_lines, anch_next))
-                    if count_before == 1 and count_after > 1:
-                        return False, f"Pre-apply conflict scan rejected '{rel_p}': seq_anchor_ambiguous: subsequent patch would become ambiguous after earlier patch.", []
-                    if count_before == 1 and count_after == 0:
-                        return False, f"Pre-apply conflict scan rejected '{rel_p}': overlapping edits in one turn: split into sequential turns (seq_anchor_destroyed: subsequent patch anchor would be destroyed by earlier patch).", []
+            sim_ok, sim_err = _simulate_sequence_anchors(file_patches, initial_text, resolved_ranges, rel_p)
+            if not sim_ok:
+                return False, sim_err or "", []
 
             # Scan all pairs for overlap or nesting: max(s1, s2) <= min(e1, e2)
             valid_ranges = [r for r in resolved_ranges if r[0] is not None and r[1] is not None]
@@ -402,48 +466,15 @@ def apply_atomic_patch_sequence(
             disk_range = "\n".join(disk_lines[start_line - 1 : actual_end]) if start_line <= total_lines else ""
 
             if anchor:
-                # Content anchor resolution order (Phase 12.5 H1.2 + Phase 12.5.1 G1):
-                # (a) try line range; if disk slice == anchor -> apply (short anchors allowed for exact match)
-                if start_line <= total_lines and _anchor_matches(disk_range, anchor):
-                    pass
-                else:
-                    # (b) slice != anchor -> RELOCATE: search for anchor in file
-                    matches = _find_anchor_matches(current_text, disk_lines, anchor)
-                    if len(matches) == 0:
-                        # (c) 0 matches -> reject "anchor not found: file drifted"
-                        return _rollback(
-                            f"Patch {idx+1} rejected: anchor not found: file drifted for '{rel_p}'.",
-                            idx
-                        )
-                    elif len(matches) > 1:
-                        # (d) >1 matches -> reject "anchor ambiguous"
-                        return _rollback(
-                            f"Patch {idx+1} rejected: anchor ambiguous for '{rel_p}'.",
-                            idx
-                        )
-                    else:
-                        # Exactly 1 match found elsewhere -> guard relocation against generic/short anchors (Phase 12.5.1 G1)
-                        is_ok, c_count, l_count = _is_anchor_size_ok(anchor)
-                        if not is_ok:
-                            return _rollback(
-                                f"Patch {idx+1} rejected: anchor_too_short: anchor too short for safe relocation (<{MIN_ANCHOR_CHARS} chars, <{MIN_ANCHOR_LINES} lines): risk of matching wrong site. Use read_range to obtain a longer anchor. for '{rel_p}'.",
-                                idx
-                            )
-                        new_start, new_end = matches[0]
-                        logger.info(
-                            "[EDIT_RELOCATED] path=%s old_lines=%d-%d new_lines=%d-%d",
-                            rel_p, start_line, actual_end, new_start, new_end
-                        )
-                        print(f"[EDIT_RELOCATED] path={rel_p} old_lines={start_line}-{actual_end} new_lines={new_start}-{new_end}")
-                        relocation_event = {
-                            "relocated": True,
-                            "old_range": [start_line, actual_end],
-                            "new_range": [new_start, new_end],
-                            "reason": "relocated",
-                            "reason_text": f"File drifted — edit relocated from lines {start_line}-{actual_end} to lines {new_start}-{new_end}",
-                        }
-                        patch["relocation_event"] = relocation_event
-                        start_line, actual_end = new_start, new_end
+                # Content anchor resolution order (Phase 12.5 H1.2 + Phase 12.5.1 G1)
+                a_ok, a_s, a_e, a_err, reloc_event = _resolve_patch_anchor(
+                    current_text, disk_lines, start_line, actual_end, anchor, rel_p
+                )
+                if not a_ok:
+                    return _rollback(f"Patch {idx+1} rejected: {a_err} for '{rel_p}'.", idx)
+                if reloc_event:
+                    patch["relocation_event"] = reloc_event
+                start_line, actual_end = a_s, a_e
             else:
                 # No anchor provided -> line-only behavior: validate slice against disk range
                 if clean_orig and clean_orig.strip() != disk_range.strip() and clean_orig != disk_range:
