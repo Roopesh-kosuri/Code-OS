@@ -970,6 +970,11 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
     for rel_path, content in merged_contents.items():
         try:
             write_file(proposal.workspace, rel_path, content)
+            try:
+                from .harness.symbol_index import invalidate_file
+                invalidate_file(ensure_within_workspace(proposal.workspace, rel_path))
+            except Exception as inv_err:
+                logger.debug("apply_proposal: symbol index invalidation warning for %s: %s", rel_path, inv_err)
         except Exception as exc:
             raise HTTPException(
                 status_code=500,

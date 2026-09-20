@@ -634,6 +634,31 @@ CORE_CODING_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "read_range",
+            "description": "Read an exact line slice from an existing file. Returns exact current slice, sha256 hash, and mtime. Call before edit_range to obtain exact bounds and use its text as your anchor (Phase 12.5 H3.1).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the existing file in the workspace.",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Starting line number (1-indexed) of the slice to read.",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Ending line number (1-indexed) of the slice to read.",
+                    },
+                },
+                "required": ["path", "start_line", "end_line"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "edit_range",
             "description": "Surgically edit a specific line range in an existing file. Prefer edit_range for small edits (<60 lines) instead of rewriting whole files.",
             "parameters": {
@@ -654,6 +679,10 @@ CORE_CODING_TOOLS = [
                     "new_code": {
                         "type": "string",
                         "description": "The replacement code for the specified line range.",
+                    },
+                    "anchor": {
+                        "type": "string",
+                        "description": "Optional exact expected old text (or sha256) of the slice to guard against concurrent line drift.",
                     },
                 },
                 "required": ["path", "start_line", "end_line", "new_code"],
@@ -692,7 +721,7 @@ CORE_CODING_TOOLS = [
 SLIM_CODING_TOOLS = [
     t for t in CORE_CODING_TOOLS
     if t["function"]["name"] in (
-        "edit_file", "edit_range", "read_file", "list_directory", "search_code",
+        "edit_file", "edit_range", "read_file", "read_range", "list_directory", "search_code",
         "find_function", "find_references", "go_to_definition",
         "semantic_search", "run_command", "run_test", "ask_user", "git_diff"
     )
@@ -702,7 +731,7 @@ SLIM_CODING_TOOLS = [
 READ_ONLY_TOOLS = [
     t for t in CORE_CODING_TOOLS
     if t["function"]["name"] in (
-        "read_file", "list_directory", "search_code", "semantic_search",
+        "read_file", "read_range", "list_directory", "search_code", "semantic_search",
         "find_function", "find_references", "go_to_definition", "git_diff", "list_tests"
     )
 ]

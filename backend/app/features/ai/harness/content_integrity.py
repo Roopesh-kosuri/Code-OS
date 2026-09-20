@@ -5,6 +5,7 @@ import difflib
 import json
 import logging
 import re
+import textwrap
 from pathlib import Path
 from typing import Any
 
@@ -56,69 +57,162 @@ def is_placeholder_content(text: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _normalize_lang(language_or_path: str) -> str:
+    """Normalize file extension, filename, or language identifier to canonical extension without dot."""
+    raw = language_or_path.strip().lower()
+    if "/" in raw or "\\" in raw or "." in raw:
+        ext = Path(raw).suffix.lower()
+        if ext:
+            raw = ext
+    if raw.startswith("."):
+        raw = raw[1:]
+    alias_map = {
+        "python": "py",
+        "javascript": "js",
+        "typescript": "ts",
+        "jsx": "jsx",
+        "tsx": "tsx",
+        "c++": "cpp",
+        "csharp": "cs",
+        "golang": "go",
+        "json": "json",
+    }
+    return alias_map.get(raw, raw)
+
+
+def syntax_check(language: str, source: str) -> tuple[bool, str]:
+    """Unified syntax checker for arbitrary code sources across supported languages.
+
+    Shared by both check_slice_syntax and check_projected_file_syntax (Phase 12.5 H2.1).
+    """
+    if source is None:
+        return False, "Source content is None"
+
+    norm_lang = _normalize_lang(language)
+
+    # Empty string is valid syntax for Python/JS/C (empty module/file or deleted block)
+    if not source.strip():
+        if norm_lang == "json":
+            return False, "JSON source cannot be empty"
+        return True, ""
+
+    if norm_lang in ("py", "pyw"):
+        try:
+            ast.parse(source, filename=language if language.endswith((".py", ".pyw")) else "<syntax_check>")
+            return True, ""
+        except SyntaxError as exc:
+            return False, f"Python syntax error at line {exc.lineno}: {exc.msg}"
+        except Exception as exc:
+            return False, f"Python parse error: {exc}"
+
+    if norm_lang == "json":
+        try:
+            json.loads(source)
+            return True, ""
+        except json.JSONDecodeError as exc:
+            return False, f"JSON syntax error at line {exc.lineno}: {exc.msg}"
+        except Exception as exc:
+            return False, f"JSON parse error: {exc}"
+
+    if norm_lang in ("js", "jsx", "ts", "tsx", "mjs", "cjs"):
+        open_braces = source.count("{")
+        close_braces = source.count("}")
+        open_parens = source.count("(")
+        close_parens = source.count(")")
+        open_brackets = source.count("[")
+        close_brackets = source.count("]")
+
+        if open_braces != close_braces:
+            return False, f"Unbalanced curly braces in {norm_lang}: {open_braces} open vs {close_braces} closed"
+        if open_parens != close_parens:
+            return False, f"Unbalanced parentheses in {norm_lang}: {open_parens} open vs {close_parens} closed"
+        if open_brackets != close_brackets:
+            return False, f"Unbalanced square brackets in {norm_lang}: {open_brackets} open vs {close_brackets} closed"
+        return True, ""
+
+    if norm_lang in ("c", "cpp", "cc", "cxx", "h", "hpp", "java", "cs"):
+        open_braces = source.count("{")
+        close_braces = source.count("}")
+        if open_braces != close_braces:
+            return False, f"Unbalanced curly braces in {norm_lang}: {open_braces} open vs {close_braces} closed"
+        return True, ""
+
+    return True, ""
+
+
+# ── Layered Syntax Checks (Phase 12.5 H2) ──────────────────────────────────
+# Two NAMED layers calling the shared syntax_check helper with different sources:
+# Layer 1 (check_slice_syntax): Inspects replacement slice in isolation (fast, catches broken patch early).
+# Layer 2 (check_projected_file_syntax): Inspects in-memory projected file (catches context / boundary breakage).
+
+def check_slice_syntax(path_or_lang: str, slice_code: str) -> tuple[bool, str]:
+    """Layer 1: Verify replacement slice syntax in isolation (Phase 12.5 H2.1).
+
+    Fast check to detect malformed patches before attempting projection or touching disk.
+    For Python slices that belong inside indented blocks (methods/functions), applies
+    dedent normalization so valid nested code is not rejected on IndentationError.
+    """
+    if not slice_code or not slice_code.strip():
+        # Deleting a range or empty replacement is syntactically valid in isolation
+        return True, ""
+
+    norm_lang = _normalize_lang(path_or_lang)
+    if norm_lang in ("py", "pyw"):
+        # Try raw slice first
+        ok, err = syntax_check(norm_lang, slice_code)
+        if ok:
+            return True, ""
+        # If indentation error, dedent and retry (common for indented function/class slices)
+        if "indent" in err.lower():
+            dedented = textwrap.dedent(slice_code)
+            ok_dedent, err_dedent = syntax_check(norm_lang, dedented)
+            if ok_dedent:
+                return True, ""
+            return False, f"Slice syntax error: {err_dedent}"
+        return False, f"Slice syntax error: {err}"
+
+    ok, err = syntax_check(norm_lang, slice_code)
+    if not ok:
+        return False, f"Slice syntax error: {err}"
+    return True, ""
+
+
+def check_projected_file_syntax(path: str, projected_content: str) -> tuple[bool, str]:
+    """Layer 2: Verify syntax of the full file with patch projected in-memory (Phase 12.5 H2.1).
+
+    Catches contextual breakage across range boundaries (e.g. slice is valid alone
+    but leaves surrounding braces unbalanced, breaks outer indentation, or introduces
+    orphaned control-flow keywords).
+    """
+    if not projected_content or not projected_content.strip():
+        return False, "Projected file content is empty"
+
+    # Also run language prose check for JS/TS if present
+    ok, err = validate_language_syntax(path, projected_content)
+    if not ok:
+        return False, f"Projected file syntax error: {err}"
+    return True, ""
+
+
 def validate_language_syntax(path: str, content: str) -> tuple[bool, str]:
     """Verify that file content parses or conforms to expected syntax for its extension."""
     if not content or not content.strip():
         return False, "File content is empty"
 
     ext = Path(path).suffix.lower()
+    ok, err = syntax_check(ext or path, content)
+    if not ok:
+        return False, err
 
-    # Python syntax verification
-    if ext in (".py", ".pyw"):
-        try:
-            ast.parse(content, filename=path)
-        except SyntaxError as exc:
-            return False, f"Python syntax error at line {exc.lineno}: {exc.msg}"
-        except Exception as exc:
-            return False, f"Python parse error: {exc}"
-        return True, ""
-
-    # JSON syntax verification
-    if ext == ".json":
-        try:
-            json.loads(content)
-        except json.JSONDecodeError as exc:
-            return False, f"JSON syntax error at line {exc.lineno}: {exc.msg}"
-        except Exception as exc:
-            return False, f"JSON parse error: {exc}"
-        return True, ""
-
-    # JavaScript / TypeScript sanity
+    # Check if file is pure English sentences masquerading as code (like CV prose)
     if ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
-        # Check brace, parenthesis, bracket balance
-        open_braces = content.count("{")
-        close_braces = content.count("}")
-        open_parens = content.count("(")
-        close_parens = content.count(")")
-        open_brackets = content.count("[")
-        close_brackets = content.count("]")
-
-        if open_braces != close_braces:
-            return False, f"Unbalanced curly braces in {ext}: {open_braces} open vs {close_braces} closed"
-        if open_parens != close_parens:
-            return False, f"Unbalanced parentheses in {ext}: {open_parens} open vs {close_parens} closed"
-        if open_brackets != close_brackets:
-            return False, f"Unbalanced square brackets in {ext}: {open_brackets} open vs {close_brackets} closed"
-
-        # Check if file is pure English sentences masquerading as code (like CV prose)
         lines = [l.strip() for l in content.splitlines() if l.strip()]
         if len(lines) > 0 and len(content) < 500:
             words = set(re.findall(r"\b[a-zA-Z_]\w*\b", content))
             has_js_keywords = any(kw in words for kw in _JS_CODE_KEYWORDS)
             has_code_puncts = any(c in content for c in (";", "{", "}", "=", "(", ")", "=>"))
-            # If no JS keywords and no code punctuation, it is pure prose
             if not has_js_keywords and not has_code_puncts:
                 return False, f"File '{path}' contains conversational prose rather than valid JavaScript/TypeScript code"
-
-        return True, ""
-
-    # C / C++ / Java / C#
-    if ext in (".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".java", ".cs"):
-        open_braces = content.count("{")
-        close_braces = content.count("}")
-        if open_braces != close_braces:
-            return False, f"Unbalanced curly braces in {ext}: {open_braces} open vs {close_braces} closed"
-        return True, ""
 
     return True, ""
 

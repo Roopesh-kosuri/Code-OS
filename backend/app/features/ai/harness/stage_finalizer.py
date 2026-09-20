@@ -214,15 +214,23 @@ async def _finalize_staged_changes(
         
         summary_paths = ", ".join(c.path for c in staged_changes)
         diff_summary = "\n".join(_generate_diff_summary(c) for c in staged_changes)
-        action_id = str(uuid.uuid4())
-        reason = f"Rony Agent wants to create/modify {summary_paths}"
-
         first_change = staged_changes[0] if len(staged_changes) == 1 else None
         range_meta: dict[str, Any] = {}
         if first_change and getattr(first_change, "start_line", None) is not None:
             range_meta["start_line"] = getattr(first_change, "start_line")
             range_meta["end_line"] = getattr(first_change, "end_line", None)
 
+        has_range = any(getattr(c, "start_line", None) is not None for c in staged_changes)
+        if has_range:
+            has_anchor = any(bool(getattr(c, "anchor", None)) for c in staged_changes)
+            edit_type = "anchored" if has_anchor else "line-only"
+            range_meta["edit_type"] = edit_type
+            range_meta["anchor_state"] = edit_type
+
+        reason_suffix = f" ({range_meta['edit_type']})" if "edit_type" in range_meta else ""
+        reason = f"Rony Agent wants to create/modify {summary_paths}{reason_suffix}"
+
+        action_id = str(uuid.uuid4())
         pending = PendingApproval(
             action_id=action_id,
             action_type="edit",
@@ -287,6 +295,12 @@ async def _finalize_staged_changes(
                     await apply_proposal_fn(proposal_id)
                 except Exception as apply_exc:
                     rollback_ok, rollback_message, restored_paths = _restore_checkpoint(workspace, commit_h, touched_paths)
+                    try:
+                        from .symbol_index import invalidate_file
+                        for p in (restored_paths or touched_paths):
+                            invalidate_file(ensure_within_workspace(workspace, p))
+                    except Exception as inv_err:
+                        logger.debug("stage_finalizer: rollback invalidation error: %s", inv_err)
                     outcome = "rolled_back" if rollback_ok else "rollback_failed"
                     logger.error("stage_finalizer: apply failed; %s: %s", outcome, rollback_message)
                     yield _sse_status("rollback", f"{outcome}: {rollback_message}", outcome=outcome, files=restored_paths or touched_paths)
@@ -311,6 +325,13 @@ async def _finalize_staged_changes(
                                 fp.write_text(c.updated, encoding="utf-8")
                     except Exception as mock_write_err:
                         logger.debug("Mock apply write fallback: %s", mock_write_err)
+
+                try:
+                    from .symbol_index import invalidate_file
+                    for c in staged_changes:
+                        invalidate_file(ensure_within_workspace(workspace, c.path))
+                except Exception as inv_err:
+                    logger.debug("stage_finalizer: post-apply invalidation error: %s", inv_err)
                 # Regression Guard: Post-apply test snapshot
                 if ran_test_before:
                     ran_test_after, p_after, f_after, sum_after = await _discover_and_run_test_snapshot(workspace, touched_paths)

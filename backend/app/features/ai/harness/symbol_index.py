@@ -551,6 +551,9 @@ def invalidate_file(path: str | Path) -> None:
         pass
 
 
+invalidate = invalidate_file
+
+
 def clear_symbol_index() -> None:
     _symbol_index.clear()
     try:

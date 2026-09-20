@@ -99,6 +99,7 @@ from .vision_service import capture_screenshot, analyze_image_with_vlm, resolve_
 from .artifact_auditor import audit_generated_artifact, ArtifactAuditReport
 from .agents.agent_tools import (
     _handle_read_file,
+    _handle_read_range,
     _handle_list_directory,
     _handle_search_code,
     _handle_run_test,
@@ -158,10 +159,11 @@ from .harness import (
     _clean_rel_path, _read_file_cached, _find_mismatch_context, _validate_smart_edit,
     _handle_append_file, _handle_list_tests, _handle_run_single_test, _handle_get_diagnostics,
     _handle_find_function, _handle_go_to_definition, _handle_find_references, _handle_edit_range,
+    _handle_read_range,
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
-    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, READ_ONLY_TOOLS, get_tools_for_tier,
+    CORE_CODING_TOOLS, SLIM_CODING_TOOLS, READ_ONLY_TOOLS, HEAVY_TOOLS, get_tools_for_tier,
     is_conversational_turn, has_explicit_change_intent,
     govern_payload, _truncate_attachment_in_text, estimate_request_tokens,
     PROJECT_MEMORY_MAX_CHARS,
@@ -1506,6 +1508,151 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         return
 
                     detail = tc.arguments.get("path") or tc.arguments.get("command") or tc.arguments.get("query") or tc.arguments.get("question") or tc.arguments.get("fact") or tc.arguments.get("target") or ""
+
+                    # H4: Denied-tool deterministic escalation
+                    allowed_tool_names = (
+                        {t.get("function", {}).get("name") or t.get("name") for t in active_tools if isinstance(t, dict)}
+                        if active_tools is not None else None
+                    )
+                    if allowed_tool_names is not None and tc.name not in allowed_tool_names:
+                        logger.warning("[TOOL_DENIED] tool=%s tier=%d", tc.name, tier)
+                        print(f"[TOOL_DENIED] tool={tc.name} tier={tier}")
+                        eval_context = f"{user_query} {tc.name} {json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments)}"
+                        re_tier, _, _ = _classify_rules(eval_context.lower(), request.attached_paths)
+                        if tc.name in HEAVY_TOOLS or tc.name in ("edit_range", "edit_file", "append_file", "server_session", "find_references", "go_to_definition", "get_diagnostics"):
+                            re_tier = max(re_tier, 2)
+
+                        if re_tier >= 2:
+                            tier = max(tier, re_tier)
+                            tier_label = "Deep Task / Architect" if tier >= 3 else "Deep Task"
+                            max_iterations = MAX_HUGE_TASK_ITERATIONS if tier >= 3 else MAX_AGENT_ITERATIONS
+                            tier_tools = get_tools_for_tier(
+                                tier=tier,
+                                provider=effective_prov_key,
+                                enable_browser=getattr(request, "enable_browser", False) if not context_overflow_retried else False,
+                                enable_computer=getattr(request, "enable_computer", False) if not context_overflow_retried else False,
+                                slim=context_overflow_retried,
+                            )
+                            active_tools = tier_tools + mcp_tool_defs
+                            allowed_tool_names = {t.get("function", {}).get("name") or t.get("name") for t in active_tools if isinstance(t, dict)}
+                            yield _sse_tier_routing(tier, tier_label, reason=f"Mid-turn upgrade: tool '{tc.name}' requires Tier {tier}")
+                            yield _sse_status("tier_upgrade", f"Mid-turn upgrade to Tier {tier} for tool '{tc.name}'", tier=tier)
+                            # Call retried once by proceeding to execution below
+                        else:
+                            action_id = str(uuid.uuid4())
+                            pending_esc = PendingApproval(
+                                action_id=action_id,
+                                action_type="tier_upgrade",
+                                detail=tc.name,
+                                reason="This task needs Deep Task tools — upgrade this run?",
+                                workspace=workspace,
+                                command=tc.name,
+                            )
+                            _pending_approvals[action_id] = pending_esc
+                            yield _sse_approval_request(
+                                action_id=action_id,
+                                action_type="tier_upgrade",
+                                detail=tc.name,
+                                reason=pending_esc.reason,
+                                command=tc.name,
+                            )
+                            yield _sse_status("approval_required", pending_esc.reason, action_id=action_id, tool=tc.name)
+                            try:
+                                await asyncio.wait_for(pending_esc.event.wait(), timeout=COMMAND_APPROVAL_TIMEOUT_SECONDS)
+                                if pending_esc.approved:
+                                    tier = 2
+                                    tier_label = "Deep Task"
+                                    max_iterations = MAX_AGENT_ITERATIONS
+                                    tier_tools = get_tools_for_tier(
+                                        tier=tier,
+                                        provider=effective_prov_key,
+                                        enable_browser=getattr(request, "enable_browser", False) if not context_overflow_retried else False,
+                                        enable_computer=getattr(request, "enable_computer", False) if not context_overflow_retried else False,
+                                        slim=context_overflow_retried,
+                                    )
+                                    active_tools = tier_tools + mcp_tool_defs
+                                    allowed_tool_names = {t.get("function", {}).get("name") or t.get("name") for t in active_tools if isinstance(t, dict)}
+                                    yield _sse_tier_routing(tier, tier_label, reason=f"User approved upgrade to Tier 2 for tool '{tc.name}'")
+                                    yield _sse_status("tier_upgrade", f"Upgraded to Tier 2: {tc.name} allowed", tier=tier)
+                                else:
+                                    denied_msg = "Tool denied in current tier: operation requires Tier 2 (Deep Task)."
+                                    yield _sse_status("tool_denied", denied_msg, tool=tc.name)
+                                    result = ToolResult(
+                                        tool_name=tc.name,
+                                        success=False,
+                                        output="",
+                                        error=denied_msg,
+                                        failure_reason="tool_denied",
+                                        failure_detail=denied_msg,
+                                    )
+                                    turn_all_tools_successful = False
+                                    tool_results_list.append(f"[TOOL_RESULT: {tc.name}]\nERROR: {result.error}\n[/TOOL_RESULT]")
+                                    yield _sse_status(
+                                        "tool_result",
+                                        f"{tc.name} denied",
+                                        tool=tc.name,
+                                        detail=detail,
+                                        success=False,
+                                        output=result.error,
+                                        reason="tool_denied",
+                                    )
+                                    _append_activity_log(workspace, {
+                                        "action_type": f"tool_{tc.name}",
+                                        "target": detail or tc.name,
+                                        "outcome": "denied",
+                                        "tier": tier,
+                                        "token_count": 0,
+                                        "details": result.error,
+                                    })
+                                    executed_tools_this_turn.append({
+                                        "name": tc.name,
+                                        "arguments": tc.arguments,
+                                        "success": False,
+                                        "output": "",
+                                        "error": result.error,
+                                    })
+                                    continue
+                            except asyncio.TimeoutError:
+                                denied_msg = "Tool denied in current tier: operation requires Tier 2 (Deep Task)."
+                                yield _sse_status("tool_denied", denied_msg, tool=tc.name)
+                                result = ToolResult(
+                                    tool_name=tc.name,
+                                    success=False,
+                                    output="",
+                                    error=denied_msg,
+                                    failure_reason="tool_denied",
+                                    failure_detail=denied_msg,
+                                )
+                                turn_all_tools_successful = False
+                                tool_results_list.append(f"[TOOL_RESULT: {tc.name}]\nERROR: {result.error}\n[/TOOL_RESULT]")
+                                yield _sse_status(
+                                    "tool_result",
+                                    f"{tc.name} denied",
+                                    tool=tc.name,
+                                    detail=detail,
+                                    success=False,
+                                    output=result.error,
+                                    reason="tool_denied",
+                                )
+                                _append_activity_log(workspace, {
+                                    "action_type": f"tool_{tc.name}",
+                                    "target": detail or tc.name,
+                                    "outcome": "denied",
+                                    "tier": tier,
+                                    "token_count": 0,
+                                    "details": result.error,
+                                })
+                                executed_tools_this_turn.append({
+                                    "name": tc.name,
+                                    "arguments": tc.arguments,
+                                    "success": False,
+                                    "output": "",
+                                    "error": result.error,
+                                })
+                                continue
+                            finally:
+                                _pending_approvals.pop(action_id, None)
+
                     try:
                         args_sig = json.dumps(tc.arguments, sort_keys=True)
                     except Exception:
@@ -1557,6 +1704,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     status_desc = f"Running {tc.name}..." if not detail else f"Executing {tc.name} on {detail}..."
                     if tc.name == "read_file":
                         status_desc = f"Reading {detail}..."
+                    elif tc.name == "read_range":
+                        s_line = tc.arguments.get("start_line", "")
+                        e_line = tc.arguments.get("end_line", "")
+                        status_desc = f"Reading range {detail}:{s_line}-{e_line}..."
                     elif tc.name == "list_tests":
                         status_desc = "Discovering test suite (pytest --collect-only)..."
                     elif tc.name == "run_single_test":
@@ -1654,6 +1805,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             )
                             if success_m:
                                 yield _sse_memory_updated(fact_text)
+                    elif tc.name == "read_range":
+                        result = _handle_read_range(workspace, tc.arguments)
                     elif tc.name == "find_function":
                         result = _handle_find_function(workspace, tc.arguments)
                     elif tc.name == "find_references":

@@ -50,6 +50,7 @@ from .tool_executor import (
 from .content_integrity import (
     is_placeholder_content, validate_language_syntax, is_truncated_content,
     check_cross_turn_contamination, validate_file_target, validate_content_integrity,
+    syntax_check, check_slice_syntax, check_projected_file_syntax,
 )
 from .prompt_builder import (
     _build_system_prompt, _gather_budgeted_rag_context, _discover_and_run_test_snapshot,
@@ -65,7 +66,7 @@ from .size_guard import (
 )
 from ..agents.agent_tools import (
     _handle_find_function, _handle_go_to_definition,
-    _handle_find_references, _handle_edit_range,
+    _handle_find_references, _handle_edit_range, _handle_read_range,
 )
 from .payload_governor import (
     govern_payload, estimate_request_tokens, _truncate_attachment_in_text,
@@ -205,4 +206,7 @@ __all__ = [
     "shrink_context_for_budget",
     "collect_diagnostics",
     "format_diagnostics_block",
+    "syntax_check",
+    "check_slice_syntax",
+    "check_projected_file_syntax",
 ]

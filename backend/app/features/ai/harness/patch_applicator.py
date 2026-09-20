@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Dict
@@ -8,10 +9,68 @@ from typing import Any, List, Optional, Tuple, Dict
 from app.core.paths import ensure_within_workspace, normalize_workspace
 from app.features.ai.schemas import FileChange
 from .checkpoint_manager import _ensure_git_checkpoint, undo_turn_files
-from .content_integrity import validate_language_syntax
+from .content_integrity import (
+    validate_language_syntax,
+    check_slice_syntax,
+    check_projected_file_syntax,
+)
+from .symbol_index import invalidate_file
 from .tool_executor import _clean_rel_path, _file_read_cache, _find_mismatch_context
 
 logger = logging.getLogger(__name__)
+
+
+def _anchor_matches(slice_text: str, anchor: str) -> bool:
+    """Verify if a candidate slice matches an anchor (verbatim, stripped, or sha256 hash)."""
+    clean_a = anchor.replace("\r\n", "\n")
+    clean_s = slice_text.replace("\r\n", "\n")
+    if clean_s == clean_a or clean_s.strip() == clean_a.strip():
+        return True
+
+    # Check sha256 hash if anchor is a 64-character hex string
+    if len(clean_a) == 64 and all(c in "0123456789abcdefABCDEF" for c in clean_a):
+        h1 = hashlib.sha256(clean_s.encode("utf-8")).hexdigest()
+        h2 = hashlib.sha256((clean_s + "\n").encode("utf-8")).hexdigest()
+        h3 = hashlib.sha256(clean_s.strip().encode("utf-8")).hexdigest()
+        if clean_a.lower() in (h1.lower(), h2.lower(), h3.lower()):
+            return True
+
+    return False
+
+
+def _find_anchor_matches(text: str, lines: list[str], anchor: str) -> list[tuple[int, int]]:
+    """Search for unique occurrence of anchor text in disk content.
+
+    Returns list of (1-indexed start_line, 1-indexed end_line) matches.
+    """
+    clean_a = anchor.replace("\r\n", "\n")
+    a_lines = clean_a.splitlines()
+    if not a_lines:
+        return []
+
+    matches: list[tuple[int, int]] = []
+    # 1. Verbatim line slice match
+    for i in range(len(lines) - len(a_lines) + 1):
+        if lines[i : i + len(a_lines)] == a_lines:
+            matches.append((i + 1, i + len(a_lines)))
+
+    # 2. If no verbatim match, try stripped line match (ignoring trailing/leading spaces)
+    if not matches and any(l.strip() for l in a_lines):
+        stripped_a = [l.strip() for l in a_lines]
+        for i in range(len(lines) - len(a_lines) + 1):
+            if [l.strip() for l in lines[i : i + len(a_lines)]] == stripped_a:
+                matches.append((i + 1, i + len(a_lines)))
+
+    # 3. If still no match and anchor is 64-hex sha256, test sliding windows
+    if not matches and len(clean_a) == 64 and all(c in "0123456789abcdefABCDEF" for c in clean_a):
+        w_len = len(a_lines)
+        for i in range(len(lines) - w_len + 1):
+            cand = "\n".join(lines[i : i + w_len])
+            cand_h = hashlib.sha256(cand.encode("utf-8")).hexdigest()
+            if cand_h.lower() == clean_a.lower():
+                matches.append((i + 1, i + w_len))
+
+    return matches
 
 
 def apply_atomic_patch_sequence(
@@ -43,24 +102,28 @@ def apply_atomic_patch_sequence(
     for p in patches:
         start_line = None
         end_line = None
+        anchor = None
         if isinstance(p, dict):
             raw_path = str(p.get("path") or "")
             orig = str(p.get("original") or "")
             upd = str(p.get("updated") or p.get("new_code") or p.get("content") or "")
             start_line = p.get("start_line")
             end_line = p.get("end_line")
+            anchor = p.get("anchor")
         elif hasattr(p, "arguments") and isinstance(p.arguments, dict):
             raw_path = str(p.arguments.get("path") or "")
             orig = str(p.arguments.get("original") or "")
             upd = str(p.arguments.get("updated") or p.arguments.get("new_code") or p.arguments.get("content") or "")
             start_line = p.arguments.get("start_line")
             end_line = p.arguments.get("end_line")
+            anchor = p.arguments.get("anchor")
         elif hasattr(p, "path"):
             raw_path = str(getattr(p, "path") or "")
             orig = str(getattr(p, "original", "") or "")
             upd = str(getattr(p, "updated", "") or getattr(p, "new_code", "") or "")
             start_line = getattr(p, "start_line", None)
             end_line = getattr(p, "end_line", None)
+            anchor = getattr(p, "anchor", None)
         else:
             continue
 
@@ -74,6 +137,7 @@ def apply_atomic_patch_sequence(
             "path": rel_p,
             "original": orig,
             "updated": upd,
+            "anchor": str(anchor) if anchor is not None else None,
         }
         if start_line is not None and end_line is not None:
             try:
@@ -103,6 +167,63 @@ def apply_atomic_patch_sequence(
         except Exception as snap_err:
             return False, f"Failed to inspect target file '{rel_p}': {snap_err}", []
 
+    # Step 2b: PRE-APPLY CONFLICT SCAN (Phase 12.5 H5.2, H5.3)
+    # Group patches by file path. If multiple patches touch the same file:
+    # 1. Reject if any subsequent patch (2nd+) is line-only (no anchor): "multi-edit turns require anchors"
+    # 2. Reject if any two patches' resolved ranges overlap or nest: "overlapping edits in one turn: split into sequential turns"
+    for rel_p in touched_paths:
+        file_patches = [p for p in normalized_patches if p["path"] == rel_p]
+        if len(file_patches) > 1:
+            # Check H5.3: second+ patch must be anchored if it is a line-range patch
+            for p_idx, p in enumerate(file_patches[1:], start=2):
+                is_line_only = (p.get("start_line") is not None and not p.get("anchor"))
+                if is_line_only:
+                    return False, f"Multi-edit turn rejected: multi-edit turns require anchors (patch {p_idx} on '{rel_p}' is line-only).", []
+
+            # Check H5.2: pre-apply range conflict scan
+            initial_text = initial_texts.get(rel_p, "")
+            initial_lines = initial_text.splitlines()
+            resolved_ranges: list[tuple[int | None, int | None]] = []
+            for p in file_patches:
+                s = p.get("start_line")
+                e = p.get("end_line")
+                anch = p.get("anchor")
+                if s is None or e is None:
+                    # Snippet patch with original
+                    orig = p.get("original", "").replace("\r\n", "\n")
+                    if orig and orig in initial_text:
+                        char_idx = initial_text.find(orig)
+                        s_line = initial_text[:char_idx].count("\n") + 1
+                        e_line = s_line + max(0, orig.count("\n"))
+                        resolved_ranges.append((s_line, e_line))
+                    else:
+                        resolved_ranges.append((None, None))
+                    continue
+                if anch:
+                    act_e = min(e, len(initial_lines))
+                    slice_cand = "\n".join(initial_lines[s - 1 : act_e])
+                    if _anchor_matches(slice_cand, anch):
+                        resolved_ranges.append((s, act_e))
+                    else:
+                        m = _find_anchor_matches(initial_text, initial_lines, anch)
+                        if len(m) == 1:
+                            resolved_ranges.append(m[0])
+                        elif len(m) == 0:
+                            return False, f"Pre-apply conflict scan rejected '{rel_p}': anchor not found: file drifted.", []
+                        else:
+                            return False, f"Pre-apply conflict scan rejected '{rel_p}': anchor ambiguous.", []
+                else:
+                    resolved_ranges.append((s, min(e, len(initial_lines))))
+
+            # Scan all pairs for overlap or nesting: max(s1, s2) <= min(e1, e2)
+            valid_ranges = [r for r in resolved_ranges if r[0] is not None and r[1] is not None]
+            for i in range(len(valid_ranges)):
+                s1, e1 = valid_ranges[i]
+                for j in range(i + 1, len(valid_ranges)):
+                    s2, e2 = valid_ranges[j]
+                    if max(s1, s2) <= min(e1, e2):
+                        return False, f"Pre-apply conflict scan rejected '{rel_p}': overlapping edits in one turn: split into sequential turns.", []
+
     # Optional Git checkpoint if repo exists
     git_commit = ""
     try:
@@ -131,10 +252,12 @@ def apply_atomic_patch_sequence(
                                 parent = parent.parent
                             except OSError:
                                 break
+                    invalidate_file(full_p)
                 else:
                     full_p.parent.mkdir(parents=True, exist_ok=True)
                     full_p.write_bytes(snap_bytes)
                     restored.append(p_rel)
+                    invalidate_file(full_p)
                 # Invalidate file read cache
                 _file_read_cache.pop(str(full_p.resolve()), None)
             except Exception as r_err:
@@ -186,6 +309,7 @@ def apply_atomic_patch_sequence(
 
         start_line = patch.get("start_line")
         end_line = patch.get("end_line")
+        anchor = patch.get("anchor")
 
         if start_line is not None and end_line is not None:
             # Surgical range edit
@@ -196,36 +320,78 @@ def apply_atomic_patch_sequence(
                 )
             disk_lines = current_text.splitlines()
             total_lines = len(disk_lines)
-            if start_line < 1 or start_line > total_lines:
+            if (start_line < 1 or start_line > total_lines) and not anchor:
                 return _rollback(
                     f"Patch {idx+1} rejected: start_line ({start_line}) out of bounds (file has {total_lines} lines).",
                     idx
                 )
-            actual_end = min(end_line, total_lines)
-            disk_range = "\n".join(disk_lines[start_line - 1 : actual_end])
 
-            if clean_orig and clean_orig.strip() != disk_range.strip() and clean_orig != disk_range:
-                diagnostic = _find_mismatch_context(disk_range, clean_orig)
+            actual_end = min(end_line, total_lines)
+            disk_range = "\n".join(disk_lines[start_line - 1 : actual_end]) if start_line <= total_lines else ""
+
+            if anchor:
+                # Content anchor resolution order (Phase 12.5 H1.2):
+                # (a) try line range; if disk slice == anchor -> apply
+                if start_line <= total_lines and _anchor_matches(disk_range, anchor):
+                    pass
+                else:
+                    # (b) slice != anchor -> RELOCATE: unique search of anchor text in current file
+                    matches = _find_anchor_matches(current_text, disk_lines, anchor)
+                    if len(matches) == 1:
+                        new_start, new_end = matches[0]
+                        logger.info(
+                            "[EDIT_RELOCATED] path=%s old_lines=%d-%d new_lines=%d-%d",
+                            rel_p, start_line, actual_end, new_start, new_end
+                        )
+                        print(f"[EDIT_RELOCATED] path={rel_p} old_lines={start_line}-{actual_end} new_lines={new_start}-{new_end}")
+                        start_line, actual_end = new_start, new_end
+                    elif len(matches) == 0:
+                        # (c) 0 matches -> reject "anchor not found: file drifted"
+                        return _rollback(
+                            f"Patch {idx+1} rejected: anchor not found: file drifted for '{rel_p}'.",
+                            idx
+                        )
+                    else:
+                        # >1 matches -> reject "anchor ambiguous"
+                        return _rollback(
+                            f"Patch {idx+1} rejected: anchor ambiguous for '{rel_p}'.",
+                            idx
+                        )
+            else:
+                # No anchor provided -> line-only behavior: validate slice against disk range
+                if clean_orig and clean_orig.strip() != disk_range.strip() and clean_orig != disk_range:
+                    diagnostic = _find_mismatch_context(disk_range, clean_orig)
+                    return _rollback(
+                        f"Patch {idx+1} rejected: original_mismatches_disk for '{rel_p}'.\n{diagnostic}.",
+                        idx
+                    )
+
+            # Layered syntax checks (Phase 12.5 H2)
+            # Layer 1: Check slice in isolation
+            slice_ok, slice_err = check_slice_syntax(rel_p, clean_upd)
+            if not slice_ok:
                 return _rollback(
-                    f"Patch {idx+1} rejected: original_mismatches_disk for '{rel_p}'.\n{diagnostic}.",
+                    f"Patch {idx+1} rejected: edit introduces slice syntax error in '{rel_p}': {slice_err}.",
                     idx
                 )
 
+            # Layer 2: Check projected full file in memory
             projected_lines = disk_lines[: start_line - 1] + clean_upd.splitlines() + disk_lines[actual_end:]
             projected_content = "\n".join(projected_lines)
             if current_text.endswith("\n"):
                 projected_content += "\n"
 
-            syn_ok, syn_err = validate_language_syntax(rel_p, projected_content)
-            if not syn_ok:
+            proj_ok, proj_err = check_projected_file_syntax(rel_p, projected_content)
+            if not proj_ok:
                 return _rollback(
-                    f"Patch {idx+1} rejected: edit introduces syntax error in '{rel_p}': {syn_err}.",
+                    f"Patch {idx+1} rejected: edit introduces syntax error in '{rel_p}': {proj_err}.",
                     idx
                 )
 
             try:
                 full_p.write_text(projected_content, encoding="utf-8")
                 _file_read_cache[str(full_p.resolve())] = (full_p.stat().st_mtime, projected_content)
+                invalidate_file(full_p)
             except Exception as w_err:
                 return _rollback(f"Patch {idx+1} rejected: failed writing '{rel_p}': {w_err}.", idx)
         elif not clean_orig:
@@ -245,6 +411,7 @@ def apply_atomic_patch_sequence(
                 full_p.parent.mkdir(parents=True, exist_ok=True)
                 full_p.write_text(clean_upd, encoding="utf-8")
                 _file_read_cache[str(full_p.resolve())] = (full_p.stat().st_mtime, clean_upd)
+                invalidate_file(full_p)
             except Exception as w_err:
                 return _rollback(f"Patch {idx+1} rejected: failed writing '{rel_p}': {w_err}.", idx)
         else:
@@ -290,6 +457,7 @@ def apply_atomic_patch_sequence(
             try:
                 full_p.write_text(projected_content, encoding="utf-8")
                 _file_read_cache[str(full_p.resolve())] = (full_p.stat().st_mtime, projected_content)
+                invalidate_file(full_p)
             except Exception as w_err:
                 return _rollback(f"Patch {idx+1} rejected: failed writing '{rel_p}': {w_err}.", idx)
 

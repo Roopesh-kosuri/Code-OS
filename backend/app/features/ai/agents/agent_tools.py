@@ -49,6 +49,7 @@ class ToolResult:
     error: str = ""
     failure_reason: str = ""
     failure_detail: str = ""
+    data: Any = None
 
 
 def _clean_rel_path(path_str: str) -> str:
@@ -399,12 +400,94 @@ def _handle_find_references(workspace: str, arguments: dict) -> ToolResult:
     )
 
 
+def _handle_read_range(workspace: str, arguments: dict) -> ToolResult:
+    """Read a specific line range from an existing file (Phase 12.5 H3.1).
+
+    Returns exact current slice, sha256 hash, and file mtime.
+    """
+    import hashlib
+    import json
+    from ...files.service import _normalize_eol
+
+    raw_path = str(arguments.get("path", "") or "")
+    rel_path = _clean_rel_path(raw_path)
+    if not rel_path or rel_path == ".":
+        return ToolResult(tool_name="read_range", success=False, output="", error="Missing required parameter: path")
+
+    try:
+        start_line = int(arguments.get("start_line"))
+        end_line = int(arguments.get("end_line"))
+    except (ValueError, TypeError):
+        return ToolResult(tool_name="read_range", success=False, output="", error="start_line and end_line must be valid integers")
+
+    if start_line < 1:
+        return ToolResult(tool_name="read_range", success=False, output="", error="start_line must be >= 1")
+    if end_line < start_line:
+        return ToolResult(tool_name="read_range", success=False, output="", error="end_line cannot be less than start_line")
+
+    try:
+        target_path = ensure_within_workspace(workspace, rel_path)
+    except Exception as exc:
+        return ToolResult(tool_name="read_range", success=False, output="", error=f"Path rejected: {exc}")
+
+    if not target_path.exists() or not target_path.is_file():
+        return ToolResult(tool_name="read_range", success=False, output="", error=f"file does not exist: '{rel_path}'. read_range requires an existing file.")
+
+    try:
+        disk_raw = target_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as read_err:
+        return ToolResult(tool_name="read_range", success=False, output="", error=f"disk_read_error: {read_err}")
+
+    disk_text = _normalize_eol(disk_raw)
+    disk_lines = disk_text.splitlines()
+    total_lines = len(disk_lines)
+
+    if start_line > total_lines:
+        return ToolResult(
+            tool_name="read_range",
+            success=False,
+            output="",
+            error=f"start_line ({start_line}) exceeds file line count ({total_lines})",
+        )
+
+    actual_end = min(end_line, total_lines)
+    slice_lines = disk_lines[start_line - 1 : actual_end]
+    slice_text = "\n".join(slice_lines)
+    sha256_hash = hashlib.sha256(slice_text.encode("utf-8")).hexdigest()
+    mtime = target_path.stat().st_mtime
+
+    data = {
+        "path": rel_path,
+        "start_line": start_line,
+        "end_line": actual_end,
+        "slice": slice_text,
+        "content": slice_text,
+        "sha256": sha256_hash,
+        "mtime": mtime,
+        "line_count": len(slice_lines),
+    }
+
+    formatted_output = (
+        f"File: {rel_path} (lines {start_line}-{actual_end}/{total_lines}, mtime: {mtime:.2f}, sha256: {sha256_hash})\n"
+        f"--- Slice Content ---\n"
+        f"{slice_text}\n"
+        f"--- End Slice ---"
+    )
+
+    return ToolResult(
+        tool_name="read_range",
+        success=True,
+        output=formatted_output,
+        data=data,
+    )
+
+
 def _handle_edit_range(workspace: str, arguments: dict, staged_changes: list) -> ToolResult:
     """Surgically edit a specific line range in an existing file.
 
     Reads disk NOW, extracts exact current range as ORIGINAL (normalized via _normalize_eol),
-    and stages a FileChange so changes route through existing proposal/approval and
-    apply via apply_atomic_patch_sequence.
+    validates layered syntax (slice alone, then projected file in memory), and stages a
+    FileChange with optional content anchor (Phase 12.5 H1, H2).
     """
     from ...files.service import _normalize_eol
     from ..schemas import FileChange
@@ -426,6 +509,9 @@ def _handle_edit_range(workspace: str, arguments: dict, staged_changes: list) ->
         return ToolResult(tool_name="edit_range", success=False, output="", error="end_line cannot be less than start_line")
 
     new_code = str(arguments.get("new_code", "") if "new_code" in arguments else arguments.get("updated", ""))
+    anchor = arguments.get("anchor")
+    if anchor is not None:
+        anchor = str(anchor)
 
     try:
         target_path = ensure_within_workspace(workspace, rel_path)
@@ -465,16 +551,25 @@ def _handle_edit_range(workspace: str, arguments: dict, staged_changes: list) ->
             error="updated_empty_or_equal: 'new_code' is identical to current range on disk",
         )
 
-    # Validate syntax of full file with the range replaced
-    projected_lines = disk_lines[:start_line - 1] + clean_upd.splitlines() + disk_lines[actual_end:]
-    projected_content = "\n".join(projected_lines)
+    # Layered syntax checks (Phase 12.5 H2)
+    # Layer 1: Check slice in isolation
     try:
-        from ..harness.content_integrity import validate_language_syntax
-        valid_syntax, syntax_err = validate_language_syntax(rel_path, projected_content)
-        if not valid_syntax:
-            return ToolResult(tool_name="edit_range", success=False, output="", error=f"syntax_error: {syntax_err}")
+        from ..harness.content_integrity import check_slice_syntax, check_projected_file_syntax
+        slice_ok, slice_err = check_slice_syntax(rel_path, clean_upd)
+        if not slice_ok:
+            return ToolResult(tool_name="edit_range", success=False, output="", error=f"syntax_error: {slice_err}")
+
+        # Layer 2: Check full projected file in memory
+        projected_lines = disk_lines[:start_line - 1] + clean_upd.splitlines() + disk_lines[actual_end:]
+        projected_content = "\n".join(projected_lines)
+        if disk_text.endswith("\n"):
+            projected_content += "\n"
+
+        proj_ok, proj_err = check_projected_file_syntax(rel_path, projected_content)
+        if not proj_ok:
+            return ToolResult(tool_name="edit_range", success=False, output="", error=f"syntax_error: {proj_err}")
     except Exception as syn_exc:
-        logger.debug("validate_language_syntax in edit_range: %s", syn_exc)
+        logger.debug("layered syntax checks in edit_range: %s", syn_exc)
 
     change = FileChange(
         path=rel_path,
@@ -482,6 +577,7 @@ def _handle_edit_range(workspace: str, arguments: dict, staged_changes: list) ->
         updated=clean_upd,
         start_line=start_line,
         end_line=actual_end,
+        anchor=anchor,
     )
 
     staged_changes.append(change)
@@ -493,10 +589,11 @@ def _handle_edit_range(workspace: str, arguments: dict, staged_changes: list) ->
     except Exception as exc:
         logger.debug("Ghost text emit_diff_chunks from edit_range: %s", exc)
 
+    anchor_mode = "anchored" if anchor else "line-only"
     return ToolResult(
         tool_name="edit_range",
         success=True,
-        output=f"✓ Staged surgical edit for {rel_path} (lines {start_line}-{actual_end}, {len(clean_upd.splitlines())} lines new code).",
+        output=f"✓ Staged surgical edit ({anchor_mode}) for {rel_path} (lines {start_line}-{actual_end}, {len(clean_upd.splitlines())} lines new code).",
     )
 
 
@@ -794,6 +891,14 @@ AGENT_TOOLS = {
             "symbol": "Symbol or identifier to find references for.",
         },
     },
+    "read_range": {
+        "description": "Read an exact line slice from an existing file. Returns exact text, sha256 hash, and mtime. Call before edit_range to obtain exact bounds and use its text as your anchor (Phase 12.5 H3.1).",
+        "parameters": {
+            "path": "Relative path to the existing file in the workspace.",
+            "start_line": "1-indexed starting line number of the slice.",
+            "end_line": "1-indexed ending line number of the slice.",
+        },
+    },
     "edit_range": {
         "description": "Surgically edit a specific line range in an existing file. Prefer edit_range for changes under ~60 lines instead of rewriting whole files.",
         "parameters": {
@@ -801,22 +906,23 @@ AGENT_TOOLS = {
             "start_line": "1-indexed starting line number of the range to replace.",
             "end_line": "1-indexed ending line number of the range to replace.",
             "new_code": "The replacement code for lines start_line to end_line.",
+            "anchor": "Optional exact expected old text (or sha256) of the slice to guard against concurrent line drift.",
         },
     },
 }
 
 # ── Role-based manifests & tool permissions (Phase 6.3) ───────────────────────
 ROLE_MANIFESTS: dict[str, list[str]] = {
-    "reviewer": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
-    "documenter": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
-    "planner": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
-    "architect": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "reviewer": ["read_file", "read_range", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "documenter": ["read_file", "read_range", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "planner": ["read_file", "read_range", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "architect": ["read_file", "read_range", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
     "tester": [
-        "read_file", "search_code", "semantic_search", "list_directory", "run_test",
+        "read_file", "read_range", "search_code", "semantic_search", "list_directory", "run_test",
         "list_tests", "run_single_test", "find_function", "go_to_definition", "find_references",
     ],
     "coder": [
-        "read_file", "search_code", "semantic_search", "list_directory",
+        "read_file", "read_range", "search_code", "semantic_search", "list_directory",
         "edit_file", "append_file", "run_command", "run_test", "list_tests",
         "run_single_test", "get_diagnostics", "take_screenshot", "inspect_visuals",
         "find_function", "go_to_definition", "find_references", "edit_range",
@@ -1014,6 +1120,8 @@ def _execute_single_tool(
 
     if call.name == "read_file":
         return _handle_read_file(workspace, call.arguments)
+    elif call.name == "read_range":
+        return _handle_read_range(workspace, call.arguments)
     elif call.name == "list_directory":
         return _handle_list_directory(workspace, call.arguments)
     elif call.name == "search_code":
@@ -1110,19 +1218,31 @@ def get_tool_instructions(allow_edit: bool = True, role: str | None = None) -> s
     effective_allow_edit = not is_read_only
 
     edit_doc = """
+**read_range** — Read an exact line slice from an existing file (returns slice text, sha256 hash, and mtime):
+[TOOL_CALL: read_range]
+{"path": "src/main.py", "start_line": 42, "end_line": 50}
+[/TOOL_CALL]
+
 **edit_range** — Surgically edit a specific line range in an existing file (prefer for changes under ~60 lines):
+Before edit_range, call read_range to obtain exact bounds and use its text as your anchor.
 [TOOL_CALL: edit_range]
-{"path": "src/main.py", "start_line": 42, "end_line": 50, "new_code": "def hello():\\n    return 'world'"}
+{"path": "src/main.py", "start_line": 42, "end_line": 50, "new_code": "def hello():\\n    return 'world'", "anchor": "def hello():\\n    return 'old'"}
 [/TOOL_CALL]
 
 **edit_file** — Stage a file edit (use only for whole-file restructures or creating new files):
 [TOOL_CALL: edit_file]
 {"path": "src/main.py", "original": "exact original code", "updated": "new replacement code"}
 [/TOOL_CALL]
-""" if effective_allow_edit else ""
+""" if effective_allow_edit else """
+**read_range** — Read an exact line slice from an existing file:
+[TOOL_CALL: read_range]
+{"path": "src/main.py", "start_line": 42, "end_line": 50}
+[/TOOL_CALL]
+"""
 
     rules_edit = (
         "- Prefer edit_range for changes under ~60 lines; use edit_file only for whole-file restructures.\n"
+        "- Before edit_range, call read_range to obtain exact bounds and use its text as your anchor.\n"
         "- You can use either edit_range / edit_file tool calls OR traditional [PROPOSAL] blocks for your changes. Both work.\n"
         "- For new files, use edit_file and set \"original\" to \"\" (empty string)."
         if effective_allow_edit
@@ -1194,6 +1314,3 @@ IMPORTANT RULES:
 - When you are finished (all changes made, no more tools needed), output [DONE] on its own line.
 - You can make multiple tool calls in a single response.
 - Maximum 5 tool calls per response, maximum 6 rounds of tool use."""
-
-
-from ..harness.patch_applicator import apply_atomic_patch_sequence
