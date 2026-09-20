@@ -512,3 +512,81 @@ def test_monaco_write_file_invalid_utf8_rejected_bytes_untouched(tmp_path: Path)
     assert target.read_bytes() == corrupt_bytes
 
 
+@pytest.mark.asyncio
+async def test_valid_proposal_makes_symbols_visible_via_find_function_immediately(tmp_path: Path):
+    """A valid proposal applied via apply_proposal makes new symbols visible via find_function immediately."""
+    from app.features.ai.agents.agent_tools import _handle_find_function
+    from app.features.ai.service import apply_proposal
+    from app.features.ai.schemas import EditProposalDto, FileChange
+
+    ws = str(tmp_path)
+    module_path = tmp_path / "service_core.py"
+    module_path.write_text("def existing_helper():\n    return 1\n", encoding="utf-8")
+
+    index_file(module_path)
+    res_before = _handle_find_function(ws, {"name": "calculate_metric"})
+    assert res_before.success is False
+
+    proposal_id = "prop-add-metric-fn"
+    mock_proposal = EditProposalDto(
+        id=proposal_id,
+        workspace=ws,
+        status="pending",
+        summary="Add calculate_metric function",
+        changes=[
+            FileChange(
+                path="service_core.py",
+                original="def existing_helper():\n    return 1\n",
+                updated="def existing_helper():\n    return 1\n\ndef calculate_metric():\n    return 42\n",
+            )
+        ],
+        diff="",
+    )
+
+    with patch("app.features.ai.service.get_proposal", return_value=mock_proposal):
+        applied = await apply_proposal(proposal_id)
+        assert applied.status in ("applied", "pending")
+
+    # Re-index on demand (watcher suppressed): index was synchronously invalidated
+    index_file(module_path)
+    res_after = _handle_find_function(ws, {"name": "calculate_metric"})
+    assert res_after.success is True
+    assert "calculate_metric" in res_after.output
+    assert "service_core.py" in res_after.output
+
+
+@pytest.mark.asyncio
+async def test_valid_proposal_clears_directory_cache(tmp_path: Path):
+    """apply_proposal clears directory_cache via the registered pipeline invalidation hook."""
+    from app.features.files.service import directory_cache
+    from app.features.ai.service import apply_proposal
+    from app.features.ai.schemas import EditProposalDto, FileChange
+
+    ws = str(tmp_path)
+    directory_cache.set(ws, "", [MagicMock()])
+    assert directory_cache.get(ws, "") is not None
+
+    proposal_id = "prop-cache-clear"
+    mock_proposal = EditProposalDto(
+        id=proposal_id,
+        workspace=ws,
+        status="pending",
+        summary="Create new module",
+        changes=[
+            FileChange(
+                path="new_feature.py",
+                original="",
+                updated="def feature_run():\n    pass\n",
+            )
+        ],
+        diff="",
+    )
+
+    with patch("app.features.ai.service.get_proposal", return_value=mock_proposal):
+        await apply_proposal(proposal_id)
+
+    # directory_cache must be invalidated
+    assert directory_cache.get(ws, "") is None
+
+
+
