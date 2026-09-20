@@ -263,12 +263,19 @@ class SaveAuditReportRequest(BaseModel):
 @router.post("/audit/save-report")
 async def save_security_audit_report(payload: SaveAuditReportRequest) -> dict:
     from ...core.paths import ensure_within_workspace
+    from .harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
     try:
         report_path = ensure_within_workspace(payload.workspace, "SECURITY_AUDIT.md")
-        report_path.write_text(payload.markdown_content, encoding="utf-8")
-        return {"status": "success", "file": str(report_path)}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to save security report: {exc}")
+
+    mut = Mutation(kind=MutationKind.WRITE_FULL, path="SECURITY_AUDIT.md", new_content=payload.markdown_content)
+    res = apply_mutations(payload.workspace, [mut], mode="AGENT")
+    if not res.success:
+        rej = res.rejection
+        reason = rej.reason_text if rej else "Failed to save security report"
+        raise HTTPException(status_code=400, detail=f"Failed to save security report: {reason}")
+    return {"status": "success", "file": str(report_path)}
 
 
 from .coder_mode_service import CoderModeRequest, execute_coder_mode

@@ -325,18 +325,28 @@ async def _finalize_staged_changes(
                     return
                 if isinstance(apply_proposal_fn, (Mock, AsyncMock)):
                     try:
-                        root = normalize_workspace(workspace)
+                        from .mutation_pipeline import Mutation, MutationKind, apply_mutations
+                        mock_muts: list[Mutation] = []
                         for c in staged_changes:
-                            fp = ensure_within_workspace(root, c.path)
-                            fp.parent.mkdir(parents=True, exist_ok=True)
-                            if getattr(c, "start_line", None) is not None and getattr(c, "end_line", None) is not None and fp.exists():
-                                disk_lines = fp.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").splitlines()
-                                s_line = int(c.start_line)
-                                e_line = min(int(c.end_line), len(disk_lines))
-                                merged = disk_lines[:s_line - 1] + c.updated.splitlines() + disk_lines[e_line:]
-                                fp.write_text("\n".join(merged) + "\n", encoding="utf-8")
+                            s_l = getattr(c, "start_line", None)
+                            e_l = getattr(c, "end_line", None)
+                            if s_l is not None and e_l is not None:
+                                mock_muts.append(Mutation(
+                                    kind=MutationKind.EDIT_RANGE,
+                                    path=c.path,
+                                    updated=c.updated,
+                                    start_line=int(s_l),
+                                    end_line=int(e_l),
+                                    anchor=getattr(c, "anchor", None),
+                                    original=getattr(c, "original", None),
+                                ))
                             else:
-                                fp.write_text(c.updated, encoding="utf-8")
+                                mock_muts.append(Mutation(
+                                    kind=MutationKind.WRITE_FULL,
+                                    path=c.path,
+                                    new_content=c.updated,
+                                ))
+                        apply_mutations(workspace, mock_muts, mode="AGENT")
                     except Exception as mock_write_err:
                         logger.debug("Mock apply write fallback: %s", mock_write_err)
 

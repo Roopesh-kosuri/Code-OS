@@ -75,8 +75,16 @@ async def save_endpoint(req: SavePipelineRequest) -> Dict[str, Any]:
         except Exception as exc:
             raise HTTPException(status_code=403, detail=f"path_outside_workspace: {req.file_path}") from exc
 
-        dest_file.parent.mkdir(parents=True, exist_ok=True)
-        dest_file.write_text(req.yaml_content, encoding="utf-8")
+        from app.features.ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+        mut = Mutation(kind=MutationKind.WRITE_FULL, path=raw_target, new_content=req.yaml_content)
+        res = apply_mutations(req.workspace, [mut], mode="AGENT")
+        if not res.success:
+            rej = res.rejection
+            reason = rej.reason_text if rej else "Failed saving pipeline file"
+            code = rej.code if rej else ""
+            if code in ("path_outside_workspace", "symlink_escape", "security_error"):
+                raise HTTPException(status_code=403, detail=reason)
+            raise HTTPException(status_code=500, detail=f"Failed saving pipeline file: {reason}")
 
         return {
             "success": True,

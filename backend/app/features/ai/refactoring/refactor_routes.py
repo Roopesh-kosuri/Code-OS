@@ -141,25 +141,31 @@ async def apply_refactoring_changes(req: ApplyRequest) -> Dict[str, Any]:
             ) from exc
         validated_changes.append((change, target_path))
 
-    applied_files = []
-    try:
-        for change, target_path in validated_changes:
-            rel_file = change.get("file", "")
-            content = change.get("updated_content", "")
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
-            applied_files.append(rel_file)
+    from app.features.ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+    mutations: list[Mutation] = []
+    for change, _ in validated_changes:
+        rel_file = change.get("file", "")
+        content = change.get("updated_content", "")
+        mutations.append(Mutation(
+            kind=MutationKind.WRITE_FULL,
+            path=rel_file,
+            new_content=content.replace("\r\n", "\n").replace("\r", "\n"),
+        ))
 
-        return {
-            "success": True,
-            "applied_files": applied_files,
-            "message": f"Successfully applied refactor to {len(applied_files)} file(s).",
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error("Apply error: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed applying changes to workspace: {exc}")
+    res = apply_mutations(req.workspace, mutations, mode="AGENT")
+    if not res.success:
+        rej = res.rejection
+        reason = rej.reason_text if rej else "Failed applying changes to workspace"
+        code = rej.code if rej else ""
+        if code in ("path_outside_workspace", "symlink_escape", "security_error"):
+            raise HTTPException(status_code=403, detail=reason)
+        raise HTTPException(status_code=500, detail=f"Failed applying changes to workspace: {reason}")
+
+    return {
+        "success": True,
+        "applied_files": res.applied_paths,
+        "message": f"Successfully applied refactor to {len(res.applied_paths)} file(s).",
+    }
 
 
 @router.get("/suggestions")

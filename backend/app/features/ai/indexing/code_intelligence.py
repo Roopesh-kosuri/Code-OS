@@ -574,7 +574,11 @@ def _update_architecture_doc(workspace: str, reason: str = "Automated architectu
 """
     try:
         arch_file = ws_path / "ARCHITECTURE.md"
-        arch_file.write_text(doc_content, encoding="utf-8")
+        from app.features.ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+        res = apply_mutations(workspace, [Mutation(kind=MutationKind.WRITE_FULL, path="ARCHITECTURE.md", new_content=doc_content)], mode="AGENT")
+        if not res.success:
+            err_msg = res.rejection.reason_text if res.rejection else "Write failed"
+            return ToolResult(tool_name="update_architecture_doc", success=False, output="", error=f"Failed to write ARCHITECTURE.md: {err_msg}")
         return ToolResult(
             tool_name="update_architecture_doc",
             success=True,

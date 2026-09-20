@@ -110,6 +110,14 @@ class DirectoryCache:
 directory_cache = DirectoryCache(max_size=10000)
 
 
+def _on_pipeline_invalidate(workspace: str, applied_paths: list[str]) -> None:
+    directory_cache.invalidate(workspace)
+
+
+from ..ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations, register_invalidation_hook
+register_invalidation_hook(_on_pipeline_invalidate)
+
+
 def invalidate_directory_cache(workspace: str, path: str | None = None) -> None:
     directory_cache.invalidate(workspace, path)
 
@@ -373,10 +381,17 @@ def write_file(workspace: str, path: str, content: str) -> None:
     target = ensure_within_workspace(workspace, path)
     if target.is_dir():
         raise HTTPException(status_code=400, detail="Cannot write to a directory")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    # Normalize EOL before write_text to prevent CRLF doubling on Windows.
-    # See _normalize_eol docstring for the full bug explanation.
-    target.write_text(_normalize_eol(content), encoding="utf-8")
+    
+    # Route through mutation pipeline in USER_SAVE mode (skips syntax gate, enforces safety + atomic write + invalidation)
+    mut = Mutation(kind=MutationKind.WRITE_FULL, path=path, new_content=_normalize_eol(content))
+    res = apply_mutations(workspace, [mut], mode="USER_SAVE")
+    if not res.success:
+        rej = res.rejection
+        reason = rej.reason_text if rej else "Write failed"
+        code = rej.code if rej else ""
+        if code in ("path_outside_workspace", "symlink_escape", "security_error"):
+            raise HTTPException(status_code=403, detail=reason)
+        raise HTTPException(status_code=400, detail=reason)
     directory_cache.invalidate(workspace)
 
 

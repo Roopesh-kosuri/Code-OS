@@ -252,7 +252,7 @@ def _handle_edit_file(workspace: str, arguments: dict, staged_changes: list) -> 
     # 2. Syntax validation
     try:
         from ..harness.content_integrity import validate_language_syntax
-        valid_syntax, syntax_err = validate_language_syntax(rel_path, updated)
+        valid_syntax, syntax_err = validate_language_syntax(rel_path, updated, original_content=clean_orig)
         if not valid_syntax:
             return ToolResult(tool_name="edit_file", success=False, output="", error=f"syntax_error: {syntax_err}")
     except Exception as syn_exc:

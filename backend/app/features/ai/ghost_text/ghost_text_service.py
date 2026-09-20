@@ -250,12 +250,16 @@ def accept_ghost_text(editor_id: str, file_path: str = "") -> dict:
     except Exception:
         return {"status": "error", "error": f"path_outside_workspace: {rel_path}"}
 
-    try:
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(updated_content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
-        bytes_written = len(updated_content.encode("utf-8"))
-    except OSError as exc:
-        return {"status": "error", "error": f"Failed to write file to disk: {exc}"}
+    from app.features.ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+    mut = Mutation(kind=MutationKind.WRITE_FULL, path=rel_path, new_content=updated_content.replace("\r\n", "\n").replace("\r", "\n"))
+    res = apply_mutations(ws, [mut], mode="AGENT")
+    if not res.success:
+        rej = res.rejection
+        code = rej.code if rej else ""
+        if code in ("path_outside_workspace", "symlink_escape", "security_error"):
+            return {"status": "error", "error": f"path_outside_workspace: {rel_path}"}
+        return {"status": "error", "error": rej.reason_text if rej else "Failed to apply ghost text"}
+    bytes_written = len(updated_content.encode("utf-8"))
 
     # Clear pending
     _pending_ghost_texts.pop(entry["editor_id"], None)

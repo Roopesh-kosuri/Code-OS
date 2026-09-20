@@ -15,7 +15,6 @@ from fastapi import HTTPException
 from .providers.ollama import OllamaProvider
 from .providers.openai_compatible import OpenAICompatibleProvider
 from .schemas import ChatMessage, ChatRequest, EditProposalDto, EditProposalRequest, FileChange, ProviderHealth
-from ..files.service import write_file
 from ..settings.service import get_api_key
 from ...db.database import get_db
 
@@ -966,15 +965,11 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
             merged_contents[change.path] = merged
 
 
-    # 2. Write merged contents
+    # 2. Write merged contents (delegates to files.service.write_file which routes via mutation_pipeline)
+    from ..files.service import write_file
     for rel_path, content in merged_contents.items():
         try:
             write_file(proposal.workspace, rel_path, content)
-            try:
-                from .harness.symbol_index import invalidate_file
-                invalidate_file(ensure_within_workspace(proposal.workspace, rel_path))
-            except Exception as inv_err:
-                logger.debug("apply_proposal: symbol index invalidation warning for %s: %s", rel_path, inv_err)
         except Exception as exc:
             raise HTTPException(
                 status_code=500,

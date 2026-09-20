@@ -281,13 +281,22 @@ def apply_fix(vulnerability_id: str, patch_diff: str, workspace: Optional[str] =
                         target_to_replace = rm_line[1:]
                         if target_to_replace in old_content:
                             new_content = old_content.replace(target_to_replace, added_line, 1)
-                            # Write new content
-                            target_path.write_text(new_content, encoding="utf-8")
+                            from app.features.ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+                            mut = Mutation(kind=MutationKind.WRITE_FULL, path=rel_file, new_content=new_content)
+                            res = apply_mutations(ws, [mut], mode="AGENT")
+                            if not res.success:
+                                rej = res.rejection
+                                code = rej.code if rej else ""
+                                if code in ("path_outside_workspace", "symlink_escape", "security_error"):
+                                    raise ValueError(f"path_outside_workspace: {rel_file}")
+                                logger.warning("apply_fix rejected by mutation pipeline: %s", res.rejection)
+                                return False
                             
                             # Master Rule 4 check
                             if not _verify_existing_tests_pass(str(ws_path)):
-                                # Rollback
-                                target_path.write_text(old_content, encoding="utf-8")
+                                # Rollback via mutation pipeline
+                                rb_mut = Mutation(kind=MutationKind.WRITE_FULL, path=rel_file, new_content=old_content)
+                                apply_mutations(ws, [rb_mut], mode="AGENT")
                                 return False
                             return True
     except Exception as exc:

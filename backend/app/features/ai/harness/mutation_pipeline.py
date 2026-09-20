@@ -55,23 +55,36 @@ logger = logging.getLogger(__name__)
 # ── Hooks ───────────────────────────────────────────────────────────────────
 
 InvalidationHook = Callable[[str, list[str]], None]
-_invalidation_hooks: list[InvalidationHook] = []
+_invalidation_hooks: dict[str, InvalidationHook] = {}
 
 
-def register_invalidation_hook(hook: InvalidationHook) -> None:
+def register_invalidation_hook(hook: InvalidationHook, key: str | None = None) -> str:
     """Register a callback hook invoked synchronously after workspace mutations are applied.
 
     Hook signature: hook(workspace_root: str, applied_paths: list[str]) -> None
     Used by adapters (e.g. files/service.py directory_cache) to invalidate external caches.
+    Idempotent across module re-imports: if key is omitted, uses f"{hook.__module__}.{hook.__qualname__}".
     """
-    if hook not in _invalidation_hooks:
-        _invalidation_hooks.append(hook)
+    if key is None:
+        mod = getattr(hook, "__module__", "")
+        qual = getattr(hook, "__qualname__", getattr(hook, "__name__", str(id(hook))))
+        key = f"{mod}.{qual}" if mod else qual
+    _invalidation_hooks[key] = hook
+    return key
 
 
-def unregister_invalidation_hook(hook: InvalidationHook) -> None:
-    """Remove a previously registered invalidation hook."""
-    if hook in _invalidation_hooks:
-        _invalidation_hooks.remove(hook)
+def unregister_invalidation_hook(hook_or_key: InvalidationHook | str) -> None:
+    """Remove a previously registered invalidation hook by key or callable."""
+    if isinstance(hook_or_key, str):
+        _invalidation_hooks.pop(hook_or_key, None)
+    else:
+        mod = getattr(hook_or_key, "__module__", "")
+        qual = getattr(hook_or_key, "__qualname__", getattr(hook_or_key, "__name__", str(id(hook_or_key))))
+        key = f"{mod}.{qual}" if mod else qual
+        _invalidation_hooks.pop(key, None)
+        keys_to_del = [k for k, v in _invalidation_hooks.items() if v == hook_or_key]
+        for k in keys_to_del:
+            _invalidation_hooks.pop(k, None)
 
 
 # ── Types & Schemas ─────────────────────────────────────────────────────────
@@ -130,6 +143,7 @@ class RejectionDict(dict):
 class MutationResult:
     success: bool
     applied_paths: list[str] = field(default_factory=list)
+    rolled_back_paths: list[str] = field(default_factory=list)
     relocation_events: list[dict] = field(default_factory=list)
     rejection: Optional[RejectionDict] = None
     syntax_status: dict[str, str] = field(default_factory=dict)
@@ -404,25 +418,60 @@ def stage_resolve(
                         [],
                     )
                 if reloc_evt:
+                    reloc_evt.setdefault("file_path", rel_p)
                     reloc_events.append(reloc_evt)
                 resolved_s = a_s
                 resolved_e = a_e
             elif not anchor and mut.original:
                 clean_orig = mut.original.replace("\r\n", "\n")
-                if clean_orig.strip() != disk_range.strip() and clean_orig != disk_range:
-                    diag = _find_mismatch_context(disk_range, clean_orig)
-                    return (
-                        False,
-                        RejectionDict(
-                            code="original_mismatches_disk",
-                            reason_text=f"original_mismatches_disk for '{rel_p}'.\n{diag}.",
-                            stage="resolve",
-                        ),
-                        [],
-                        [],
-                    )
-                resolved_s = s_line
-                resolved_e = act_end
+                if s_line is not None:
+                    if clean_orig.strip() != disk_range.strip() and clean_orig != disk_range:
+                        diag = _find_mismatch_context(disk_range, clean_orig)
+                        return (
+                            False,
+                            RejectionDict(
+                                code="original_mismatches_disk",
+                                reason_text=f"original_mismatches_disk for '{rel_p}'.\n{diag}.",
+                                stage="resolve",
+                            ),
+                            [],
+                            [],
+                        )
+                    resolved_s = s_line
+                    resolved_e = act_end
+                else:
+                    # Snippet matching in disk_text when start_line is omitted
+                    matched_slice = None
+                    if disk_text and clean_orig in disk_text:
+                        matched_slice = clean_orig
+                    elif disk_text and clean_orig.strip() in disk_text:
+                        matched_slice = clean_orig.strip()
+                    elif disk_text:
+                        orig_lines = [l.rstrip() for l in clean_orig.splitlines()]
+                        curr_lines = [l.rstrip() for l in disk_text.splitlines()]
+                        if orig_lines:
+                            for i in range(len(curr_lines) - len(orig_lines) + 1):
+                                if curr_lines[i : i + len(orig_lines)] == orig_lines:
+                                    raw_split = disk_text.splitlines(keepends=True)
+                                    matched_slice = "".join(raw_split[i : i + len(orig_lines)])
+                                    break
+                    if matched_slice is None:
+                        diag = _find_mismatch_context(disk_text or "", clean_orig)
+                        return (
+                            False,
+                            RejectionDict(
+                                code="original_mismatches_disk",
+                                reason_text=f"original_mismatches_disk for '{rel_p}'.\n{diag}.",
+                                stage="resolve",
+                            ),
+                            [],
+                            [],
+                        )
+                    char_idx = (disk_text or "").find(matched_slice)
+                    s_calc = (disk_text or "")[:char_idx].count("\n") + 1
+                    e_calc = s_calc + max(0, len(matched_slice.strip("\n").splitlines()) - 1)
+                    resolved_s = s_calc
+                    resolved_e = e_calc
             else:
                 resolved_s = s_line
                 resolved_e = act_end
@@ -745,7 +794,7 @@ def stage_invalidate(
             else:
                 _file_read_cache.pop(str(full_p.resolve()), None)
 
-        for hook in _invalidation_hooks:
+        for hook in list(_invalidation_hooks.values()):
             try:
                 hook(ws_str, applied_paths)
             except Exception as hook_err:
@@ -917,8 +966,10 @@ def apply_mutations(
         # Trigger rollback on apply failure
         rb_ok, rb_err = stage_rollback(workspace_root, initial_snapshots)
         rej_to_return = rb_err if not rb_ok else s4_rej
+        rb_paths = [p for p, b in initial_snapshots.items() if b is not None]
         return MutationResult(
             success=False,
+            rolled_back_paths=rb_paths,
             relocation_events=reloc_events,
             rejection=rej_to_return,
             syntax_status=syntax_status,
@@ -931,8 +982,10 @@ def apply_mutations(
         # Trigger rollback on invalidation failure
         rb_ok, rb_err = stage_rollback(workspace_root, initial_snapshots)
         rej_to_return = rb_err if not rb_ok else s5_rej
+        rb_paths = [p for p, b in initial_snapshots.items() if b is not None]
         return MutationResult(
             success=False,
+            rolled_back_paths=rb_paths,
             relocation_events=reloc_events,
             rejection=rej_to_return,
             syntax_status=syntax_status,

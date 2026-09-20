@@ -1257,7 +1257,10 @@ def _handle_memory_write(workspace: str, arguments: dict) -> tuple[bool, str]:
 
         content_parts = header_lines + [""] + bullet_lines
         final_content = "\n".join(content_parts).strip() + "\n"
-        p.write_text(final_content, encoding="utf-8")
+        from .mutation_pipeline import Mutation, MutationKind, apply_mutations
+        res = apply_mutations(workspace, [Mutation(kind=MutationKind.WRITE_FULL, path="RONY.md", new_content=final_content)], mode="AGENT")
+        if not res.success:
+            return False, f"Failed to update RONY.md: {res.rejection.reason_text if res.rejection else 'write failed'}"
         return True, f"Saved to project memory: '{fact_str}'"
     except Exception as exc:
         return False, f"Failed to update RONY.md: {exc}"

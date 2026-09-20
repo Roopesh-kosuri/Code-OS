@@ -216,24 +216,19 @@ def apply_atomic_patch_sequence(
     staged_changes: list[FileChange] | None = None,
 ) -> tuple[bool, str, list[str]]:
     """Apply multiple sequential edit_file patches as ONE atomic unit.
-    
-    Enforces Phase 10.20 Part E3:
-    1. Checkpoints all touched paths prior to applying any patch.
-    2. Re-reads on-disk bytes between patches so patch N's original matches
-       the file as modified by patch N-1.
-    3. Any mismatch in any patch rejects that patch, rolls back the entire unit
-       to the pre-turn checkpoint, and returns an honest reason.
-    4. If all patches succeed, leaves them committed on disk and synchronizes
-       staged_changes if provided.
+
+    Routes through mutation_pipeline.apply_mutations (Phase 12.6 Part 3).
+    Preserves exact return shape: (success: bool, message: str, paths: list[str]).
     """
     if not patches:
         return True, "No patches to apply", []
 
-    ws_path = normalize_workspace(workspace)
+    from .mutation_pipeline import Mutation, MutationKind, apply_mutations
 
-    # 1. Normalize and identify all touched files
+    # 1. Normalize patches into Mutation objects
+    mutations: list[Mutation] = []
     touched_paths: list[str] = []
-    normalized_patches: list[dict[str, str]] = []
+    normalized_patches: list[dict] = []
 
     for p in patches:
         start_line = None
@@ -268,7 +263,7 @@ def apply_atomic_patch_sequence(
             continue
         if rel_p not in touched_paths:
             touched_paths.append(rel_p)
-        
+
         entry = {
             "path": rel_p,
             "original": orig,
@@ -283,82 +278,34 @@ def apply_atomic_patch_sequence(
                 pass
         normalized_patches.append(entry)
 
+        if entry.get("start_line") is not None and entry.get("end_line") is not None:
+            mut = Mutation(
+                kind=MutationKind.EDIT_RANGE,
+                path=rel_p,
+                start_line=entry["start_line"],
+                end_line=entry["end_line"],
+                anchor=entry.get("anchor"),
+                original=orig,
+                updated=upd,
+            )
+        elif not orig:
+            mut = Mutation(
+                kind=MutationKind.CREATE,
+                path=rel_p,
+                content=upd,
+            )
+        else:
+            mut = Mutation(
+                kind=MutationKind.EDIT_RANGE,
+                path=rel_p,
+                anchor=entry.get("anchor"),
+                original=orig,
+                updated=upd,
+            )
+        mutations.append(mut)
+
     if not normalized_patches:
         return False, "No valid patch payloads provided", []
-
-    # 2. Checkpoint: snapshot disk bytes for all touched files
-    initial_snapshots: dict[str, bytes | None] = {}
-    initial_texts: dict[str, str] = {}
-
-    for rel_p in touched_paths:
-        try:
-            full_p = ensure_within_workspace(workspace, rel_p)
-            if full_p.is_file():
-                b = full_p.read_bytes()
-                initial_snapshots[rel_p] = b
-                initial_texts[rel_p] = b.decode("utf-8", errors="replace").replace("\r\n", "\n")
-            else:
-                initial_snapshots[rel_p] = None
-                initial_texts[rel_p] = ""
-        except Exception as snap_err:
-            return False, f"Failed to inspect target file '{rel_p}': {snap_err}", []
-
-    # Step 2b: PRE-APPLY CONFLICT SCAN (Phase 12.5 H5.2, H5.3)
-    # Group patches by file path. If multiple patches touch the same file:
-    # 1. Reject if any subsequent patch (2nd+) is line-only (no anchor): "multi-edit turns require anchors"
-    # 2. Reject if any two patches' resolved ranges overlap or nest: "overlapping edits in one turn: split into sequential turns"
-    for rel_p in touched_paths:
-        file_patches = [p for p in normalized_patches if p["path"] == rel_p]
-        if len(file_patches) > 1:
-            # Check H5.3: second+ patch must be anchored if it is a line-range patch
-            for p_idx, p in enumerate(file_patches[1:], start=2):
-                is_line_only = (p.get("start_line") is not None and not p.get("anchor"))
-                if is_line_only:
-                    return False, f"Multi-edit turn rejected: multi-edit turns require anchors (patch {p_idx} on '{rel_p}' is line-only).", []
-
-            # Check H5.2: pre-apply range conflict scan
-            initial_text = initial_texts.get(rel_p, "")
-            initial_lines = initial_text.splitlines()
-            resolved_ranges: list[tuple[int | None, int | None]] = []
-            for p in file_patches:
-                s = p.get("start_line")
-                e = p.get("end_line")
-                anch = p.get("anchor")
-                if s is None or e is None:
-                    # Snippet patch with original
-                    orig = p.get("original", "").replace("\r\n", "\n")
-                    if orig and orig in initial_text:
-                        char_idx = initial_text.find(orig)
-                        s_line = initial_text[:char_idx].count("\n") + 1
-                        e_line = s_line + max(0, orig.count("\n"))
-                        resolved_ranges.append((s_line, e_line))
-                    else:
-                        resolved_ranges.append((None, None))
-                    continue
-                if anch:
-                    act_e = min(e, len(initial_lines))
-                    a_ok, a_s, a_e, a_err, _ = _resolve_patch_anchor(
-                        initial_text, initial_lines, s, act_e, anch, rel_p
-                    )
-                    if not a_ok:
-                        return False, f"Pre-apply conflict scan rejected '{rel_p}': {a_err}.", []
-                    resolved_ranges.append((a_s, a_e))
-                else:
-                    resolved_ranges.append((s, min(e, len(initial_lines))))
-
-            # G4: Mid-sequence anchor invalidation scan (Phase 12.5.1 G4)
-            sim_ok, sim_err = _simulate_sequence_anchors(file_patches, initial_text, resolved_ranges, rel_p)
-            if not sim_ok:
-                return False, sim_err or "", []
-
-            # Scan all pairs for overlap or nesting: max(s1, s2) <= min(e1, e2)
-            valid_ranges = [r for r in resolved_ranges if r[0] is not None and r[1] is not None]
-            for i in range(len(valid_ranges)):
-                s1, e1 = valid_ranges[i]
-                for j in range(i + 1, len(valid_ranges)):
-                    s2, e2 = valid_ranges[j]
-                    if max(s1, s2) <= min(e1, e2):
-                        return False, f"Pre-apply conflict scan rejected '{rel_p}': overlapping edits in one turn: split into sequential turns.", []
 
     # Optional Git checkpoint if repo exists
     git_commit = ""
@@ -367,226 +314,42 @@ def apply_atomic_patch_sequence(
     except Exception as git_err:
         logger.debug("Git checkpoint creation skipped: %s", git_err)
 
-    def _rollback(failure_msg: str, failing_patch_index: int) -> tuple[bool, str, list[str]]:
-        logger.warning(
-            "patch_applicator: atomic rollback triggered at patch %d/%d: %s",
-            failing_patch_index + 1, len(normalized_patches), failure_msg
-        )
-        restored: list[str] = []
-        for p_rel, snap_bytes in initial_snapshots.items():
+    # Pre-mutation texts for staged_changes sync
+    initial_texts: dict[str, str] = {}
+    if staged_changes is not None:
+        for rel_p in touched_paths:
             try:
-                full_p = ensure_within_workspace(workspace, p_rel)
-                if snap_bytes is None:
-                    if full_p.exists():
-                        if full_p.is_file():
-                            full_p.unlink()
-                        # Cleanup empty parent dirs up to workspace root
-                        parent = full_p.parent
-                        while parent != ws_path and parent != ws_path.parent:
-                            try:
-                                parent.rmdir()
-                                parent = parent.parent
-                            except OSError:
-                                break
-                    invalidate_file(full_p)
+                full_p = ensure_within_workspace(workspace, rel_p)
+                if full_p.is_file():
+                    initial_texts[rel_p] = full_p.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
                 else:
-                    full_p.parent.mkdir(parents=True, exist_ok=True)
-                    full_p.write_bytes(snap_bytes)
-                    restored.append(p_rel)
-                    invalidate_file(full_p)
-                # Invalidate file read cache
-                _file_read_cache.pop(str(full_p.resolve()), None)
-            except Exception as r_err:
-                logger.error("Failed to restore %s during rollback: %s", p_rel, r_err)
+                    initial_texts[rel_p] = ""
+            except Exception:
+                initial_texts[rel_p] = ""
 
+    res = apply_mutations(workspace, mutations, mode="AGENT")
+
+    if not res.success:
         if git_commit:
             try:
                 undo_turn_files(workspace, git_commit, touched_paths)
             except Exception:
                 pass
-
+        failure_msg = res.rejection.reason_text if res.rejection else "Patch sequence rejected."
         full_reason = f"{failure_msg} Entire patch sequence was rolled back to checkpoint."
-        return False, full_reason, restored
+        return False, full_reason, res.rolled_back_paths
 
-    # 3. Sequentially apply patches with intermediate on-disk reads
-    for idx, patch in enumerate(normalized_patches):
-        rel_p = patch["path"]
-        raw_orig = patch["original"]
-        raw_upd = patch["updated"]
-        clean_orig = raw_orig.replace("\r\n", "\n")
-        clean_upd = raw_upd.replace("\r\n", "\n")
-
-        try:
-            full_p = ensure_within_workspace(workspace, rel_p)
-        except Exception as path_err:
-            return _rollback(f"Patch {idx+1} rejected: path error: {path_err}.", idx)
-
-        # UPDATED must not be empty
-        if not clean_upd.strip():
-            return _rollback(
-                f"Patch {idx+1} rejected: updated_empty_or_equal: 'updated' content cannot be empty for '{rel_p}'.",
-                idx
-            )
-        if clean_orig and clean_orig.strip() == clean_upd.strip():
-            return _rollback(
-                f"Patch {idx+1} rejected: updated_empty_or_equal: 'updated' is identical to 'original' for '{rel_p}'.",
-                idx
-            )
-
-        # Step E3.2: Re-read on-disk bytes between patches
-        if full_p.exists() and full_p.is_file():
-            try:
-                current_bytes = full_p.read_bytes()
-                current_text = current_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n")
-            except Exception as r_err:
-                return _rollback(f"Patch {idx+1} rejected: disk_read_error on '{rel_p}': {r_err}.", idx)
-        else:
-            current_text = None
-
-        start_line = patch.get("start_line")
-        end_line = patch.get("end_line")
-        anchor = patch.get("anchor")
-
-        if start_line is not None and end_line is not None:
-            # Surgical range edit
-            if current_text is None:
-                return _rollback(
-                    f"Patch {idx+1} rejected: file does not exist: '{rel_p}'.",
-                    idx
-                )
-            disk_lines = current_text.splitlines()
-            total_lines = len(disk_lines)
-            if (start_line < 1 or start_line > total_lines) and not anchor:
-                return _rollback(
-                    f"Patch {idx+1} rejected: start_line ({start_line}) out of bounds (file has {total_lines} lines).",
-                    idx
-                )
-
-            actual_end = min(end_line, total_lines)
-            disk_range = "\n".join(disk_lines[start_line - 1 : actual_end]) if start_line <= total_lines else ""
-
-            if anchor:
-                # Content anchor resolution order (Phase 12.5 H1.2 + Phase 12.5.1 G1)
-                a_ok, a_s, a_e, a_err, reloc_event = _resolve_patch_anchor(
-                    current_text, disk_lines, start_line, actual_end, anchor, rel_p
-                )
-                if not a_ok:
-                    return _rollback(f"Patch {idx+1} rejected: {a_err} for '{rel_p}'.", idx)
-                if reloc_event:
-                    patch["relocation_event"] = reloc_event
-                start_line, actual_end = a_s, a_e
-            else:
-                # No anchor provided -> line-only behavior: validate slice against disk range
-                if clean_orig and clean_orig.strip() != disk_range.strip() and clean_orig != disk_range:
-                    diagnostic = _find_mismatch_context(disk_range, clean_orig)
-                    return _rollback(
-                        f"Patch {idx+1} rejected: original_mismatches_disk for '{rel_p}'.\n{diagnostic}.",
-                        idx
-                    )
-
-            # Layered syntax checks (Phase 12.5 H2 + Phase 12.5.1 G5)
-            # Layer 1: Check slice in isolation
-            slice_ok, slice_err = check_slice_syntax(rel_p, clean_upd)
-            if not slice_ok:
-                return _rollback(
-                    f"Patch {idx+1} rejected: edit introduces slice syntax error in '{rel_p}': {slice_err}.",
-                    idx
-                )
-
-            # Layer 2: Check projected full file in memory with pre-existing breakage tolerance (G5)
-            projected_lines = disk_lines[: start_line - 1] + clean_upd.splitlines() + disk_lines[actual_end:]
-            projected_content = "\n".join(projected_lines)
-            if current_text.endswith("\n"):
-                projected_content += "\n"
-
-            proj_ok, proj_err = check_projected_file_syntax(rel_p, projected_content, original_content=current_text)
-            if not proj_ok:
-                return _rollback(
-                    f"Patch {idx+1} rejected: edit introduces syntax error in '{rel_p}': {proj_err}.",
-                    idx
-                )
-
-            try:
-                full_p.write_text(projected_content, encoding="utf-8")
-                _file_read_cache[str(full_p.resolve())] = (full_p.stat().st_mtime, projected_content)
-                invalidate_file(full_p)
-            except Exception as w_err:
-                return _rollback(f"Patch {idx+1} rejected: failed writing '{rel_p}': {w_err}.", idx)
-        elif not clean_orig:
-            # New file creation
-            if current_text is not None and current_text.strip() != "":
-                return _rollback(
-                    f"Patch {idx+1} rejected: original_must_be_empty: file '{rel_p}' already exists on disk. Use original snippet to edit.",
-                    idx
-                )
-            syn_ok, syn_err = validate_language_syntax(rel_p, clean_upd)
-            if not syn_ok:
-                return _rollback(
-                    f"Patch {idx+1} rejected: syntax error in '{rel_p}': {syn_err}.",
-                    idx
-                )
-            try:
-                full_p.parent.mkdir(parents=True, exist_ok=True)
-                full_p.write_text(clean_upd, encoding="utf-8")
-                _file_read_cache[str(full_p.resolve())] = (full_p.stat().st_mtime, clean_upd)
-                invalidate_file(full_p)
-            except Exception as w_err:
-                return _rollback(f"Patch {idx+1} rejected: failed writing '{rel_p}': {w_err}.", idx)
-        else:
-            # Existing file modification
-            if current_text is None:
-                return _rollback(
-                    f"Patch {idx+1} rejected: file does not exist: '{rel_p}'. To create a new file, pass original=''.",
-                    idx
-                )
-
-            # Match original snippet verbatim in current on-disk content
-            matched_slice = None
-            if clean_orig in current_text:
-                matched_slice = clean_orig
-            elif clean_orig.strip() in current_text:
-                matched_slice = clean_orig.strip()
-            else:
-                # Contiguous line match ignoring trailing spaces
-                orig_lines = [l.rstrip() for l in clean_orig.splitlines()]
-                curr_lines = [l.rstrip() for l in current_text.splitlines()]
-                if orig_lines:
-                    for i in range(len(curr_lines) - len(orig_lines) + 1):
-                        if curr_lines[i : i + len(orig_lines)] == orig_lines:
-                            raw_split = current_text.splitlines(keepends=True)
-                            matched_slice = "".join(raw_split[i : i + len(orig_lines)])
-                            break
-
-            if matched_slice is None:
-                diagnostic = _find_mismatch_context(current_text, clean_orig)
-                return _rollback(
-                    f"Patch {idx+1} rejected: original_mismatches_disk for '{rel_p}'.\n{diagnostic}.",
-                    idx
-                )
-
-            projected_content = current_text.replace(matched_slice, clean_upd, 1)
-            syn_ok, syn_err = validate_language_syntax(rel_p, projected_content, original_content=current_text)
-            if not syn_ok:
-                return _rollback(
-                    f"Patch {idx+1} rejected: edit introduces syntax error in '{rel_p}': {syn_err}.",
-                    idx
-                )
-
-            try:
-                full_p.write_text(projected_content, encoding="utf-8")
-                _file_read_cache[str(full_p.resolve())] = (full_p.stat().st_mtime, projected_content)
-                invalidate_file(full_p)
-            except Exception as w_err:
-                return _rollback(f"Patch {idx+1} rejected: failed writing '{rel_p}': {w_err}.", idx)
-
-    # 4. Synchronize staged_changes if provided
+    # Synchronize staged_changes if provided
     if staged_changes is not None:
         for rel_p in touched_paths:
-            full_p = ensure_within_workspace(workspace, rel_p)
-            final_upd = full_p.read_text(encoding="utf-8", errors="replace") if full_p.exists() else ""
+            try:
+                full_p = ensure_within_workspace(workspace, rel_p)
+                final_upd = full_p.read_text(encoding="utf-8", errors="replace") if full_p.exists() else ""
+            except Exception:
+                final_upd = ""
             orig_before = initial_texts.get(rel_p, "")
             existing = next((c for c in staged_changes if c.path == rel_p), None)
-            reloc_evt = next((p.get("relocation_event") for p in normalized_patches if p.get("path") == rel_p and p.get("relocation_event")), None)
+            reloc_evt = next((evt for evt in res.relocation_events if evt.get("file_path") == rel_p or evt.get("relocated")), None)
             if existing:
                 existing.updated = final_upd
                 if reloc_evt:
@@ -598,7 +361,4 @@ def apply_atomic_patch_sequence(
                 staged_changes.append(new_c)
 
     success_msg = f"✓ Successfully applied {len(normalized_patches)} patch(es) atomically across {len(touched_paths)} file(s)."
-    # F3: Release in-memory byte snapshots immediately after success — these can be large.
-    initial_snapshots.clear()
-    initial_texts.clear()
-    return True, success_msg, touched_paths
+    return True, success_msg, res.applied_paths

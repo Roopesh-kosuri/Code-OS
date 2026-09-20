@@ -555,28 +555,48 @@ def apply_approved_changes(job_id: str) -> Dict[str, Any]:
                     "rejected_files": [],
                 }
 
-    applied_files: List[str] = []
-    rejected_files: List[str] = []
+    from app.features.ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+
+    write_mutations: list[Mutation] = []
+    files_to_write: list[str] = []
+    files_to_delete: list[str] = []
+    rejected_files: list[str] = []
 
     for path, entry in list(job_data["files"].items()):
         if path in validated_targets:
-            full_path = validated_targets[path]
             if entry["status"] == "deleted" and entry.get("approved", False):
-                if full_path.exists():
-                    try:
-                        full_path.unlink()
-                    except Exception as e:
-                        logger.error("Failed to delete %s: %s", full_path, e)
+                files_to_delete.append(path)
             else:
                 final_content = _reconstruct_file_content(entry)
-                try:
-                    full_path.parent.mkdir(parents=True, exist_ok=True)
-                    full_path.write_text(final_content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
-                except Exception as e:
-                    logger.error("Failed to write %s: %s", full_path, e)
-            applied_files.append(path)
+                write_mutations.append(Mutation(
+                    kind=MutationKind.WRITE_FULL,
+                    path=path,
+                    new_content=final_content.replace("\r\n", "\n").replace("\r", "\n"),
+                ))
+                files_to_write.append(path)
         else:
             rejected_files.append(path)
+
+    if write_mutations:
+        res = apply_mutations(workspace, write_mutations, mode="AGENT")
+        if not res.success:
+            return {
+                "success": False,
+                "error": res.rejection.reason_text if res.rejection else "Failed to apply changes",
+                "applied_files": [],
+                "rejected_files": list(job_data["files"].keys()),
+            }
+
+    # Handle Part 3b deletions
+    for path in files_to_delete:
+        full_path = validated_targets[path]
+        if full_path.exists():
+            try:
+                full_path.unlink()
+            except Exception as e:
+                logger.error("Failed to delete %s: %s", full_path, e)
+
+    applied_files = files_to_write + files_to_delete
 
     # Remove applied files from active staging review
     for p in applied_files:
