@@ -742,31 +742,6 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             else:
                 active_tools = None
 
-            # Pre-flight payload governance (protect against Groq 8.8k TPM limits, etc.)
-            gov_res = govern_payload(
-                effective_messages,
-                active_tools,
-                provider=effective_prov_key,
-                model=chat_request.model,
-                workspace=workspace,
-            )
-            effective_messages, active_tools, was_governed, gov_reason = gov_res
-            if getattr(gov_res, "failed_closed", False) or "fail_closed" in gov_reason:
-                if "token accounting" in gov_reason or "tokenizer" in gov_reason:
-                    err_msg = f"Payload governance fail-closed: token accounting dependency missing ({gov_reason})"
-                else:
-                    err_msg = f"Payload governance fail-closed: {gov_reason}"
-                logger.error("chat_harness: %s", err_msg)
-                yield _sse_error(err_msg)
-                yield _sse_done(False, err_msg)
-                return
-
-            if was_governed:
-                logger.info(
-                    "chat_harness: Pre-flight payload governed for provider=%s model=%s: %s",
-                    effective_prov_key, chat_request.model, gov_reason
-                )
-
             # Calculate tier-aware reasoning effort (Groq uses 'low' to conserve TPM and keep turn latency ~1s)
             reasoning_effort_val = "low" if (tier == 1 or effective_prov_key == "groq") else ("medium" if tier >= 2 else None)
 
@@ -1193,6 +1168,50 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 iteration += 1
                 continue
 
+            # ── Raw Tool Call Loop Breaker (S7) ──────────────────────────────
+            raw_tc_match = re.search(
+                r"\[TOOL_CALL:\s*([a-zA-Z0-9_\-]+)[\s\S]*?(?:\[/TOOL_CALL\]|$)",
+                response_text,
+                re.IGNORECASE,
+            ) or re.search(
+                r"```(?:tool_call|json)?\s*\{\s*\"(?:tool|name|action)\"\s*:\s*\"([a-zA-Z0-9_\-]+)\"[\s\S]*?(?:```|$)",
+                response_text,
+                re.IGNORECASE,
+            )
+            active_tool_names = {
+                t.get("function", {}).get("name")
+                for t in (active_tools or [])
+                if isinstance(t, dict)
+            }
+            is_truncated_output = (
+                _is_response_truncated(response_text, stream_finish_reason)
+                or "[TRUNCATED" in response_text
+                or stream_finish_reason == "length"
+            )
+            raw_tc_tool_name = raw_tc_match.group(1).strip() if raw_tc_match else ""
+            is_valid_tool_being_truncated = bool(
+                is_truncated_output and raw_tc_tool_name and (
+                    raw_tc_tool_name in active_tool_names
+                    or raw_tc_tool_name in ("edit_file", "view_file", "write_to_file", "run_command", "read_file", "grep_search")
+                )
+            )
+
+            if not has_tools and raw_tc_match and not is_valid_tool_being_truncated:
+                raw_snippet = raw_tc_match.group(0).strip()
+                raw_tool_name = raw_tc_tool_name
+                if last_raw_tool_call and (
+                    last_raw_tool_call == raw_snippet
+                    or last_raw_tool_call.startswith(raw_snippet[:60])
+                    or difflib.SequenceMatcher(None, last_raw_tool_call, raw_snippet).ratio() > 0.8
+                ):
+                    logger.warning("chat_harness: detected repeated raw tool call loop for tool '%s'", raw_tool_name)
+                    yield _sse_error(f"Execution stopped: Model repeatedly emitted invalid or unexecutable tool call '{raw_tool_name}'.")
+                    yield _sse_done(False, f"Task stopped: Detected repeated unexecutable tool call '{raw_tool_name}'.")
+                    return
+                last_raw_tool_call = raw_snippet
+            elif has_tools:
+                last_raw_tool_call = None
+
             # ── Truncation / Timeout Detection & Recovery Guard ────────────────
             if _is_response_truncated(response_text, stream_finish_reason) or "[TRUNCATED" in response_text or stream_finish_reason == "length":
                 truncation_retries += 1
@@ -1221,32 +1240,6 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     yield _sse_error(err_msg)
                     yield _sse_done(False, err_msg)
                     return
-
-            # ── Raw Tool Call Loop Breaker (S7) ──────────────────────────────
-            raw_tc_match = re.search(
-                r"\[TOOL_CALL:\s*([a-zA-Z0-9_\-]+)[\s\S]*?(?:\[/TOOL_CALL\]|$)",
-                response_text,
-                re.IGNORECASE,
-            ) or re.search(
-                r"```(?:tool_call|json)?\s*\{\s*\"(?:tool|name|action)\"\s*:\s*\"([a-zA-Z0-9_\-]+)\"[\s\S]*?(?:```|$)",
-                response_text,
-                re.IGNORECASE,
-            )
-            if not has_tools and raw_tc_match:
-                raw_snippet = raw_tc_match.group(0).strip()
-                raw_tool_name = raw_tc_match.group(1).strip()
-                if last_raw_tool_call and (
-                    last_raw_tool_call == raw_snippet
-                    or last_raw_tool_call.startswith(raw_snippet[:60])
-                    or difflib.SequenceMatcher(None, last_raw_tool_call, raw_snippet).ratio() > 0.8
-                ):
-                    logger.warning("chat_harness: detected repeated raw tool call loop for tool '%s'", raw_tool_name)
-                    yield _sse_error(f"Execution stopped: Model repeatedly emitted invalid or unexecutable tool call '{raw_tool_name}'.")
-                    yield _sse_done(False, f"Task stopped: Detected repeated unexecutable tool call '{raw_tool_name}'.")
-                    return
-                last_raw_tool_call = raw_snippet
-            elif has_tools:
-                last_raw_tool_call = None
 
             if prev_response_prefix and tools_executed_last_turn == 0 and not has_tools and not _response_is_done(response_text):
                 is_exact_prefix = (len(curr_prefix) >= 30 and curr_prefix[:80] == prev_response_prefix[:80])
