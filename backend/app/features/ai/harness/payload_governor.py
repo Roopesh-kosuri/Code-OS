@@ -211,6 +211,47 @@ def _truncate_attachment_in_text(text: str, max_chars: int = 6000) -> tuple[str,
     return new_text, was_truncated
 
 
+def _truncate_repo_map_in_text(text: str, max_lines: int = 50) -> tuple[str, bool]:
+    """Find and shrink repo-map outline in text, dropping lowest-ranked entries first."""
+    if "[WORKSPACE REPO-MAP]" not in text:
+        return text, False
+    pattern = re.compile(r"(\[WORKSPACE REPO-MAP\])([\s\S]*?)(\[END WORKSPACE REPO-MAP\])")
+    match = pattern.search(text)
+    if not match:
+        return text, False
+    inner = match.group(2).strip()
+    lines = inner.splitlines()
+    if len(lines) <= max_lines:
+        return text, False
+    if max_lines <= 0:
+        new_text = text[:match.start()] + text[match.end():]
+        return new_text.replace("\n## Workspace Structure (Repo-Map):\n", ""), True
+    kept_lines = lines[:max_lines]
+    new_inner = "\n".join(kept_lines) + "\n... [Repo-map truncated for token budget]"
+    new_text = text[:match.start()] + f"[WORKSPACE REPO-MAP]\n{new_inner}\n[END WORKSPACE REPO-MAP]" + text[match.end():]
+    return new_text, True
+
+
+def _truncate_diagnostics_in_text(text: str, max_entries: int = 5) -> tuple[str, bool]:
+    """Find and shrink diagnostics block in text."""
+    if "[DIAGNOSTICS]" not in text:
+        return text, False
+    pattern = re.compile(r"(\[DIAGNOSTICS\])([\s\S]*?)(\[END DIAGNOSTICS\])")
+    match = pattern.search(text)
+    if not match:
+        return text, False
+    inner = match.group(2).strip()
+    lines = [l for l in inner.splitlines() if l.strip().startswith("- ")]
+    if len(lines) <= max_entries:
+        return text, False
+    if max_entries <= 0:
+        new_text = text[:match.start()] + text[match.end():]
+        return new_text.replace("\n## Live Diagnostics:\n", ""), True
+    kept_lines = lines[:max_entries]
+    new_text = text[:match.start()] + "[DIAGNOSTICS]\n" + "\n".join(kept_lines) + "\n[END DIAGNOSTICS]" + text[match.end():]
+    return new_text, True
+
+
 def govern_payload(
     messages: list[ChatMessage],
     tools: list[dict[str, Any]] | None,
@@ -225,8 +266,10 @@ def govern_payload(
     Always returns failed_closed=False: never refuses or fails a request
     for tokenization reasons. Compaction is applied progressively if over budget:
     1. Compact conversation history turns.
-    2. Truncate RAG context to top-2 and truncate large attachment blocks.
-    3. Swap tool definitions to SLIM_CODING_TOOLS.
+    2. Shrink repo-map first (drop lowest-ranked entries).
+    3. Truncate RAG context to top-2 and truncate large attachment blocks.
+    4. Truncate diagnostics.
+    5. Swap tool definitions to SLIM_CODING_TOOLS.
     """
     prov_key = (provider or "").lower().strip()
     budget = hard_tpm_limit or PROVIDER_TOKEN_BUDGETS.get(prov_key, DEFAULT_MAX_REQUEST_TOKENS)
@@ -260,6 +303,41 @@ def govern_payload(
                 _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
                 return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
 
+    # Step 1.5: Shrink repo-map FIRST before touching RAG (Phase 12 Part 3 C3)
+    repo_map_shrunk = False
+    rm_msgs: list[ChatMessage] = []
+    for m in adjusted_messages:
+        c = getattr(m, "content", "")
+        if "[WORKSPACE REPO-MAP]" in c:
+            c, rm_trunc = _truncate_repo_map_in_text(c, max_lines=50)
+            if not rm_trunc:
+                c, rm_trunc = _truncate_repo_map_in_text(c, max_lines=0)
+            if rm_trunc:
+                repo_map_shrunk = True
+                if "shrunk_repo_map" not in adjustments_applied:
+                    adjustments_applied.append("shrunk_repo_map")
+        rm_msgs.append(ChatMessage(role=m.role, content=c))
+
+    if repo_map_shrunk:
+        adjusted_messages = rm_msgs
+        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+        if (breakdown["total_tokens"] or 0) <= budget:
+            _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
+            return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
+
+        # If 50 lines still exceeds budget, shrink repo-map to zero before touching RAG (Phase 12 Part 3 C3)
+        rm_zero_msgs: list[ChatMessage] = []
+        for m in adjusted_messages:
+            c = getattr(m, "content", "")
+            if "[WORKSPACE REPO-MAP]" in c:
+                c, _ = _truncate_repo_map_in_text(c, max_lines=0)
+            rm_zero_msgs.append(ChatMessage(role=m.role, content=c))
+        adjusted_messages = rm_zero_msgs
+        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+        if (breakdown["total_tokens"] or 0) <= budget:
+            _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
+            return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
+
     # Step 2: Truncate RAG context to top-2 instead of top-5, and truncate oversized attachments
     rag_or_att_truncated = False
     new_msgs: list[ChatMessage] = []
@@ -292,6 +370,28 @@ def govern_payload(
             _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
             return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
 
+    # Step 2.5: Truncate diagnostics if still over budget (Phase 12 Part 3 C3)
+    diag_shrunk = False
+    diag_msgs: list[ChatMessage] = []
+    for m in adjusted_messages:
+        c = getattr(m, "content", "")
+        if "[DIAGNOSTICS]" in c:
+            c, diag_trunc = _truncate_diagnostics_in_text(c, max_entries=5)
+            if not diag_trunc:
+                c, diag_trunc = _truncate_diagnostics_in_text(c, max_entries=0)
+            if diag_trunc:
+                diag_shrunk = True
+                if "shrunk_diagnostics" not in adjustments_applied:
+                    adjustments_applied.append("shrunk_diagnostics")
+        diag_msgs.append(ChatMessage(role=m.role, content=c))
+
+    if diag_shrunk:
+        adjusted_messages = diag_msgs
+        breakdown = estimate_payload_breakdown(adjusted_messages, adjusted_tools, prov_key, model)
+        if (breakdown["total_tokens"] or 0) <= budget:
+            _log_governance_event(workspace, prov_key, budget, breakdown, adjustments_applied, failed_closed=False)
+            return GovernanceResult(adjusted_messages, adjusted_tools, True, ", ".join(adjustments_applied), breakdown, False)
+
     # Step 3: Switch to slim tool schema
     if adjusted_tools and len(adjusted_tools) > len(SLIM_CODING_TOOLS):
         mcp_tools = [t for t in adjusted_tools if "[MCP Tool" in str(t.get("function", {}).get("description", ""))]
@@ -307,7 +407,7 @@ def govern_payload(
     if total_tok > budget:
         adjustments_applied.append("budget_exceeded_best_effort")
         summary = (
-            f"best_effort: Request payload ({total_tok} tokens) exceeds provider budget "
+            f"best_effort ({', '.join(adjustments_applied)}): Request payload ({total_tok} tokens) exceeds provider budget "
             f"({budget} tokens) after full progressive reduction. Proceeding best-effort."
         )
         logger.info("payload_governor: %s", summary)

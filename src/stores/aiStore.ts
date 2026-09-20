@@ -163,6 +163,11 @@ export interface TurnMetrics {
   duration_ms?: number;
   iterations?: number;
   tools_executed?: number;
+  repo_map_lines?: number;
+  repo_map_files?: number;
+  diagnostics?: number;
+  rag_snippets?: number;
+  total_budget_used?: number;
 }
 
 export interface TokenUsageStatus {
@@ -632,6 +637,11 @@ export function createSSEStreamHandler(
           ...(typeof data.duration_ms === "number" ? { duration_ms: data.duration_ms } : {}),
           ...(typeof data.iterations === "number" ? { iterations: data.iterations } : {}),
           ...(typeof data.tools_executed === "number" ? { tools_executed: data.tools_executed } : {}),
+          ...(typeof data.repo_map_lines === "number" ? { repo_map_lines: data.repo_map_lines } : {}),
+          ...(typeof data.repo_map_files === "number" ? { repo_map_files: data.repo_map_files } : {}),
+          ...(typeof data.diagnostics === "number" ? { diagnostics: data.diagnostics } : {}),
+          ...(typeof data.rag_snippets === "number" ? { rag_snippets: data.rag_snippets } : {}),
+          ...(typeof data.total_budget_used === "number" ? { total_budget_used: data.total_budget_used } : {}),
         },
       }));
     } else if (eventType === "error") {

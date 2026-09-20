@@ -77,6 +77,13 @@ from .symbol_index import (
     SymbolEntry, index_file, symbols_in_file, find_symbol,
     references_to, invalidate_file, clear_symbol_index,
 )
+from .repo_map import (
+    build_repo_map, invalidate_repo_map_cache, clear_repo_map_cache,
+    shrink_context_for_budget,
+)
+from .lsp_lite import (
+    collect_diagnostics, format_diagnostics_block,
+)
 
 __all__ = [
     "is_conversational_turn",
@@ -192,4 +199,10 @@ __all__ = [
     "_QUICK_TASK_SYSTEM_PROMPT",
     "_finalize_staged_changes",
     "_escalate_to_duo",
+    "build_repo_map",
+    "invalidate_repo_map_cache",
+    "clear_repo_map_cache",
+    "shrink_context_for_budget",
+    "collect_diagnostics",
+    "format_diagnostics_block",
 ]

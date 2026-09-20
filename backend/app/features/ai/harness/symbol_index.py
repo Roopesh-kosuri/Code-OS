@@ -544,7 +544,17 @@ def references_to(workspace: str, name: str, max_results: int = 50) -> list[dict
 
 def invalidate_file(path: str | Path) -> None:
     _symbol_index.invalidate(path)
+    try:
+        from .repo_map import invalidate_repo_map_cache
+        invalidate_repo_map_cache(path)
+    except Exception:
+        pass
 
 
 def clear_symbol_index() -> None:
     _symbol_index.clear()
+    try:
+        from .repo_map import clear_repo_map_cache
+        clear_repo_map_cache()
+    except Exception:
+        pass

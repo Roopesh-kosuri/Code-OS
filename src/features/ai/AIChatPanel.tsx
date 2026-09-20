@@ -264,6 +264,7 @@ export function AIChatPanel() {
   const currentTier = useAIStore((s) => s.currentTier);
   const currentTierLabel = useAIStore((s) => s.currentTierLabel);
   const currentTokensUsed = useAIStore((s) => s.currentTokensUsed);
+  const turnMetrics = useAIStore((s) => s.turnMetrics);
   const tierSuggestion = useAIStore((s) => s.tierSuggestion);
   const clearTierSuggestion = useAIStore((s) => s.clearTierSuggestion);
   const interruptedState = useAIStore((s) => s.interruptedState);
@@ -504,6 +505,15 @@ export function AIChatPanel() {
                 {currentTokensUsed != null && (
                   <span className="text-on-surface-variant font-mono">({currentTokensUsed} tok)</span>
                 )}
+              </span>
+            )}
+            {turnMetrics && ((turnMetrics.repo_map_lines ?? 0) > 0 || (turnMetrics.diagnostics ?? 0) > 0) && (
+              <span
+                className="hidden sm:inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9.5px] font-mono bg-white/5 text-on-surface-variant border border-white/10"
+                title={`Context Composition: ${turnMetrics.repo_map_lines || 0} repo-map lines (${turnMetrics.repo_map_files || 0} files), ${turnMetrics.diagnostics || 0} diagnostics, ${turnMetrics.rag_snippets || 0} RAG snippets, budget used: ${turnMetrics.total_budget_used || 0} tok`}
+              >
+                {(turnMetrics.repo_map_lines ?? 0) > 0 && <span>🗺️ {turnMetrics.repo_map_lines}L</span>}
+                {(turnMetrics.diagnostics ?? 0) > 0 && <span className="text-amber-300">⚠️ {turnMetrics.diagnostics}</span>}
               </span>
             )}
           </div>

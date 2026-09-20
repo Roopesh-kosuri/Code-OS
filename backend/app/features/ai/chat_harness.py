@@ -170,8 +170,16 @@ from .harness import (
     _LEAN_CHAT_SYSTEM_PROMPT, _QUICK_TASK_SYSTEM_PROMPT,
     _finalize_staged_changes,
     _escalate_to_duo,
+    build_repo_map, shrink_context_for_budget,
+    collect_diagnostics, format_diagnostics_block,
+    find_symbol,
 )
-from .harness.payload_governor import get_token_count
+from .harness.payload_governor import (
+    get_token_count,
+    get_conservative_token_count,
+    PROVIDER_TOKEN_BUDGETS,
+    DEFAULT_MAX_REQUEST_TOKENS,
+)
 
 # Engine Singletons
 sandbox_executor = SandboxExecutor()
@@ -526,8 +534,108 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 "details": f"rag_context: {chunks_count} chunks, top similarity {top_similarity:.2f}, files: {rag_files}",
             })
 
+        # ── Step 2b: Structural Context & Live Diagnostics (Phase 12) ─────────
+        repo_map = ""
+        diagnostics = ""
+        diagnostics_dict: dict[str, list[dict]] = {}
+
+        if tier == 0:
+            # Tier 0 (Fast Answer): Neither repo-map nor diagnostics
+            pass
+        elif tier == 1:
+            # Tier 1 (Quick Task): Diagnostics ONLY
+            hot_tier1: list[str] = []
+            if request.attached_paths:
+                hot_tier1.extend(request.attached_paths)
+            if context.get("active_file") and context["active_file"].get("name"):
+                hot_tier1.append(context["active_file"]["name"])
+            if hot_tier1:
+                try:
+                    diagnostics_dict = collect_diagnostics(hot_tier1, workspace=workspace)
+                    diagnostics = format_diagnostics_block(diagnostics_dict, max_entries=20)
+                except Exception as exc:
+                    logger.debug("chat_harness: tier 1 diagnostics error: %s", exc)
+        else:
+            # Tier 2/3 (Deep Task): Repo-map + diagnostics + full RAG
+            hot_candidates: list[str] = []
+            # (a) Files ranked highly by RAG/BM25
+            if semantic_results:
+                for m in semantic_results:
+                    rp = m.get("relative_path") or m.get("path") or m.get("file_path")
+                    if rp:
+                        hot_candidates.append(rp)
+            # (b) Files recently edited / currently active
+            if request.attached_paths:
+                hot_candidates.extend(request.attached_paths)
+            if context.get("active_file") and context["active_file"].get("name"):
+                hot_candidates.append(context["active_file"]["name"])
+            # (c) Files matching prompt symbols
+            prompt_tokens = re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]{2,}\b", user_query)
+            for tok in prompt_tokens[:8]:
+                try:
+                    sym_matches = find_symbol(workspace, tok)
+                    for sm in sym_matches[:3]:
+                        if sm.path:
+                            hot_candidates.append(sm.path)
+                except Exception:
+                    pass
+
+            # Union, deduplicate, cap at 15 files
+            hot_files: list[str] = []
+            seen_hot = set()
+            for hf in hot_candidates:
+                hf_clean = hf.replace("\\", "/").strip()
+                if hf_clean and hf_clean not in seen_hot:
+                    seen_hot.add(hf_clean)
+                    hot_files.append(hf_clean)
+                if len(hot_files) >= 15:
+                    break
+
+            try:
+                repo_map = build_repo_map(workspace, focus_files=hot_files, max_lines=400)
+            except Exception as exc:
+                logger.warning("chat_harness: build_repo_map failed: %s", exc)
+
+            try:
+                diagnostics_dict = collect_diagnostics(hot_files, workspace=workspace)
+                diagnostics = format_diagnostics_block(diagnostics_dict, max_entries=20)
+            except Exception as exc:
+                logger.warning("chat_harness: collect_diagnostics failed: %s", exc)
+
+            # Budget shrink: shrink repo-map first, then RAG, diagnostics last
+            prov_budget = PROVIDER_TOKEN_BUDGETS.get(effective_prov_key, DEFAULT_MAX_REQUEST_TOKENS)
+            context_budget = int(prov_budget * 0.4)
+            repo_map, rag_snippets, diagnostics = shrink_context_for_budget(
+                repo_map, rag_snippets, diagnostics, budget_tokens=context_budget,
+                provider=effective_prov_key, model=request.model,
+            )
+
+        context["repo_map"] = repo_map
+        context["diagnostics"] = diagnostics
+
+        repo_map_lines = len(repo_map.splitlines()) if repo_map else 0
+        repo_map_files = repo_map.count("```") // 2 if repo_map else 0
+        diagnostics_count = sum(len(v) for v in diagnostics_dict.values()) if diagnostics_dict else 0
+        rag_snippets_count = len([m for m in (semantic_results or []) if m.get("relative_path") or m.get("path") or m.get("file_path")])
+        total_budget_used = get_conservative_token_count(f"{repo_map}\n{diagnostics}\n{rag_snippets}")
+
+        logger.info(
+            "[CONTEXT_COMPOSITION] repo_map_lines=%d repo_map_files=%d diagnostics=%d rag_snippets=%d total_budget_used=%d",
+            repo_map_lines, repo_map_files, diagnostics_count, rag_snippets_count, total_budget_used,
+        )
+
+        from .harness.sse_streamer import _sse_metrics as _base_sse_metrics
+        def _sse_metrics(iterations, tools_executed, duration_ms, tier=0, tokens_used=0, surgical_edits=0, fullfile_edits=0, **kw):
+            return _base_sse_metrics(
+                iterations, tools_executed, duration_ms, tier=tier, tokens_used=tokens_used,
+                surgical_edits=surgical_edits, fullfile_edits=fullfile_edits,
+                repo_map_lines=repo_map_lines, repo_map_files=repo_map_files,
+                diagnostics=diagnostics_count, rag_snippets=rag_snippets_count,
+                total_budget_used=total_budget_used, **kw,
+            )
+
         # ── Step 3: Provider Initialization ──────────────────────────────────
-        system_prompt = _build_system_prompt(workspace, tier, context, rag_snippets, project_memory)
+        system_prompt = _build_system_prompt(workspace, tier, context, rag_snippets, project_memory, repo_map=repo_map, diagnostics=diagnostics)
         messages = [ChatMessage(role="system", content=system_prompt)]
 
         # ── Step 3b: Process Uploaded Images with Vision Model ───────────────
@@ -682,7 +790,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     except Exception as exc:
                         _, sse_warn = log_and_flag_failure("rag_context_gathering", exc, {"workspace": workspace, "query": user_query})
                         yield sse_warn
-                messages[0] = ChatMessage(role="system", content=_build_system_prompt(workspace, tier, context, rag_snippets, project_memory))
+                messages[0] = ChatMessage(role="system", content=_build_system_prompt(workspace, tier, context, rag_snippets, project_memory, repo_map=repo_map, diagnostics=diagnostics))
 
             status_msg = "Rony Agent is streaming answer..." if tier == 0 else (
                 "Rony Agent is thinking..." if iteration == 0 else f"Rony Agent is working (step {iteration + 1}/{max_iterations})..."

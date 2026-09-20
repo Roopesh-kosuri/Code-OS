@@ -151,8 +151,14 @@ def _sse_metrics(
     tokens_used: int = 0,
     surgical_edits: int = 0,
     fullfile_edits: int = 0,
+    repo_map_lines: int = 0,
+    repo_map_files: int = 0,
+    diagnostics: int = 0,
+    rag_snippets: int = 0,
+    total_budget_used: int = 0,
+    **kwargs: Any,
 ) -> str:
-    return _sse_event("metrics", {
+    payload = {
         "iterations": iterations,
         "tools_executed": tools_executed,
         "duration_ms": duration_ms,
@@ -160,7 +166,14 @@ def _sse_metrics(
         "tokens_used": tokens_used,
         "surgical_edits": surgical_edits,
         "fullfile_edits": fullfile_edits,
-    })
+        "repo_map_lines": repo_map_lines,
+        "repo_map_files": repo_map_files,
+        "diagnostics": diagnostics,
+        "rag_snippets": rag_snippets,
+        "total_budget_used": total_budget_used,
+    }
+    payload.update(kwargs)
+    return _sse_event("metrics", payload)
 
 
 def _sse_done(success: bool, message: str = "", **kwargs: Any) -> str:
@@ -421,6 +434,12 @@ class SSEStreamer:
         tokens_used: int = 0,
         surgical_edits: int = 0,
         fullfile_edits: int = 0,
+        repo_map_lines: int = 0,
+        repo_map_files: int = 0,
+        diagnostics: int = 0,
+        rag_snippets: int = 0,
+        total_budget_used: int = 0,
+        **kwargs: Any,
     ) -> str:
         return _sse_metrics(
             iterations,
@@ -430,6 +449,12 @@ class SSEStreamer:
             tokens_used=tokens_used,
             surgical_edits=surgical_edits,
             fullfile_edits=fullfile_edits,
+            repo_map_lines=repo_map_lines,
+            repo_map_files=repo_map_files,
+            diagnostics=diagnostics,
+            rag_snippets=rag_snippets,
+            total_budget_used=total_budget_used,
+            **kwargs,
         )
 
     @staticmethod

@@ -468,8 +468,13 @@ def _build_system_prompt(
     context: dict,
     rag_snippet_summary: str = "",
     project_memory: str = "",
+    repo_map: str = "",
+    diagnostics: str = "",
 ) -> str:
     """Construct appropriate system prompt based on adaptive effort tier."""
+    effective_repo_map = repo_map or context.get("repo_map", "")
+    effective_diagnostics = diagnostics or context.get("diagnostics", "")
+
     if tier == 0:
         return f"{_LEAN_CHAT_SYSTEM_PROMPT}\n\n{_ATTACHED_FILES_PRIORITY_RULE}"
 
@@ -487,6 +492,12 @@ def _build_system_prompt(
             name = active.get("name", "unknown")
             content = active["content"][:1200]
             parts.append(f"\n## Active File ({name}):\n<untrusted_file_content path=\"{name}\">\n{content}\n</untrusted_file_content>")
+        # Tier 1 receives diagnostics ONLY (no repo-map)
+        if effective_diagnostics:
+            diag_str = effective_diagnostics.strip()
+            if not diag_str.startswith("[DIAGNOSTICS]"):
+                diag_str = f"[DIAGNOSTICS]\n{diag_str}\n[END DIAGNOSTICS]"
+            parts.append(f"\n## Live Diagnostics:\n{diag_str}\n")
         if rag_snippet_summary:
             parts.append(f"\n{rag_snippet_summary}\n")
         return "\n".join(parts)
@@ -524,6 +535,19 @@ def _build_system_prompt(
         name = active.get("name", "unknown")
         content = active["content"][:1500]
         prompt_parts.append(f"\n## Active File in Editor ({name}):\n<untrusted_file_content path=\"{name}\">\n{content}\n</untrusted_file_content>")
+
+    # Tier 2/3: Diagnostics BEFORE repo-map, Repo-Map BEFORE RAG snippets
+    if effective_diagnostics:
+        diag_str = effective_diagnostics.strip()
+        if not diag_str.startswith("[DIAGNOSTICS]"):
+            diag_str = f"[DIAGNOSTICS]\n{diag_str}\n[END DIAGNOSTICS]"
+        prompt_parts.append(f"\n## Live Diagnostics:\n{diag_str}\n")
+
+    if effective_repo_map:
+        rm_str = effective_repo_map.strip()
+        if not rm_str.startswith("[WORKSPACE REPO-MAP]"):
+            rm_str = f"[WORKSPACE REPO-MAP]\n{rm_str}\n[END WORKSPACE REPO-MAP]"
+        prompt_parts.append(f"\n## Workspace Structure (Repo-Map):\n{rm_str}\n")
 
     if rag_snippet_summary:
         prompt_parts.append(f"\n{rag_snippet_summary}\n")

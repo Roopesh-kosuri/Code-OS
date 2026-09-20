@@ -41,6 +41,8 @@ class LoggingEventHandler(FileSystemEventHandler):
         try:
             from ..ai.harness.symbol_index import invalidate_file
             invalidate_file(event.src_path)
+            from ..ai.harness.repo_map import invalidate_repo_map_cache
+            invalidate_repo_map_cache(event.src_path)
         except Exception:
             pass
 
