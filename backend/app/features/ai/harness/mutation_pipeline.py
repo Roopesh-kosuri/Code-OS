@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -89,17 +91,25 @@ def unregister_invalidation_hook(hook_or_key: InvalidationHook | str) -> None:
 
 # ── Types & Schemas ─────────────────────────────────────────────────────────
 
+DIR_SNAPSHOT_MAX_BYTES = 25 * 1024 * 1024  # 25 MB cap for in-memory directory byte snapshot
+DIR_SNAPSHOT_MAX_FILES = 2000              # 2000 file cap for in-memory directory snapshot
+
+
 class MutationKind(str, Enum):
     EDIT_RANGE = "EDIT_RANGE"
     WRITE_FULL = "WRITE_FULL"
     CREATE = "CREATE"
     APPEND = "APPEND"
+    DELETE = "DELETE"
+    RENAME_MOVE = "RENAME_MOVE"
+    COPY = "COPY"
+    MKDIR = "MKDIR"
 
 
 @dataclass
 class Mutation:
     kind: MutationKind | str
-    path: str
+    path: str = ""
     updated: str = ""                 # For EDIT_RANGE
     start_line: Optional[int] = None  # For EDIT_RANGE (1-indexed)
     end_line: Optional[int] = None    # For EDIT_RANGE (1-indexed, inclusive)
@@ -107,6 +117,14 @@ class Mutation:
     original: Optional[str] = None    # For EDIT_RANGE (line-only fallback verification)
     new_content: str = ""             # For WRITE_FULL
     content: str = ""                 # For CREATE, APPEND
+    # Phase 12.6 Part 3b additions
+    missing_ok: bool = False          # For DELETE (silently succeed if path absent)
+    old_path: Optional[str] = None    # For RENAME_MOVE
+    new_path: Optional[str] = None    # For RENAME_MOVE / COPY
+    src_path: Optional[str] = None    # For COPY
+    dst_path: Optional[str] = None    # For COPY
+    overwrite: bool = False           # For RENAME_MOVE (allow replacing destination)
+    raw_bytes: Optional[bytes] = None # For exact byte write (e.g. git checkpoint restore)
 
     def __post_init__(self):
         if isinstance(self.kind, str):
@@ -118,6 +136,26 @@ class Mutation:
             self.new_content = self.content
         elif self.kind in (MutationKind.CREATE, MutationKind.APPEND) and not self.content and self.new_content:
             self.content = self.new_content
+
+        # Normalize path aliases for 2-path operations
+        if self.kind == MutationKind.RENAME_MOVE:
+            if not self.path and self.old_path:
+                self.path = self.old_path
+            elif not self.old_path and self.path:
+                self.old_path = self.path
+            if not self.dst_path and self.new_path:
+                self.dst_path = self.new_path
+            elif not self.new_path and self.dst_path:
+                self.new_path = self.dst_path
+        elif self.kind == MutationKind.COPY:
+            if not self.path and self.src_path:
+                self.path = self.src_path
+            elif not self.src_path and self.path:
+                self.src_path = self.path
+            if not self.dst_path and self.new_path:
+                self.dst_path = self.new_path
+            elif not self.new_path and self.dst_path:
+                self.new_path = self.dst_path
 
 
 class RejectionDict(dict):
@@ -153,11 +191,117 @@ class MutationResult:
 @dataclass
 class ResolvedMutation:
     mutation: Mutation
-    rel_p: str
-    full_p: Path
+    rel_p: str = ""
+    full_p: Optional[Path] = None
     resolved_start: Optional[int] = None
     resolved_end: Optional[int] = None
     relocation_event: Optional[dict] = None
+    rel_p_dst: Optional[str] = None
+    full_p_dst: Optional[Path] = None
+
+
+@dataclass
+class DirSnapshot:
+    """Snapshot of a deleted or overwritten directory for atomic rollback."""
+    rel_p: str
+    target_path: Path
+    is_trash: bool
+    files: dict[str, bytes] = field(default_factory=dict)   # rel_subpath -> bytes
+    dirs: list[str] = field(default_factory=list)           # rel_subpath of dirs
+    trash_root: Optional[Path] = None
+    trash_item: Optional[Path] = None
+
+
+@dataclass
+class ApplyState:
+    """Tracks disk state changes during S4 apply for precise rollback and trash cleanup."""
+    applied_paths: list[str] = field(default_factory=list)
+    file_snapshots: dict[str, bytes | None] = field(default_factory=dict)
+    dir_snapshots: dict[str, DirSnapshot] = field(default_factory=dict)
+    renamed_items: list[tuple[Path, Path, bool]] = field(default_factory=list)  # (src, dst, was_copy_fallback)
+    created_copies: list[tuple[Path, bool]] = field(default_factory=list)       # (dst, is_dir)
+    created_dirs: list[Path] = field(default_factory=list)
+    symlink_snapshots: dict[str, tuple[str, bool]] = field(default_factory=dict) # rel_p -> (target, is_dir)
+    active_trash_roots: list[Path] = field(default_factory=list)
+
+
+
+# ── Stage 1: Resolve ────────────────────────────────────────────────────────
+
+# ── Helpers for Stage 1 & Stage 4 ──────────────────────────────────────────
+
+def _is_protected_path(full_p: Path, ws_path: Path, rel_p: str) -> bool:
+    """Check if path targets workspace root, .git, or .code_os internals."""
+    try:
+        if full_p.resolve() == ws_path.resolve():
+            return True
+    except OSError:
+        pass
+    norm_rel = rel_p.replace("\\", "/").strip("/")
+    if not norm_rel or norm_rel == ".":
+        return True
+    top_dir = norm_rel.split("/")[0].lower()
+    if top_dir in (".git", ".code_os"):
+        return True
+    return False
+
+
+def _scan_dir_stats(dir_path: Path) -> tuple[int, int]:
+    """Calculate total bytes and file count under dir_path without following symlinks."""
+    total_bytes = 0
+    total_files = 0
+    try:
+        for root, dirs, files in os.walk(str(dir_path)):
+            for f in files:
+                fp = Path(root) / f
+                total_files += 1
+                try:
+                    total_bytes += fp.lstat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total_bytes, total_files
+
+
+def _resolve_and_check_path(
+    ws_root_str: str,
+    ws_path: Path,
+    path_str: str,
+) -> tuple[bool, Optional[RejectionDict], Optional[Path], str]:
+    """Resolve path, enforce workspace boundary and symlink safety, and protect root/.git/.code_os."""
+    cand_p = Path(path_str) if Path(path_str).is_absolute() else (ws_path / path_str)
+    is_symlink = False
+    try:
+        curr = cand_p
+        while curr != curr.parent:
+            if curr.is_symlink():
+                is_symlink = True
+                break
+            curr = curr.parent
+    except Exception:
+        pass
+
+    try:
+        full_p = ensure_within_workspace(ws_root_str, path_str)
+    except Exception as p_err:
+        code = "symlink_escape" if is_symlink else "path_outside_workspace"
+        detail = getattr(p_err, "detail", str(p_err))
+        return False, RejectionDict(code=code, reason_text=f"Path safety violation: {detail}", stage="resolve"), None, ""
+
+    try:
+        rel_p = str(full_p.relative_to(ws_path)).replace("\\", "/")
+    except ValueError:
+        return False, RejectionDict(code="path_outside_workspace", reason_text=f"Path '{path_str}' resolved outside workspace root.", stage="resolve"), None, ""
+
+    if _is_protected_path(full_p, ws_path, rel_p):
+        return False, RejectionDict(
+            code="protected_path",
+            reason_text=f"Cannot operate on protected path '{rel_p}'. Workspace root, .git, and .code_os are protected.",
+            stage="resolve",
+        ), None, ""
+
+    return True, None, full_p, rel_p
 
 
 # ── Stage 1: Resolve ────────────────────────────────────────────────────────
@@ -172,12 +316,12 @@ def stage_resolve(
     Returns (is_ok, rejection, resolved_mutations, relocation_events).
     Zero disk writes occur in this stage.
     """
-    if mode not in ("AGENT", "USER_SAVE"):
+    if mode not in ("AGENT", "USER_SAVE", "FS_OP"):
         return (
             False,
             RejectionDict(
                 code="invalid_mode",
-                reason_text=f"Unknown or invalid mutation mode: '{mode}'. Allowed modes are 'AGENT' and 'USER_SAVE'.",
+                reason_text=f"Unknown or invalid mutation mode: '{mode}'. Allowed modes are 'AGENT', 'USER_SAVE', and 'FS_OP'.",
                 stage="resolve",
             ),
             [],
@@ -186,6 +330,7 @@ def stage_resolve(
 
     try:
         ws_path = normalize_workspace(str(workspace_root))
+        ws_root_str = str(workspace_root)
     except Exception as ws_err:
         return (
             False,
@@ -202,59 +347,16 @@ def stage_resolve(
     reloc_events: list[dict] = []
 
     for idx, mut in enumerate(mutations):
-        # 1. Path safety verification via ensure_within_workspace
-        target_str = str(mut.path or "")
-        cand_p = Path(target_str) if Path(target_str).is_absolute() else (ws_path / target_str)
-
-        # Check for symlink escape before or during resolution
-        is_symlink = False
-        try:
-            curr = cand_p
-            while curr != curr.parent:
-                if curr.is_symlink():
-                    is_symlink = True
-                    break
-                curr = curr.parent
-        except Exception:
-            pass
-
-        try:
-            full_p = ensure_within_workspace(str(workspace_root), target_str)
-        except Exception as p_err:
-            code = "symlink_escape" if is_symlink else "path_outside_workspace"
-            detail = getattr(p_err, "detail", str(p_err))
-            return (
-                False,
-                RejectionDict(
-                    code=code,
-                    reason_text=f"Path safety violation: {detail}",
-                    stage="resolve",
-                ),
-                [],
-                [],
-            )
-
-        # Normalize relative path
-        try:
-            rel_p = str(full_p.relative_to(ws_path)).replace("\\", "/")
-        except ValueError:
-            return (
-                False,
-                RejectionDict(
-                    code="path_outside_workspace",
-                    reason_text=f"Path '{target_str}' resolved outside workspace root.",
-                    stage="resolve",
-                ),
-                [],
-                [],
-            )
-
-        # 2. Check kind validity
+        # 1. Kind validity check
         if mut.kind not in (
             MutationKind.EDIT_RANGE,
             MutationKind.WRITE_FULL,
             MutationKind.CREATE,
             MutationKind.APPEND,
+            MutationKind.DELETE,
+            MutationKind.RENAME_MOVE,
+            MutationKind.COPY,
+            MutationKind.MKDIR,
         ):
             return (
                 False,
@@ -267,7 +369,152 @@ def stage_resolve(
                 [],
             )
 
-        # 3. Read initial disk content if exists
+        # 2. Two-path operations: RENAME_MOVE and COPY
+        if mut.kind in (MutationKind.RENAME_MOVE, MutationKind.COPY):
+            src_str = str(mut.old_path or mut.src_path or mut.path or "")
+            dst_str = str(mut.new_path or mut.dst_path or "")
+
+            ok_s, rej_s, src_p, src_rel = _resolve_and_check_path(ws_root_str, ws_path, src_str)
+            if not ok_s:
+                return False, rej_s, [], []
+
+            ok_d, rej_d, dst_p, dst_rel = _resolve_and_check_path(ws_root_str, ws_path, dst_str)
+            if not ok_d:
+                return False, rej_d, [], []
+
+            # Verify source exists
+            if not (src_p.exists() or src_p.is_symlink()):
+                return (
+                    False,
+                    RejectionDict(
+                        code="path_not_found",
+                        reason_text=f"Source path '{src_rel}' not found.",
+                        stage="resolve",
+                    ),
+                    [],
+                    [],
+                )
+
+            if mut.kind == MutationKind.RENAME_MOVE:
+                if (dst_p.exists() or dst_p.is_symlink()) and not mut.overwrite:
+                    return (
+                        False,
+                        RejectionDict(
+                            code="destination_exists",
+                            reason_text=f"Destination '{dst_rel}' already exists.",
+                            stage="resolve",
+                        ),
+                        [],
+                        [],
+                    )
+                if src_p.is_dir() and not src_p.is_symlink():
+                    try:
+                        if dst_p.resolve() == src_p.resolve() or dst_p.resolve().is_relative_to(src_p.resolve()):
+                            return (
+                                False,
+                                RejectionDict(
+                                    code="cannot_move_into_self",
+                                    reason_text=f"Cannot move directory '{src_rel}' into itself or a subdirectory '{dst_rel}'.",
+                                    stage="resolve",
+                                ),
+                                [],
+                                [],
+                            )
+                    except (ValueError, OSError):
+                        pass
+
+                resolved.append(
+                    ResolvedMutation(
+                        mutation=mut,
+                        rel_p=src_rel,
+                        full_p=src_p,
+                        rel_p_dst=dst_rel,
+                        full_p_dst=dst_p,
+                    )
+                )
+                continue
+
+            elif mut.kind == MutationKind.COPY:
+                if dst_p.exists() or dst_p.is_symlink():
+                    return (
+                        False,
+                        RejectionDict(
+                            code="destination_exists",
+                            reason_text=f"Destination '{dst_rel}' already exists.",
+                            stage="resolve",
+                        ),
+                        [],
+                        [],
+                    )
+                if src_p.is_dir() and not src_p.is_symlink():
+                    try:
+                        if dst_p.resolve() == src_p.resolve() or dst_p.resolve().is_relative_to(src_p.resolve()):
+                            return (
+                                False,
+                                RejectionDict(
+                                    code="cannot_move_into_self",
+                                    reason_text=f"Cannot copy directory '{src_rel}' into itself or a subdirectory '{dst_rel}'.",
+                                    stage="resolve",
+                                ),
+                                [],
+                                [],
+                            )
+                    except (ValueError, OSError):
+                        pass
+
+                resolved.append(
+                    ResolvedMutation(
+                        mutation=mut,
+                        rel_p=src_rel,
+                        full_p=src_p,
+                        rel_p_dst=dst_rel,
+                        full_p_dst=dst_p,
+                    )
+                )
+                continue
+
+        # 3. Single-path operations
+        target_str = str(mut.path or "")
+        ok_t, rej_t, full_p, rel_p = _resolve_and_check_path(ws_root_str, ws_path, target_str)
+        if not ok_t:
+            return False, rej_t, [], []
+
+        if mut.kind == MutationKind.DELETE:
+            if not (full_p.exists() or full_p.is_symlink()) and not mut.missing_ok:
+                return (
+                    False,
+                    RejectionDict(
+                        code="path_not_found",
+                        reason_text=f"Path '{rel_p}' not found.",
+                        stage="resolve",
+                    ),
+                    [],
+                    [],
+                )
+            resolved.append(ResolvedMutation(mutation=mut, rel_p=rel_p, full_p=full_p))
+            continue
+
+        if mut.kind == MutationKind.MKDIR:
+            if full_p.is_file() or full_p.is_symlink():
+                return (
+                    False,
+                    RejectionDict(
+                        code="destination_exists",
+                        reason_text=f"Path '{rel_p}' already exists as a file.",
+                        stage="resolve",
+                    ),
+                    [],
+                    [],
+                )
+            resolved.append(ResolvedMutation(mutation=mut, rel_p=rel_p, full_p=full_p))
+            continue
+
+        # WRITE_FULL with raw_bytes skips text decoding checks
+        if mut.kind == MutationKind.WRITE_FULL and mut.raw_bytes is not None:
+            resolved.append(ResolvedMutation(mutation=mut, rel_p=rel_p, full_p=full_p))
+            continue
+
+        # 4. Text/code mutations: read initial disk content if exists
         disk_exists = full_p.is_file()
         if disk_exists:
             try:
@@ -318,7 +565,7 @@ def stage_resolve(
             disk_lines = []
             total_lines = 0
 
-        # 4. Per-kind resolve logic
+        # Per-kind resolve logic for text mutations
         if mut.kind == MutationKind.CREATE:
             if disk_text is not None and disk_text.strip() != "":
                 return (
@@ -496,10 +743,74 @@ def stage_preflight(
     resolved_mutations: list[ResolvedMutation],
     initial_texts: dict[str, str],
 ) -> tuple[bool, Optional[RejectionDict]]:
-    """Stage 2: Multi-edit conflict scan and G4 sequence simulation (Phase 12.5 H5.2 + Phase 12.5.1 G4).
+    """Stage 2: Multi-edit conflict scan and G4 sequence simulation (Phase 12.5 H5.2 + Phase 12.5.1 G4 + Phase 12.6 Part 3b).
 
-    Runs only in AGENT mode. Zero disk writes occur in this stage.
+    Enforces:
+    - Zero batch conflicts (two mutations on same path, delete of parent dir, rename collisions).
+    - Sequence simulation and anchor rules for multi-edit turns.
+    Zero disk writes occur in this stage.
     """
+    # 0. Global batch conflict scan across all mutations
+    for idx, r in enumerate(resolved_mutations):
+        paths_r = [r.rel_p]
+        if r.rel_p_dst:
+            paths_r.append(r.rel_p_dst)
+
+        for other_idx in range(idx + 1, len(resolved_mutations)):
+            r_other = resolved_mutations[other_idx]
+            paths_other = [r_other.rel_p]
+            if r_other.rel_p_dst:
+                paths_other.append(r_other.rel_p_dst)
+
+            # (a) Check if both mutations touch the exact same path
+            common = set(paths_r) & set(paths_other)
+            if common:
+                # Exception: both mutations are EDIT_RANGE on the same file (handled by G4 sequence simulation)
+                if not (r.mutation.kind == MutationKind.EDIT_RANGE and r_other.mutation.kind == MutationKind.EDIT_RANGE):
+                    path_str = sorted(list(common))[0]
+                    return (
+                        False,
+                        RejectionDict(
+                            code="conflicting_mutations",
+                            reason_text=f"Batch contains conflicting mutations on '{path_str}'.",
+                            stage="preflight",
+                        ),
+                    )
+
+            # (b) Check directory containment conflicts (delete of a directory containing another mutation's target)
+            for p1 in paths_r:
+                for p2 in paths_other:
+                    if r.mutation.kind == MutationKind.DELETE and (p2 == p1 or p2.startswith(p1 + "/")):
+                        return (
+                            False,
+                            RejectionDict(
+                                code="conflicting_mutations",
+                                reason_text=f"Batch contains conflicting mutations: delete of directory '{p1}' conflicts with mutation on '{p2}'.",
+                                stage="preflight",
+                            ),
+                        )
+                    if r_other.mutation.kind == MutationKind.DELETE and (p1 == p2 or p1.startswith(p2 + "/")):
+                        return (
+                            False,
+                            RejectionDict(
+                                code="conflicting_mutations",
+                                reason_text=f"Batch contains conflicting mutations: delete of directory '{p2}' conflicts with mutation on '{p1}'.",
+                                stage="preflight",
+                            ),
+                        )
+
+            # (c) Move into self check
+            if r.mutation.kind == MutationKind.RENAME_MOVE and r.rel_p_dst:
+                if r.rel_p_dst == r.rel_p or r.rel_p_dst.startswith(r.rel_p + "/"):
+                    return (
+                        False,
+                        RejectionDict(
+                            code="cannot_move_into_self",
+                            reason_text=f"Cannot move directory '{r.rel_p}' into itself or a subdirectory '{r.rel_p_dst}'.",
+                            stage="preflight",
+                        ),
+                    )
+
     # Group resolved mutations by file path
     by_file: dict[str, list[ResolvedMutation]] = {}
     for r in resolved_mutations:
@@ -634,8 +945,25 @@ def stage_validate(
             logger.info("syntax: skipped_user_save for path=%s", rel_p)
         return True, None, projected_contents, syntax_status, metrics
 
+    if mode == "FS_OP":
+        for rel_p in by_file.keys():
+            syntax_status[rel_p] = "skipped_fs_op"
+            metrics.append("[SYNTAX_SKIPPED_FS_OP]")
+            logger.info("syntax: skipped_fs_op for path=%s", rel_p)
+        return True, None, projected_contents, syntax_status, metrics
+
     # AGENT mode: Layered checks + G5 5-branch contract
     for rel_p, file_muts in by_file.items():
+        # If all mutations for this file are non-code/filesystem ops or have raw_bytes, skip syntax
+        if all(
+            r.mutation.kind in (MutationKind.DELETE, MutationKind.RENAME_MOVE, MutationKind.COPY, MutationKind.MKDIR)
+            or r.mutation.raw_bytes is not None
+            for r in file_muts
+        ):
+            syntax_status[rel_p] = "skipped_fs_op"
+            metrics.append("[SYNTAX_SKIPPED_FS_OP]")
+            continue
+
         orig_text = initial_texts.get(rel_p, "")
         proj_text = projected_contents[rel_p]
 
@@ -704,60 +1032,299 @@ def stage_apply(
     workspace_root: str | Path,
     projected_contents: dict[str, str],
     initial_snapshots: dict[str, bytes | None],
-) -> tuple[bool, Optional[RejectionDict], list[str]]:
-    """Stage 4: Atomic file writes with line ending and encoding preservation.
+    resolved_mutations: Optional[list[ResolvedMutation]] = None,
+) -> tuple[bool, Optional[RejectionDict], list[str], ApplyState]:
+    """Stage 4: Atomic mutation application with line ending and encoding preservation.
 
-    Writes to temp file in parent directory then calls os.replace.
-    Preserves CRLF if original had CRLF; preserves UTF-8 BOM if original had BOM.
-    Returns (is_ok, rejection, applied_paths).
+    Handles:
+    - Text mutations (WRITE_FULL, CREATE, APPEND, EDIT_RANGE) with atomic temp write + replace
+    - DELETE: symlinks unlinked; files snapshotted & unlinked; directories under caps byte-snapshotted;
+      directories over caps moved to .code_os/trash/<uuid>/
+    - RENAME_MOVE: destination snapshotted if overwrite; os.replace with copy-delete cross-volume fallback
+    - COPY: temp write / shutil.copy2 or copytree
+    - MKDIR: mkdir(parents=True, exist_ok=True)
+    Returns (is_ok, rejection, applied_paths, apply_state).
     """
+    ws_str = str(workspace_root)
+    ws_path = normalize_workspace(ws_str)
+    apply_state = ApplyState(file_snapshots=dict(initial_snapshots))
     applied_paths: list[str] = []
 
-    for rel_p, proj_text in projected_contents.items():
-        try:
-            full_p = ensure_within_workspace(str(workspace_root), rel_p)
-            snap_bytes = initial_snapshots.get(rel_p)
-
-            # Line ending style determination:
-            # - New file: default to LF (\n)
-            # - Existing file: preserve CRLF if dominant, otherwise LF (normalizes mixed endings to dominant)
-            crlf_count = snap_bytes.count(b"\r\n") if snap_bytes is not None else 0
-            bare_lf_count = (snap_bytes.count(b"\n") - crlf_count) if snap_bytes is not None else 0
-            use_crlf = crlf_count > bare_lf_count
-
-            clean_text = proj_text.replace("\r\n", "\n")
-            if use_crlf:
-                final_text = clean_text.replace("\n", "\r\n")
-            else:
-                final_text = clean_text
-
-            # Preserve UTF-8 BOM if original had BOM
-            has_bom = snap_bytes is not None and snap_bytes.startswith(b"\xef\xbb\xbf")
-            encoded_bytes = final_text.encode("utf-8")
-            if has_bom:
-                encoded_bytes = b"\xef\xbb\xbf" + encoded_bytes
-
-            # Atomic write via tempfile in the same parent directory
-            parent_dir = full_p.parent
-            parent_dir.mkdir(parents=True, exist_ok=True)
-
-            temp_name = ""
-            with tempfile.NamedTemporaryFile("wb", dir=str(parent_dir), delete=False) as tf:
-                tf.write(encoded_bytes)
-                tf.flush()
-                temp_name = tf.name
-
+    # If resolved_mutations is not supplied (e.g. direct test call to stage_apply),
+    # fall back to applying projected_contents
+    if resolved_mutations is None:
+        for rel_p, proj_text in projected_contents.items():
             try:
-                os.replace(temp_name, str(full_p))
-            except Exception:
-                if temp_name and os.path.exists(temp_name):
-                    try:
-                        os.remove(temp_name)
-                    except OSError:
-                        pass
-                raise
+                full_p = ensure_within_workspace(ws_str, rel_p)
+                snap_bytes = initial_snapshots.get(rel_p)
 
-            applied_paths.append(rel_p)
+                crlf_count = snap_bytes.count(b"\r\n") if snap_bytes is not None else 0
+                bare_lf_count = (snap_bytes.count(b"\n") - crlf_count) if snap_bytes is not None else 0
+                use_crlf = crlf_count > bare_lf_count
+
+                clean_text = proj_text.replace("\r\n", "\n")
+                final_text = clean_text.replace("\n", "\r\n") if use_crlf else clean_text
+
+                has_bom = snap_bytes is not None and snap_bytes.startswith(b"\xef\xbb\xbf")
+                encoded_bytes = (b"\xef\xbb\xbf" if has_bom else b"") + final_text.encode("utf-8")
+
+                parent_dir = full_p.parent
+                parent_dir.mkdir(parents=True, exist_ok=True)
+
+                temp_name = ""
+                with tempfile.NamedTemporaryFile("wb", dir=str(parent_dir), delete=False) as tf:
+                    tf.write(encoded_bytes)
+                    tf.flush()
+                    temp_name = tf.name
+
+                try:
+                    os.replace(temp_name, str(full_p))
+                except Exception:
+                    if temp_name and os.path.exists(temp_name):
+                        try:
+                            os.remove(temp_name)
+                        except OSError:
+                            pass
+                    raise
+
+                applied_paths.append(rel_p)
+                apply_state.applied_paths.append(rel_p)
+
+            except Exception as apply_err:
+                logger.error("stage_apply error on '%s': %s", rel_p, apply_err)
+                return (
+                    False,
+                    RejectionDict(
+                        code="apply_failed",
+                        reason_text=f"Failed writing '{rel_p}': {apply_err}",
+                        stage="apply",
+                    ),
+                    applied_paths,
+                    apply_state,
+                )
+        return True, None, applied_paths, apply_state
+
+    # Process each resolved mutation in sequence
+    written_files: set[str] = set()
+
+    for r in resolved_mutations:
+        mut = r.mutation
+        full_p = r.full_p
+        rel_p = r.rel_p
+
+        try:
+            if mut.kind in (MutationKind.EDIT_RANGE, MutationKind.WRITE_FULL, MutationKind.CREATE, MutationKind.APPEND):
+                if rel_p in written_files:
+                    continue
+                written_files.add(rel_p)
+
+                assert full_p is not None
+                snap_bytes = initial_snapshots.get(rel_p)
+
+                if mut.raw_bytes is not None:
+                    encoded_bytes = mut.raw_bytes
+                else:
+                    proj_text = projected_contents.get(rel_p, "")
+                    crlf_count = snap_bytes.count(b"\r\n") if snap_bytes is not None else 0
+                    bare_lf_count = (snap_bytes.count(b"\n") - crlf_count) if snap_bytes is not None else 0
+                    use_crlf = crlf_count > bare_lf_count
+
+                    clean_text = proj_text.replace("\r\n", "\n")
+                    final_text = clean_text.replace("\n", "\r\n") if use_crlf else clean_text
+
+                    has_bom = snap_bytes is not None and snap_bytes.startswith(b"\xef\xbb\xbf")
+                    encoded_bytes = (b"\xef\xbb\xbf" if has_bom else b"") + final_text.encode("utf-8")
+
+                parent_dir = full_p.parent
+                parent_dir.mkdir(parents=True, exist_ok=True)
+
+                temp_name = ""
+                with tempfile.NamedTemporaryFile("wb", dir=str(parent_dir), delete=False) as tf:
+                    tf.write(encoded_bytes)
+                    tf.flush()
+                    temp_name = tf.name
+
+                try:
+                    os.replace(temp_name, str(full_p))
+                except Exception:
+                    if temp_name and os.path.exists(temp_name):
+                        try:
+                            os.remove(temp_name)
+                        except OSError:
+                            pass
+                    raise
+
+                applied_paths.append(rel_p)
+                apply_state.applied_paths.append(rel_p)
+
+            elif mut.kind == MutationKind.DELETE:
+                assert full_p is not None
+                if not (full_p.exists() or full_p.is_symlink()):
+                    if mut.missing_ok:
+                        applied_paths.append(rel_p)
+                        apply_state.applied_paths.append(rel_p)
+                        continue
+                    return (
+                        False,
+                        RejectionDict(
+                            code="path_not_found",
+                            reason_text=f"Path '{rel_p}' not found.",
+                            stage="apply",
+                        ),
+                        applied_paths,
+                        apply_state,
+                    )
+
+                if full_p.is_symlink():
+                    link_target = os.readlink(str(full_p))
+                    is_d = full_p.is_dir()
+                    apply_state.symlink_snapshots[rel_p] = (link_target, is_d)
+                    full_p.unlink()
+                    applied_paths.append(rel_p)
+                    apply_state.applied_paths.append(rel_p)
+
+                elif full_p.is_file():
+                    apply_state.file_snapshots[rel_p] = full_p.read_bytes()
+                    full_p.unlink()
+                    applied_paths.append(rel_p)
+                    apply_state.applied_paths.append(rel_p)
+
+                elif full_p.is_dir():
+                    tot_bytes, tot_files = _scan_dir_stats(full_p)
+                    if tot_bytes <= DIR_SNAPSHOT_MAX_BYTES and tot_files <= DIR_SNAPSHOT_MAX_FILES:
+                        # In-memory byte snapshot
+                        f_map: dict[str, bytes] = {}
+                        d_list: list[str] = []
+                        for root, dirs, files in os.walk(str(full_p)):
+                            r_path = Path(root)
+                            for d in dirs:
+                                dp = r_path / d
+                                d_list.append(str(dp.relative_to(full_p)).replace("\\", "/"))
+                            for f in files:
+                                fp = r_path / f
+                                rel_sub = str(fp.relative_to(full_p)).replace("\\", "/")
+                                try:
+                                    f_map[rel_sub] = fp.read_bytes()
+                                except OSError:
+                                    pass
+                        dir_snap = DirSnapshot(
+                            rel_p=rel_p,
+                            target_path=full_p,
+                            is_trash=False,
+                            files=f_map,
+                            dirs=d_list,
+                        )
+                        apply_state.dir_snapshots[rel_p] = dir_snap
+                        shutil.rmtree(str(full_p))
+                        applied_paths.append(rel_p)
+                        apply_state.applied_paths.append(rel_p)
+                    else:
+                        # Above cap: move to trash
+                        trash_id = str(uuid.uuid4())
+                        trash_root = ws_path / ".code_os" / "trash" / trash_id
+                        trash_item = trash_root / full_p.name
+                        trash_root.mkdir(parents=True, exist_ok=True)
+                        try:
+                            shutil.move(str(full_p), str(trash_item))
+                        except Exception as move_err:
+                            return (
+                                False,
+                                RejectionDict(
+                                    code="trash_move_failed",
+                                    reason_text=f"Failed moving directory to trash: {move_err}",
+                                    stage="apply",
+                                ),
+                                applied_paths,
+                                apply_state,
+                            )
+                        dir_snap = DirSnapshot(
+                            rel_p=rel_p,
+                            target_path=full_p,
+                            is_trash=True,
+                            trash_root=trash_root,
+                            trash_item=trash_item,
+                        )
+                        apply_state.dir_snapshots[rel_p] = dir_snap
+                        apply_state.active_trash_roots.append(trash_root)
+                        applied_paths.append(rel_p)
+                        apply_state.applied_paths.append(rel_p)
+
+            elif mut.kind == MutationKind.RENAME_MOVE:
+                assert full_p is not None and r.full_p_dst is not None and r.rel_p_dst is not None
+                dst_p = r.full_p_dst
+                dst_rel = r.rel_p_dst
+
+                if dst_p.exists() or dst_p.is_symlink():
+                    if dst_p.is_file():
+                        apply_state.file_snapshots[dst_rel] = dst_p.read_bytes()
+                    elif dst_p.is_dir():
+                        tot_bytes, tot_files = _scan_dir_stats(dst_p)
+                        if tot_bytes <= DIR_SNAPSHOT_MAX_BYTES and tot_files <= DIR_SNAPSHOT_MAX_FILES:
+                            f_map = {}
+                            d_list = []
+                            for root, dirs, files in os.walk(str(dst_p)):
+                                r_path = Path(root)
+                                for d in dirs:
+                                    d_list.append(str((r_path / d).relative_to(dst_p)).replace("\\", "/"))
+                                for f in files:
+                                    fp = r_path / f
+                                    f_map[str(fp.relative_to(dst_p)).replace("\\", "/")] = fp.read_bytes()
+                            dir_snap = DirSnapshot(rel_p=dst_rel, target_path=dst_p, is_trash=False, files=f_map, dirs=d_list)
+                            apply_state.dir_snapshots[dst_rel] = dir_snap
+                        else:
+                            trash_id = str(uuid.uuid4())
+                            trash_root = ws_path / ".code_os" / "trash" / trash_id
+                            trash_item = trash_root / dst_p.name
+                            trash_root.mkdir(parents=True, exist_ok=True)
+                            shutil.move(str(dst_p), str(trash_item))
+                            dir_snap = DirSnapshot(rel_p=dst_rel, target_path=dst_p, is_trash=True, trash_root=trash_root, trash_item=trash_item)
+                            apply_state.dir_snapshots[dst_rel] = dir_snap
+                            apply_state.active_trash_roots.append(trash_root)
+
+                dst_p.parent.mkdir(parents=True, exist_ok=True)
+                was_copy_fallback = False
+                try:
+                    os.replace(str(full_p), str(dst_p))
+                except OSError:
+                    if full_p.is_file():
+                        shutil.copy2(str(full_p), str(dst_p))
+                        full_p.unlink()
+                    else:
+                        shutil.copytree(str(full_p), str(dst_p))
+                        shutil.rmtree(str(full_p))
+                    was_copy_fallback = True
+
+                apply_state.renamed_items.append((full_p, dst_p, was_copy_fallback))
+                applied_paths.extend([rel_p, dst_rel])
+                apply_state.applied_paths.extend([rel_p, dst_rel])
+
+            elif mut.kind == MutationKind.COPY:
+                assert full_p is not None and r.full_p_dst is not None and r.rel_p_dst is not None
+                dst_p = r.full_p_dst
+                dst_rel = r.rel_p_dst
+                dst_p.parent.mkdir(parents=True, exist_ok=True)
+
+                if full_p.is_file():
+                    temp_name = ""
+                    with tempfile.NamedTemporaryFile("wb", dir=str(dst_p.parent), delete=False) as tf:
+                        temp_name = tf.name
+                    shutil.copy2(str(full_p), temp_name)
+                    os.replace(temp_name, str(dst_p))
+                    apply_state.created_copies.append((dst_p, False))
+                else:
+                    shutil.copytree(str(full_p), str(dst_p))
+                    apply_state.created_copies.append((dst_p, True))
+
+                applied_paths.append(dst_rel)
+                apply_state.applied_paths.append(dst_rel)
+
+            elif mut.kind == MutationKind.MKDIR:
+                assert full_p is not None
+                if not full_p.exists():
+                    apply_state.created_dirs.append(full_p)
+                full_p.mkdir(parents=True, exist_ok=True)
+                applied_paths.append(rel_p)
+                apply_state.applied_paths.append(rel_p)
 
         except Exception as apply_err:
             logger.error("stage_apply error on '%s': %s", rel_p, apply_err)
@@ -769,9 +1336,10 @@ def stage_apply(
                     stage="apply",
                 ),
                 applied_paths,
+                apply_state,
             )
 
-    return True, None, applied_paths
+    return True, None, applied_paths, apply_state
 
 
 # ── Stage 5: Invalidate ─────────────────────────────────────────────────────
@@ -783,16 +1351,33 @@ def stage_invalidate(
     """Stage 5: Synchronously invalidate symbol index, file cache, and directory cache hooks."""
     try:
         ws_str = str(workspace_root)
+        ws_path = normalize_workspace(ws_str)
+
+        all_paths_to_invalidate: list[Path] = []
         for rel_p in applied_paths:
-            full_p = ensure_within_workspace(ws_str, rel_p)
-            invalidate_file(full_p)
-            if full_p.is_file():
-                _file_read_cache[str(full_p.resolve())] = (
-                    full_p.stat().st_mtime,
-                    full_p.read_text(encoding="utf-8", errors="replace"),
-                )
+            try:
+                full_p = ensure_within_workspace(ws_str, rel_p)
+                all_paths_to_invalidate.append(full_p)
+                if full_p.is_dir():
+                    for root, _, files in os.walk(str(full_p)):
+                        for f in files:
+                            all_paths_to_invalidate.append(Path(root) / f)
+            except Exception:
+                cand = ws_path / rel_p
+                all_paths_to_invalidate.append(cand)
+
+        for p in all_paths_to_invalidate:
+            invalidate_file(p)
+            if p.is_file():
+                try:
+                    _file_read_cache[str(p.resolve())] = (
+                        p.stat().st_mtime,
+                        p.read_text(encoding="utf-8", errors="replace"),
+                    )
+                except OSError:
+                    _file_read_cache.pop(str(p.resolve()), None)
             else:
-                _file_read_cache.pop(str(full_p.resolve()), None)
+                _file_read_cache.pop(str(p.resolve()), None)
 
         for hook in list(_invalidation_hooks.values()):
             try:
@@ -817,51 +1402,165 @@ def stage_invalidate(
 
 def stage_rollback(
     workspace_root: str | Path,
-    snapshots: dict[str, bytes | None],
+    snapshots: dict[str, bytes | None] | ApplyState,
 ) -> tuple[bool, Optional[RejectionDict]]:
     """Stage 6: Restore disk to exact pre-mutation state on S4/S5 failure.
 
-    Restores original bytes for modified files; unlinks newly created files;
-    invalidates symbol index again.
-    Surfaces failure loudly if restoration of any file fails.
+    Handles:
+    - Restores byte snapshots for modified files; unlinks newly created files.
+    - Reverts RENAME_MOVE, COPY, MKDIR, and DELETE operations.
+    - Moves trash directories back or recreates from in-memory byte snapshots.
+    - Invalidates symbol index and caches again.
     """
     ws_str = str(workspace_root)
     ws_path = normalize_workspace(ws_str)
     failed_files: list[tuple[str, str]] = []
 
-    for rel_p, snap_bytes in snapshots.items():
+    # If legacy dict is passed:
+    if isinstance(snapshots, dict):
+        for rel_p, snap_bytes in snapshots.items():
+            try:
+                full_p = ensure_within_workspace(ws_str, rel_p)
+                if snap_bytes is None:
+                    if full_p.exists():
+                        if full_p.is_file():
+                            full_p.unlink()
+                        parent = full_p.parent
+                        while parent != ws_path and parent != ws_path.parent:
+                            try:
+                                parent.rmdir()
+                                parent = parent.parent
+                            except OSError:
+                                break
+                    invalidate_file(full_p)
+                    _file_read_cache.pop(str(full_p.resolve()), None)
+                else:
+                    full_p.parent.mkdir(parents=True, exist_ok=True)
+                    full_p.write_bytes(snap_bytes)
+                    invalidate_file(full_p)
+                    _file_read_cache.pop(str(full_p.resolve()), None)
+            except Exception as r_err:
+                logger.error("Rollback failed restoring '%s': %s", rel_p, r_err)
+                failed_files.append((rel_p, str(r_err)))
+
+        if failed_files:
+            return (
+                False,
+                RejectionDict(
+                    code="rollback_failed",
+                    reason_text=f"Rollback failed for files: {failed_files}",
+                    stage="rollback",
+                ),
+            )
+        return True, None
+
+    # ApplyState rollback
+    state = snapshots
+
+    # 1. Remove created copies
+    for dst_p, is_d in reversed(state.created_copies):
+        try:
+            if dst_p.exists():
+                if is_d:
+                    shutil.rmtree(str(dst_p), ignore_errors=True)
+                else:
+                    dst_p.unlink(missing_ok=True)
+            invalidate_file(dst_p)
+            _file_read_cache.pop(str(dst_p.resolve()), None)
+        except Exception as err:
+            failed_files.append((str(dst_p), str(err)))
+
+    # 2. Reverse renames
+    for src_p, dst_p, was_copy in reversed(state.renamed_items):
+        try:
+            if dst_p.exists():
+                src_p.parent.mkdir(parents=True, exist_ok=True)
+                if was_copy:
+                    if dst_p.is_file():
+                        shutil.copy2(str(dst_p), str(src_p))
+                        dst_p.unlink(missing_ok=True)
+                    else:
+                        shutil.copytree(str(dst_p), str(src_p))
+                        shutil.rmtree(str(dst_p), ignore_errors=True)
+                else:
+                    os.replace(str(dst_p), str(src_p))
+            invalidate_file(src_p)
+            invalidate_file(dst_p)
+            _file_read_cache.pop(str(dst_p.resolve()), None)
+        except Exception as err:
+            failed_files.append((str(dst_p), str(err)))
+
+    # 3. Restore directory snapshots (trash move back or in-memory byte recreation)
+    for rel_p, dir_snap in state.dir_snapshots.items():
+        try:
+            if dir_snap.is_trash:
+                if dir_snap.trash_item and dir_snap.trash_item.exists():
+                    dir_snap.target_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(dir_snap.trash_item), str(dir_snap.target_path))
+            else:
+                dir_snap.target_path.mkdir(parents=True, exist_ok=True)
+                for d in dir_snap.dirs:
+                    (dir_snap.target_path / d).mkdir(parents=True, exist_ok=True)
+                for rel_f, b in dir_snap.files.items():
+                    fp = dir_snap.target_path / rel_f
+                    fp.parent.mkdir(parents=True, exist_ok=True)
+                    fp.write_bytes(b)
+                    invalidate_file(fp)
+            invalidate_file(dir_snap.target_path)
+        except Exception as err:
+            failed_files.append((rel_p, str(err)))
+
+    # 4. Restore symlinks
+    for rel_p, (target, is_d) in state.symlink_snapshots.items():
+        try:
+            p = ensure_within_workspace(ws_str, rel_p)
+            if p.exists() or p.is_symlink():
+                p.unlink(missing_ok=True)
+            os.symlink(target, str(p), target_is_directory=is_d)
+            invalidate_file(p)
+        except Exception as err:
+            failed_files.append((rel_p, str(err)))
+
+    # 5. Restore file snapshots
+    for rel_p, snap_bytes in state.file_snapshots.items():
+        if rel_p in state.dir_snapshots:
+            continue
         try:
             full_p = ensure_within_workspace(ws_str, rel_p)
             if snap_bytes is None:
-                # File was created during this mutation cycle -> delete it
-                if full_p.exists():
-                    if full_p.is_file():
-                        full_p.unlink()
-                    parent = full_p.parent
-                    while parent != ws_path and parent != ws_path.parent:
-                        try:
-                            parent.rmdir()
-                            parent = parent.parent
-                        except OSError:
-                            break
+                if full_p.exists() and full_p.is_file():
+                    full_p.unlink(missing_ok=True)
+                parent = full_p.parent
+                while parent != ws_path and parent != ws_path.parent:
+                    try:
+                        parent.rmdir()
+                        parent = parent.parent
+                    except OSError:
+                        break
                 invalidate_file(full_p)
                 _file_read_cache.pop(str(full_p.resolve()), None)
             else:
-                # Restore exact pre-call bytes
                 full_p.parent.mkdir(parents=True, exist_ok=True)
                 full_p.write_bytes(snap_bytes)
                 invalidate_file(full_p)
                 _file_read_cache.pop(str(full_p.resolve()), None)
-        except Exception as r_err:
-            logger.error("Rollback failed restoring '%s': %s", rel_p, r_err)
-            failed_files.append((rel_p, str(r_err)))
+        except Exception as err:
+            failed_files.append((rel_p, str(err)))
+
+    # 6. Clean up created directories
+    for d in reversed(state.created_dirs):
+        try:
+            if d.exists() and d.is_dir():
+                d.rmdir()
+        except OSError:
+            pass
 
     if failed_files:
         return (
             False,
             RejectionDict(
                 code="rollback_failed",
-                reason_text=f"Rollback failed for files: {failed_files}",
+                reason_text=f"Rollback failed for items: {failed_files}",
                 stage="rollback",
             ),
         )
@@ -882,7 +1581,7 @@ def apply_mutations(
     Executes:
       1. S1 resolve (containment, bounds, anchor matching)
       2. S2 preflight (conflict checks, G4 simulation - AGENT mode)
-      3. S3 validate (layered syntax check, G5 contract - AGENT mode; skipped in USER_SAVE)
+      3. S3 validate (layered syntax check, G5 contract - AGENT mode; skipped in USER_SAVE / FS_OP)
       4. S4 apply (snapshot + atomic write with line-ending / BOM preservation)
       5. S5 invalidate (synchronous symbol index + cache invalidation)
       6. S6 rollback (on S4/S5 failure, restores disk bytes exactly to snapshot)
@@ -907,6 +1606,13 @@ def apply_mutations(
                     original=m.get("original"),
                     new_content=m.get("new_content", ""),
                     content=m.get("content", ""),
+                    missing_ok=m.get("missing_ok", False),
+                    old_path=m.get("old_path"),
+                    new_path=m.get("new_path"),
+                    src_path=m.get("src_path"),
+                    dst_path=m.get("dst_path"),
+                    overwrite=m.get("overwrite", False),
+                    raw_bytes=m.get("raw_bytes"),
                 )
             )
 
@@ -921,7 +1627,7 @@ def apply_mutations(
             rejection=s1_rej,
         )
 
-    # Snapshot initial texts & bytes
+    # Snapshot initial texts & bytes for text/code mutations
     touched_paths = list(dict.fromkeys(r.rel_p for r in resolved))
     initial_snapshots: dict[str, bytes | None] = {}
     initial_texts: dict[str, str] = {}
@@ -937,15 +1643,14 @@ def apply_mutations(
             initial_snapshots[rel_p] = None
             initial_texts[rel_p] = ""
 
-    # S2: Preflight (AGENT mode only)
-    if mode == "AGENT":
-        s2_ok, s2_rej = stage_preflight(resolved, initial_texts)
-        if not s2_ok:
-            return MutationResult(
-                success=False,
-                relocation_events=reloc_events,
-                rejection=s2_rej,
-            )
+    # S2: Preflight (Batch conflict check across all modes; sequence simulation in AGENT mode)
+    s2_ok, s2_rej = stage_preflight(resolved, initial_texts)
+    if not s2_ok:
+        return MutationResult(
+            success=False,
+            relocation_events=reloc_events,
+            rejection=s2_rej,
+        )
 
     # S3: Validate
     s3_ok, s3_rej, projected, syntax_status, metrics = stage_validate(
@@ -960,13 +1665,15 @@ def apply_mutations(
             metrics=metrics,
         )
 
-    # S4: Apply (atomic write)
-    s4_ok, s4_rej, applied = stage_apply(workspace_root, projected, initial_snapshots)
+    # S4: Apply (atomic write / FS operations)
+    s4_ok, s4_rej, applied, apply_state = stage_apply(
+        workspace_root, projected, initial_snapshots, resolved_mutations=resolved
+    )
     if not s4_ok:
         # Trigger rollback on apply failure
-        rb_ok, rb_err = stage_rollback(workspace_root, initial_snapshots)
+        rb_ok, rb_err = stage_rollback(workspace_root, apply_state)
         rej_to_return = rb_err if not rb_ok else s4_rej
-        rb_paths = [p for p, b in initial_snapshots.items() if b is not None]
+        rb_paths = list(dict.fromkeys(apply_state.applied_paths))
         return MutationResult(
             success=False,
             rolled_back_paths=rb_paths,
@@ -980,9 +1687,9 @@ def apply_mutations(
     s5_ok, s5_rej = stage_invalidate(workspace_root, applied)
     if not s5_ok:
         # Trigger rollback on invalidation failure
-        rb_ok, rb_err = stage_rollback(workspace_root, initial_snapshots)
+        rb_ok, rb_err = stage_rollback(workspace_root, apply_state)
         rej_to_return = rb_err if not rb_ok else s5_rej
-        rb_paths = [p for p, b in initial_snapshots.items() if b is not None]
+        rb_paths = list(dict.fromkeys(apply_state.applied_paths))
         return MutationResult(
             success=False,
             rolled_back_paths=rb_paths,
@@ -992,6 +1699,14 @@ def apply_mutations(
             metrics=metrics,
         )
 
+    # Commit success: purge active trash directories best effort
+    for trash_root in apply_state.active_trash_roots:
+        try:
+            if trash_root.exists():
+                shutil.rmtree(str(trash_root), ignore_errors=True)
+        except Exception as purge_err:
+            logger.warning("Failed to purge trash entry '%s': %s", trash_root, purge_err)
+
     return MutationResult(
         success=True,
         applied_paths=applied,
@@ -999,3 +1714,4 @@ def apply_mutations(
         syntax_status=syntax_status,
         metrics=metrics,
     )
+
