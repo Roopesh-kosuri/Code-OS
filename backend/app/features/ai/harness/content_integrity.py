@@ -332,6 +332,18 @@ def validate_language_syntax(path: str, content: str, original_content: str | No
     if ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
         lines = [l.strip() for l in content.splitlines() if l.strip()]
         if len(lines) > 0 and len(content) < 500:
+            # Files consisting only of comment lines (//..., /* ... */, * ...) and/or bracket-only structure are not prose
+            non_comment = re.sub(r"/\*[\s\S]*?\*/", "", content)
+            non_comment = re.sub(r"//[^\n]*", "", non_comment)
+            cleaned_lines = [l.strip() for l in non_comment.splitlines() if l.strip() and not l.strip().startswith("*")]
+            cleaned_text = "\n".join(cleaned_lines).strip()
+            if not cleaned_text:
+                return True, ""
+            if (cleaned_text.startswith("[") and cleaned_text.endswith("]")) or (cleaned_text.startswith("{") and cleaned_text.endswith("}")):
+                words_in_bracket = set(re.findall(r"\b[a-zA-Z_]\w*\b", cleaned_text.lower()))
+                if not bool(words_in_bracket & _CONVERSATIONAL_WORDS):
+                    return True, ""
+
             words = set(re.findall(r"\b[a-zA-Z_]\w*\b", content))
             has_js_keywords = any(kw in words for kw in _JS_CODE_KEYWORDS)
             has_code_puncts = any(c in content for c in (";", "{", "}", "=", "(", ")", "=>"))
