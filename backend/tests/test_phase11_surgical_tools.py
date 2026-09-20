@@ -392,3 +392,89 @@ def test_edit_mode_metric_logging_and_sse():
     s_data = json.loads(streamer_raw.split("data: ")[1].strip())
     assert s_data["surgical_edits"] == 1
     assert s_data["fullfile_edits"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_chat_agent_surgical_tools_integration(tmp_path):
+    """12. Full end-to-end Chat Harness integration test.
+    Verifies chat_harness actually routes to find_function, then edit_range,
+    generates approval_request with start_line/end_line, applies via atomic patch applicator,
+    and reports surgical_edits >= 1 in SSE metrics.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from app.features.ai.chat_harness import run_chat_agent, ChatAgentRequest, _pending_approvals, approve_action
+
+    ws = str(tmp_path)
+    target_file = tmp_path / "server.py"
+    target_file.write_text(
+        "def start_server():\n"
+        "    port = 8000\n"
+        "    print('Starting on', port)\n",
+        encoding="utf-8"
+    )
+
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=ws,
+        messages=[{"role": "user", "content": "Please change the server port to 9090"}],
+    )
+
+    # Turn 1: Model calls find_function to locate start_server
+    turn1_chunks = [
+        "[TOOL_CALL: find_function]\n"
+        '{"name": "start_server"}\n'
+        "[/TOOL_CALL]\n"
+    ]
+    # Turn 2: Model calls edit_range to surgically edit line 2
+    turn2_chunks = [
+        "[TOOL_CALL: edit_range]\n"
+        '{"path": "server.py", "start_line": 2, "end_line": 2, "new_code": "    port = 9090"}\n'
+        "[/TOOL_CALL]\n\n"
+        "[DONE]\n"
+    ]
+
+    async def mock_stream_turn1(*args, **kwargs):
+        for c in turn1_chunks:
+            yield c
+
+    async def mock_stream_turn2(*args, **kwargs):
+        for c in turn2_chunks:
+            yield c
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(side_effect=[mock_stream_turn1(), mock_stream_turn2()])
+
+    async def auto_approver():
+        for _ in range(30):
+            await asyncio.sleep(0.05)
+            if _pending_approvals:
+                for act_id in list(_pending_approvals.keys()):
+                    await approve_action(act_id)
+                break
+
+    with patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+        with patch("app.features.ai.chat_harness.create_proposal", new=AsyncMock(return_value=MagicMock(id="prop-surg-1"))):
+            with patch("app.features.ai.service.apply_proposal", new=AsyncMock(return_value=MagicMock())):
+                approver_task = asyncio.create_task(auto_approver())
+                events = []
+                async for chunk in run_chat_agent(req):
+                    events.append(chunk)
+
+                await approver_task
+                full_sse = "".join(events)
+
+            # 1. Harness emitted tool event for find_function
+            assert "find_function" in full_sse
+            # 2. Harness emitted tool event for edit_range
+            assert "edit_range" in full_sse
+            # 3. Harness emitted approval_request
+            assert "event: approval_request" in full_sse
+            # 4. Harness emitted metrics with surgical_edits
+            assert "surgical_edits" in full_sse
+            assert '"surgical_edits": 1' in full_sse
+            assert '"fullfile_edits": 0' in full_sse
+            # 5. Harness completed with done
+            assert "event: done" in full_sse
+

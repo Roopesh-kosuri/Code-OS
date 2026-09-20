@@ -147,9 +147,22 @@ async def _finalize_staged_changes(
         integrity_warnings: list[str] = []
 
         for change in staged_changes:
+            content_to_validate = change.updated
+            if getattr(change, "start_line", None) is not None and getattr(change, "end_line", None) is not None:
+                try:
+                    target_p = ensure_within_workspace(workspace, change.path)
+                    if target_p.is_file():
+                        disk_lines = target_p.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").splitlines()
+                        s_line = int(change.start_line)
+                        e_line = min(int(change.end_line), len(disk_lines))
+                        proj_lines = disk_lines[:s_line - 1] + change.updated.splitlines() + disk_lines[e_line:]
+                        content_to_validate = "\n".join(proj_lines)
+                except Exception as proj_err:
+                    logger.debug("stage_finalizer projected range content error: %s", proj_err)
+
             status, warning = validate_content_integrity(
                 path=change.path,
-                content=change.updated,
+                content=content_to_validate,
                 user_query=user_query,
                 conversation_messages=conversation_messages,
                 extra_texts=extra_texts,
@@ -288,7 +301,14 @@ async def _finalize_staged_changes(
                         for c in staged_changes:
                             fp = ensure_within_workspace(root, c.path)
                             fp.parent.mkdir(parents=True, exist_ok=True)
-                            fp.write_text(c.updated, encoding="utf-8")
+                            if getattr(c, "start_line", None) is not None and getattr(c, "end_line", None) is not None and fp.exists():
+                                disk_lines = fp.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n").splitlines()
+                                s_line = int(c.start_line)
+                                e_line = min(int(c.end_line), len(disk_lines))
+                                merged = disk_lines[:s_line - 1] + c.updated.splitlines() + disk_lines[e_line:]
+                                fp.write_text("\n".join(merged) + "\n", encoding="utf-8")
+                            else:
+                                fp.write_text(c.updated, encoding="utf-8")
                     except Exception as mock_write_err:
                         logger.debug("Mock apply write fallback: %s", mock_write_err)
                 # Regression Guard: Post-apply test snapshot
