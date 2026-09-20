@@ -44,6 +44,8 @@ class FileChange(BaseModel):
     path: str
     original: str
     updated: str
+    start_line: int | None = None
+    end_line: int | None = None
 
 
 class EditProposalRequest(BaseModel):

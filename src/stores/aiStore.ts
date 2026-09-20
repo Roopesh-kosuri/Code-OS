@@ -103,6 +103,8 @@ export interface PendingApprovalState {
   task_id?: string;
   team_mode?: boolean;
   metadata?: Record<string, any>;
+  start_line?: number;
+  end_line?: number;
   integrity_status?: "valid" | "incomplete" | "suspicious" | "blocked";
   integrity_warning?: string;
 }
@@ -151,6 +153,16 @@ export interface CheckpointInfo {
   commit_hash: string;
   touched_files: string[];
   undone?: boolean;
+}
+
+export interface TurnMetrics {
+  tokens_used?: number;
+  surgical_edits?: number;
+  fullfile_edits?: number;
+  cost_est?: number;
+  duration_ms?: number;
+  iterations?: number;
+  tools_executed?: number;
 }
 
 export interface TokenUsageStatus {
@@ -248,6 +260,7 @@ type AIState = {
   currentTierLabel: string | null;
   currentTierReason: string | null;
   currentTokensUsed: number | null;
+  turnMetrics: TurnMetrics | null;
   tierSuggestion: { suggested_tier: number; tier_name: string; message: string } | null;
   clearTierSuggestion: () => void;
   retryStatus: { message: string; retry_delay_seconds?: number; attempt?: number; max_attempts?: number; is_rate_limit?: boolean } | null;
@@ -573,6 +586,9 @@ export function createSSEStreamHandler(
         diff_summary: data.diff_summary,
         integrity_status: data.integrity_status,
         integrity_warning: data.integrity_warning,
+        start_line: typeof data.start_line === "number" ? data.start_line : data.metadata?.start_line,
+        end_line: typeof data.end_line === "number" ? data.end_line : data.metadata?.end_line,
+        metadata: data.metadata || (typeof data.start_line === "number" ? { start_line: data.start_line, end_line: data.end_line } : undefined),
       };
       set((state) => {
         const currentList = state.pendingApprovals || [];
@@ -606,6 +622,18 @@ export function createSSEStreamHandler(
       if (typeof data.tokens_used === "number") {
         set(() => ({ currentTokensUsed: data.tokens_used }));
       }
+      set((state) => ({
+        turnMetrics: {
+          ...state.turnMetrics,
+          ...(typeof data.tokens_used === "number" ? { tokens_used: data.tokens_used } : {}),
+          ...(typeof data.surgical_edits === "number" ? { surgical_edits: data.surgical_edits } : {}),
+          ...(typeof data.fullfile_edits === "number" ? { fullfile_edits: data.fullfile_edits } : {}),
+          ...(typeof data.cost_est === "number" ? { cost_est: data.cost_est } : {}),
+          ...(typeof data.duration_ms === "number" ? { duration_ms: data.duration_ms } : {}),
+          ...(typeof data.iterations === "number" ? { iterations: data.iterations } : {}),
+          ...(typeof data.tools_executed === "number" ? { tools_executed: data.tools_executed } : {}),
+        },
+      }));
     } else if (eventType === "error") {
       const errMsg = typeof data === "string" ? data : (data.message || "Agent error");
       set((state) => {
@@ -765,6 +793,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   currentTierLabel: null,
   currentTierReason: null,
   currentTokensUsed: null,
+  turnMetrics: null,
   tierSuggestion: null,
   clearTierSuggestion: () => set({ tierSuggestion: null }),
   retryStatus: null,
@@ -807,6 +836,7 @@ export const useAIStore = create<AIState>((set, get) => ({
       currentTierLabel: null,
       currentTierReason: null,
       currentTokensUsed: null,
+      turnMetrics: null,
       tierSuggestion: null,
       interruptedState: null,
       agentStatus: null,

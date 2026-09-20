@@ -149,6 +149,8 @@ def _sse_metrics(
     duration_ms: float,
     tier: int = 0,
     tokens_used: int = 0,
+    surgical_edits: int = 0,
+    fullfile_edits: int = 0,
 ) -> str:
     return _sse_event("metrics", {
         "iterations": iterations,
@@ -156,6 +158,8 @@ def _sse_metrics(
         "duration_ms": duration_ms,
         "tier": tier,
         "tokens_used": tokens_used,
+        "surgical_edits": surgical_edits,
+        "fullfile_edits": fullfile_edits,
     })
 
 
@@ -409,8 +413,24 @@ class SSEStreamer:
         return _sse_command_result(command, output, exit_code=exit_code, success=success, **kwargs)
 
     @staticmethod
-    def metrics(iterations: int, tools_executed: int, duration_ms: float, tier: int = 0, tokens_used: int = 0) -> str:
-        return _sse_metrics(iterations, tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+    def metrics(
+        iterations: int,
+        tools_executed: int,
+        duration_ms: float,
+        tier: int = 0,
+        tokens_used: int = 0,
+        surgical_edits: int = 0,
+        fullfile_edits: int = 0,
+    ) -> str:
+        return _sse_metrics(
+            iterations,
+            tools_executed,
+            duration_ms,
+            tier=tier,
+            tokens_used=tokens_used,
+            surgical_edits=surgical_edits,
+            fullfile_edits=fullfile_edits,
+        )
 
     @staticmethod
     def done(success: bool, message: str = "", **kwargs: Any) -> str:

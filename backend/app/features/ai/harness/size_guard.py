@@ -64,3 +64,21 @@ def check_rewrite_size_guard(
         return True, reason, suggestion
 
     return False, None, None
+
+
+def get_surgical_edit_directive(
+    path: str,
+    updated: str,
+    original: str = "",
+    target_symbol: str = "",
+    start_line: int | None = None,
+) -> str | None:
+    """Return a surgical edit directive when small localized changes (<60 lines) can use edit_range."""
+    if not updated:
+        return None
+    line_count = len(updated.splitlines())
+    if line_count < LARGE_REWRITE_LINE_THRESHOLD:
+        target_info = f" for '{target_symbol}'" if target_symbol else (f" around line {start_line}" if start_line else "")
+        return f"Use edit_range with the exact line range instead of rewriting the file{target_info}."
+    return None
+

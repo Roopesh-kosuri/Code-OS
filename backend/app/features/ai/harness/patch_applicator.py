@@ -41,18 +41,26 @@ def apply_atomic_patch_sequence(
     normalized_patches: list[dict[str, str]] = []
 
     for p in patches:
+        start_line = None
+        end_line = None
         if isinstance(p, dict):
             raw_path = str(p.get("path") or "")
             orig = str(p.get("original") or "")
-            upd = str(p.get("updated") or p.get("content") or "")
+            upd = str(p.get("updated") or p.get("new_code") or p.get("content") or "")
+            start_line = p.get("start_line")
+            end_line = p.get("end_line")
         elif hasattr(p, "arguments") and isinstance(p.arguments, dict):
             raw_path = str(p.arguments.get("path") or "")
             orig = str(p.arguments.get("original") or "")
-            upd = str(p.arguments.get("updated") or p.arguments.get("content") or "")
+            upd = str(p.arguments.get("updated") or p.arguments.get("new_code") or p.arguments.get("content") or "")
+            start_line = p.arguments.get("start_line")
+            end_line = p.arguments.get("end_line")
         elif hasattr(p, "path"):
             raw_path = str(getattr(p, "path") or "")
             orig = str(getattr(p, "original", "") or "")
-            upd = str(getattr(p, "updated", "") or "")
+            upd = str(getattr(p, "updated", "") or getattr(p, "new_code", "") or "")
+            start_line = getattr(p, "start_line", None)
+            end_line = getattr(p, "end_line", None)
         else:
             continue
 
@@ -61,11 +69,19 @@ def apply_atomic_patch_sequence(
             continue
         if rel_p not in touched_paths:
             touched_paths.append(rel_p)
-        normalized_patches.append({
+        
+        entry = {
             "path": rel_p,
             "original": orig,
             "updated": upd,
-        })
+        }
+        if start_line is not None and end_line is not None:
+            try:
+                entry["start_line"] = int(start_line)
+                entry["end_line"] = int(end_line)
+            except (ValueError, TypeError):
+                pass
+        normalized_patches.append(entry)
 
     if not normalized_patches:
         return False, "No valid patch payloads provided", []
@@ -168,7 +184,51 @@ def apply_atomic_patch_sequence(
         else:
             current_text = None
 
-        if not clean_orig:
+        start_line = patch.get("start_line")
+        end_line = patch.get("end_line")
+
+        if start_line is not None and end_line is not None:
+            # Surgical range edit
+            if current_text is None:
+                return _rollback(
+                    f"Patch {idx+1} rejected: file does not exist: '{rel_p}'.",
+                    idx
+                )
+            disk_lines = current_text.splitlines()
+            total_lines = len(disk_lines)
+            if start_line < 1 or start_line > total_lines:
+                return _rollback(
+                    f"Patch {idx+1} rejected: start_line ({start_line}) out of bounds (file has {total_lines} lines).",
+                    idx
+                )
+            actual_end = min(end_line, total_lines)
+            disk_range = "\n".join(disk_lines[start_line - 1 : actual_end])
+
+            if clean_orig and clean_orig.strip() != disk_range.strip() and clean_orig != disk_range:
+                diagnostic = _find_mismatch_context(disk_range, clean_orig)
+                return _rollback(
+                    f"Patch {idx+1} rejected: original_mismatches_disk for '{rel_p}'.\n{diagnostic}.",
+                    idx
+                )
+
+            projected_lines = disk_lines[: start_line - 1] + clean_upd.splitlines() + disk_lines[actual_end:]
+            projected_content = "\n".join(projected_lines)
+            if current_text.endswith("\n"):
+                projected_content += "\n"
+
+            syn_ok, syn_err = validate_language_syntax(rel_p, projected_content)
+            if not syn_ok:
+                return _rollback(
+                    f"Patch {idx+1} rejected: edit introduces syntax error in '{rel_p}': {syn_err}.",
+                    idx
+                )
+
+            try:
+                full_p.write_text(projected_content, encoding="utf-8")
+                _file_read_cache[str(full_p.resolve())] = (full_p.stat().st_mtime, projected_content)
+            except Exception as w_err:
+                return _rollback(f"Patch {idx+1} rejected: failed writing '{rel_p}': {w_err}.", idx)
+        elif not clean_orig:
             # New file creation
             if current_text is not None and current_text.strip() != "":
                 return _rollback(

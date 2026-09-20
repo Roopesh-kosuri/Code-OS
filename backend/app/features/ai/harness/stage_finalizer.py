@@ -204,6 +204,12 @@ async def _finalize_staged_changes(
         action_id = str(uuid.uuid4())
         reason = f"Rony Agent wants to create/modify {summary_paths}"
 
+        first_change = staged_changes[0] if len(staged_changes) == 1 else None
+        range_meta: dict[str, Any] = {}
+        if first_change and getattr(first_change, "start_line", None) is not None:
+            range_meta["start_line"] = getattr(first_change, "start_line")
+            range_meta["end_line"] = getattr(first_change, "end_line", None)
+
         pending = PendingApproval(
             action_id=action_id,
             action_type="edit",
@@ -215,6 +221,7 @@ async def _finalize_staged_changes(
             workspace=workspace,
             integrity_status=overall_integrity_status,
             integrity_warning=combined_warning,
+            metadata=range_meta,
         )
         _pending_approvals[action_id] = pending
 
@@ -228,6 +235,7 @@ async def _finalize_staged_changes(
             diff_summary=diff_summary,
             integrity_status=overall_integrity_status,
             integrity_warning=combined_warning,
+            **range_meta,
         )
         yield _sse_status(
             "approval_required",

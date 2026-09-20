@@ -28,6 +28,8 @@ type FileChange = {
   path: string;
   original: string;
   updated: string;
+  start_line?: number;
+  end_line?: number;
 };
 
 type Proposal = {
@@ -300,15 +302,18 @@ export function DiffViewer() {
                           AFFECTED FILES ({(selectedProposal.changes || []).length}):
                         </p>
                         <div className="flex flex-wrap gap-2">
-                          {(selectedProposal.changes || []).map((change, idx) => (
-                            <span
-                              key={idx}
-                              className="px-2.5 py-1 rounded bg-background border border-outline-variant text-on-surface font-code-sm text-code-sm text-[11px] flex items-center gap-1.5"
-                            >
-                              <FileCode size={13} className="text-primary" />
-                              <span>{change.path}</span>
-                            </span>
-                          ))}
+                          {(selectedProposal.changes || []).map((change, idx) => {
+                            const isRange = typeof change.start_line === "number" && typeof change.end_line === "number";
+                            return (
+                              <span
+                                key={idx}
+                                className="px-2.5 py-1 rounded bg-background border border-outline-variant text-on-surface font-code-sm text-code-sm text-[11px] flex items-center gap-1.5"
+                              >
+                                <FileCode size={13} className={isRange ? "text-emerald-400" : "text-primary"} />
+                                <span>{isRange ? `lines ${change.start_line}-${change.end_line} of ${change.path}` : change.path}</span>
+                              </span>
+                            );
+                          })}
                         </div>
                       </div>
                     </div>
@@ -428,16 +433,31 @@ export function DiffViewer() {
                   {(selectedProposal.changes || []).map((change, idx) => {
                     const filename = change.path.split(/[\\/]/).pop();
                     const isNewFile = !change.original || !change.original.trim();
+                    const isRangeEdit = typeof change.start_line === "number" && typeof change.end_line === "number";
 
                     return (
                       <div key={idx} className="bg-surface-container-low border border-surface-variant rounded-xl overflow-hidden shadow-md">
                         <div className="p-3 bg-surface-container-high/60 border-b border-surface-variant flex items-center justify-between">
                           <div className="flex items-center gap-2 font-mono text-xs font-semibold text-on-surface">
-                            <FileCode size={14} className="text-primary" />
-                            <span>{filename}</span>
-                            <span className="text-on-surface-variant text-[11px]">({change.path})</span>
+                            <FileCode size={14} className={isRangeEdit ? "text-emerald-400" : "text-primary"} />
+                            {isRangeEdit ? (
+                              <>
+                                <span className="text-emerald-300 font-bold">lines {change.start_line}-{change.end_line} of {filename}</span>
+                                <span className="text-on-surface-variant text-[11px]">({change.path})</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>{filename}</span>
+                                <span className="text-on-surface-variant text-[11px]">({change.path})</span>
+                              </>
+                            )}
                           </div>
-                          {isNewFile && (
+                          {isRangeEdit && (
+                            <span className="text-[10px] font-bold text-emerald-400 uppercase font-mono bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
+                              Range Edit (L{change.start_line}-{change.end_line})
+                            </span>
+                          )}
+                          {isNewFile && !isRangeEdit && (
                             <span className="text-[10px] font-bold text-emerald-400 uppercase font-mono bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
                               New File
                             </span>

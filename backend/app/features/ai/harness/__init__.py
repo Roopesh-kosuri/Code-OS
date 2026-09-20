@@ -59,13 +59,24 @@ from .prompt_builder import (
 from .stage_finalizer import _finalize_staged_changes
 from .duo_escalator import _escalate_to_duo
 from .patch_applicator import apply_atomic_patch_sequence
-from .size_guard import check_rewrite_size_guard, is_whole_file_rewrite_intent, LARGE_REWRITE_LINE_THRESHOLD
+from .size_guard import (
+    check_rewrite_size_guard, is_whole_file_rewrite_intent,
+    LARGE_REWRITE_LINE_THRESHOLD, get_surgical_edit_directive,
+)
+from ..agents.agent_tools import (
+    _handle_find_function, _handle_go_to_definition,
+    _handle_find_references, _handle_edit_range,
+)
 from .payload_governor import (
     govern_payload, estimate_request_tokens, _truncate_attachment_in_text,
     estimate_payload_breakdown, GovernanceResult,
 )
 from .diagnostics_service import DiagnosticsService, run_diagnostics
 from .intent_tool_selector import detect_task_intent, filter_tools_by_intent
+from .symbol_index import (
+    SymbolEntry, index_file, symbols_in_file, find_symbol,
+    references_to, invalidate_file, clear_symbol_index,
+)
 
 __all__ = [
     "is_conversational_turn",

@@ -197,9 +197,16 @@ export function AgentStatusIndicator({
       case "tool":
       case "tool_result": {
         let toolIcon = <Terminal size={13} className="text-secondary" />;
-        if (status.tool === "read_file" || status.tool === "edit_file" || status.tool === "append_file") {
+        const isEditRange = status.tool === "edit_range";
+        const isSearchSymbol = status.tool === "find_function" || status.tool === "find_references" || status.tool === "go_to_definition";
+
+        if (isEditRange) {
+          toolIcon = <FileCode size={13} className="text-emerald-400" />;
+        } else if (isSearchSymbol) {
+          toolIcon = <Search size={13} className="text-sky-400" />;
+        } else if (status.tool === "read_file" || status.tool === "edit_file" || status.tool === "append_file") {
           toolIcon = <FileCode size={13} className="text-amber-400" />;
-        } else if (status.tool === "search_code" || status.tool === "semantic_search" || status.tool === "find_references" || status.tool === "go_to_definition") {
+        } else if (status.tool === "search_code" || status.tool === "semantic_search") {
           toolIcon = <Search size={13} className="text-cyan-400" />;
         } else if (status.tool === "server_session") {
           toolIcon = <Zap size={13} className="text-emerald-400" />;
@@ -227,12 +234,17 @@ export function AgentStatusIndicator({
         const desc = status.detail
           ? `${status.tool || "Working"}: ${status.detail}${toolElapsedText}`
           : `${status.message || `Running ${status.tool}...`}${toolElapsedText}`;
+        const colorClass = isEditRange
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
+          : isSearchSymbol
+          ? "border-sky-500/30 bg-sky-500/10 text-sky-300"
+          : status.tool === "take_screenshot" || status.tool === "inspect_visuals"
+          ? "border-primary/30 bg-primary/10 text-primary"
+          : "border-amber-500/30 bg-amber-500/10 text-amber-300";
         return {
           icon: toolIcon,
           text: `${desc}${resultSuffix}`,
-          colorClass: status.tool === "take_screenshot" || status.tool === "inspect_visuals"
-            ? "border-primary/30 bg-primary/10 text-primary"
-            : "border-amber-500/30 bg-amber-500/10 text-amber-300",
+          colorClass,
         };
       }
       case "step_complete":
@@ -447,6 +459,16 @@ export function AgentStatusIndicator({
                               <Eye size={11} className="shrink-0" />
                               [vision]
                             </span>
+                          ) : item.tool === "edit_range" ? (
+                            <span className="text-emerald-400 font-bold flex items-center gap-1">
+                              <FileCode size={11} className="shrink-0" />
+                              [edit_range]
+                            </span>
+                          ) : item.tool === "find_function" || item.tool === "find_references" || item.tool === "go_to_definition" ? (
+                            <span className="text-sky-400 font-bold flex items-center gap-1">
+                              <Search size={11} className="shrink-0" />
+                              [{item.tool}]
+                            </span>
                           ) : item.tool.startsWith("browser_") ? (
                             <span className="text-cyan-400 font-bold flex items-center gap-1">
                               <Globe size={11} className="shrink-0" />
@@ -460,10 +482,23 @@ export function AgentStatusIndicator({
                           ) : (
                             <span className="text-amber-400 font-bold">[{item.tool}]</span>
                           )}
-                          <span className="truncate text-on-surface-variant">
-                            {item.detail || "Executed"}
-                            {item.state === "failed" ? ` — failed${item.reason ? ` (${item.reason})` : ""}` : item.state === "completed" ? " — completed" : item.state === "skipped" ? ` — skipped${item.reason ? ` (${item.reason})` : ""}` : " — running"}
-                          </span>
+                          {(() => {
+                            let detailText = item.detail || "Executed";
+                            if (item.tool === "edit_range" && item.arguments) {
+                              const p = item.arguments.path || "";
+                              const s = item.arguments.start_line;
+                              const e = item.arguments.end_line;
+                              if (p && s && e) {
+                                detailText = `${p}:${s}-${e}`;
+                              }
+                            }
+                            return (
+                              <span className="truncate text-on-surface-variant">
+                                {detailText}
+                                {item.state === "failed" ? ` — failed${item.reason ? ` (${item.reason})` : ""}` : item.state === "completed" ? " — completed" : item.state === "skipped" ? ` — skipped${item.reason ? ` (${item.reason})` : ""}` : " — running"}
+                              </span>
+                            );
+                          })()}
                         </div>
                         <span className="shrink-0 text-[9px] text-outline-variant">
                           {new Date(item.timestamp).toLocaleTimeString([], {

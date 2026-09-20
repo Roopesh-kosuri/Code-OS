@@ -311,6 +311,196 @@ def _handle_edit_file(workspace: str, arguments: dict, staged_changes: list) -> 
     )
 
 
+def _handle_find_function(workspace: str, arguments: dict) -> ToolResult:
+    """Find a function or method definition by name in the workspace."""
+    name = str(arguments.get("name", "") or "").strip()
+    if not name:
+        return ToolResult(tool_name="find_function", success=False, output="", error="Missing required parameter: name")
+
+    from ..harness.symbol_index import find_symbol
+    matches = find_symbol(workspace, name)
+    func_matches = [m for m in matches if m.kind in ("function", "method")] or matches
+    if not func_matches:
+        return ToolResult(
+            tool_name="find_function",
+            success=False,
+            output="",
+            error=f"Function '{name}' not found in workspace.",
+            failure_reason="not_found",
+        )
+
+    best = func_matches[0]
+    payload = {
+        "path": best.path,
+        "start_line": best.start_line,
+        "end_line": best.end_line,
+        "snippet": best.snippet,
+    }
+    header = f"=== FUNCTION: {name} in {best.path} (Lines {best.start_line}-{best.end_line}) ==="
+    return ToolResult(
+        tool_name="find_function",
+        success=True,
+        output=f"{header}\n{best.snippet}\n\nJSON: {json.dumps(payload)}",
+    )
+
+
+def _handle_go_to_definition(workspace: str, arguments: dict) -> ToolResult:
+    """Locate local definition (path, line, snippet) for a given symbol."""
+    symbol = str(arguments.get("symbol", "") or "").strip()
+    if not symbol:
+        return ToolResult(tool_name="go_to_definition", success=False, output="", error="Missing required parameter: symbol")
+
+    from ..harness.symbol_index import find_symbol
+    matches = find_symbol(workspace, symbol)
+    if not matches:
+        return ToolResult(
+            tool_name="go_to_definition",
+            success=False,
+            output="",
+            error=f"Symbol '{symbol}' not found in workspace.",
+            failure_reason="not_found",
+        )
+
+    best = matches[0]
+    payload = {
+        "path": best.path,
+        "line": best.start_line,
+        "snippet": best.snippet,
+    }
+    header = f"=== DEFINITION: {symbol} in {best.path} (Line {best.start_line}) ==="
+    return ToolResult(
+        tool_name="go_to_definition",
+        success=True,
+        output=f"{header}\n{best.snippet}\n\nJSON: {json.dumps(payload)}",
+    )
+
+
+def _handle_find_references(workspace: str, arguments: dict) -> ToolResult:
+    """Find all code references for a given symbol in the workspace."""
+    symbol = str(arguments.get("symbol", "") or "").strip()
+    if not symbol:
+        return ToolResult(tool_name="find_references", success=False, output="", error="Missing required parameter: symbol")
+
+    from ..harness.symbol_index import references_to
+    refs = references_to(workspace, symbol)
+    if not refs:
+        return ToolResult(
+            tool_name="find_references",
+            success=True,
+            output=f"No references found for '{symbol}' in workspace.",
+        )
+
+    lines = [f"{r['path']}:{r['line']}: {r['text']}" for r in refs]
+    header = f"=== REFERENCES TO '{symbol}' ({len(refs)} matches) ==="
+    return ToolResult(
+        tool_name="find_references",
+        success=True,
+        output=f"{header}\n" + "\n".join(lines) + f"\n\nJSON: {json.dumps(refs)}",
+    )
+
+
+def _handle_edit_range(workspace: str, arguments: dict, staged_changes: list) -> ToolResult:
+    """Surgically edit a specific line range in an existing file.
+
+    Reads disk NOW, extracts exact current range as ORIGINAL (normalized via _normalize_eol),
+    and stages a FileChange so changes route through existing proposal/approval and
+    apply via apply_atomic_patch_sequence.
+    """
+    from ...files.service import _normalize_eol
+    from ..schemas import FileChange
+
+    raw_path = str(arguments.get("path", "") or "")
+    rel_path = _clean_rel_path(raw_path)
+    if not rel_path or rel_path == ".":
+        return ToolResult(tool_name="edit_range", success=False, output="", error="Missing required parameter: path")
+
+    try:
+        start_line = int(arguments.get("start_line"))
+        end_line = int(arguments.get("end_line"))
+    except (ValueError, TypeError):
+        return ToolResult(tool_name="edit_range", success=False, output="", error="start_line and end_line must be valid integers")
+
+    if start_line < 1:
+        return ToolResult(tool_name="edit_range", success=False, output="", error="start_line must be >= 1")
+    if end_line < start_line:
+        return ToolResult(tool_name="edit_range", success=False, output="", error="end_line cannot be less than start_line")
+
+    new_code = str(arguments.get("new_code", "") if "new_code" in arguments else arguments.get("updated", ""))
+
+    try:
+        target_path = ensure_within_workspace(workspace, rel_path)
+    except Exception as exc:
+        return ToolResult(tool_name="edit_range", success=False, output="", error=f"Path rejected: {exc}")
+
+    if not target_path.exists() or not target_path.is_file():
+        return ToolResult(tool_name="edit_range", success=False, output="", error=f"file does not exist: '{rel_path}'. edit_range requires an existing file.")
+
+    try:
+        disk_raw = target_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as read_err:
+        return ToolResult(tool_name="edit_range", success=False, output="", error=f"disk_read_error: {read_err}")
+
+    disk_text = _normalize_eol(disk_raw)
+    disk_lines = disk_text.splitlines()
+    total_lines = len(disk_lines)
+
+    if start_line > total_lines:
+        return ToolResult(
+            tool_name="edit_range",
+            success=False,
+            output="",
+            error=f"start_line ({start_line}) exceeds file line count ({total_lines})",
+        )
+
+    actual_end = min(end_line, total_lines)
+    orig_lines = disk_lines[start_line - 1 : actual_end]
+    orig_text = "\n".join(orig_lines)
+    clean_upd = _normalize_eol(new_code)
+
+    if orig_text.strip() == clean_upd.strip():
+        return ToolResult(
+            tool_name="edit_range",
+            success=False,
+            output="",
+            error="updated_empty_or_equal: 'new_code' is identical to current range on disk",
+        )
+
+    # Validate syntax of full file with the range replaced
+    projected_lines = disk_lines[:start_line - 1] + clean_upd.splitlines() + disk_lines[actual_end:]
+    projected_content = "\n".join(projected_lines)
+    try:
+        from ..harness.content_integrity import validate_language_syntax
+        valid_syntax, syntax_err = validate_language_syntax(rel_path, projected_content)
+        if not valid_syntax:
+            return ToolResult(tool_name="edit_range", success=False, output="", error=f"syntax_error: {syntax_err}")
+    except Exception as syn_exc:
+        logger.debug("validate_language_syntax in edit_range: %s", syn_exc)
+
+    change = FileChange(
+        path=rel_path,
+        original=orig_text,
+        updated=clean_upd,
+        start_line=start_line,
+        end_line=actual_end,
+    )
+
+    staged_changes.append(change)
+
+    # Emit diff chunks to Monaco if active
+    try:
+        from ..ghost_text.ghost_text_service import emit_diff_chunks
+        emit_diff_chunks(workspace=workspace, file_path=rel_path, original=orig_text, updated=clean_upd)
+    except Exception as exc:
+        logger.debug("Ghost text emit_diff_chunks from edit_range: %s", exc)
+
+    return ToolResult(
+        tool_name="edit_range",
+        success=True,
+        output=f"✓ Staged surgical edit for {rel_path} (lines {start_line}-{actual_end}, {len(clean_upd.splitlines())} lines new code).",
+    )
+
+
+
 
 def _handle_run_command(workspace: str, arguments: dict[str, Any]) -> ToolResult:
     """Execute a shell command, streaming to agentic terminal if active, or running silently."""
@@ -586,19 +776,50 @@ AGENT_TOOLS = {
             "file_path": "Relative path to the workspace file to inspect for compiler/type errors.",
         },
     },
+    "find_function": {
+        "description": "Find a function, method, or class definition by name across the workspace. Returns path, start_line, end_line, and code snippet.",
+        "parameters": {
+            "name": "Function, method, or class name to locate.",
+        },
+    },
+    "go_to_definition": {
+        "description": "Locate local definition (file path, starting line number, snippet) for a symbol identifier in the workspace.",
+        "parameters": {
+            "symbol": "Symbol or identifier name to locate definition for.",
+        },
+    },
+    "find_references": {
+        "description": "Find all code references/call sites for a given symbol in the workspace. Returns list of matches with file, line, and code.",
+        "parameters": {
+            "symbol": "Symbol or identifier to find references for.",
+        },
+    },
+    "edit_range": {
+        "description": "Surgically edit a specific line range in an existing file. Prefer edit_range for changes under ~60 lines instead of rewriting whole files.",
+        "parameters": {
+            "path": "Relative path to the existing file.",
+            "start_line": "1-indexed starting line number of the range to replace.",
+            "end_line": "1-indexed ending line number of the range to replace.",
+            "new_code": "The replacement code for lines start_line to end_line.",
+        },
+    },
 }
 
 # ── Role-based manifests & tool permissions (Phase 6.3) ───────────────────────
 ROLE_MANIFESTS: dict[str, list[str]] = {
-    "reviewer": ["read_file", "search_code", "semantic_search", "list_directory"],
-    "documenter": ["read_file", "search_code", "semantic_search", "list_directory"],
-    "planner": ["read_file", "search_code", "semantic_search", "list_directory"],
-    "architect": ["read_file", "search_code", "semantic_search", "list_directory"],
-    "tester": ["read_file", "search_code", "semantic_search", "list_directory", "run_test", "list_tests", "run_single_test"],
+    "reviewer": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "documenter": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "planner": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "architect": ["read_file", "search_code", "semantic_search", "list_directory", "find_function", "go_to_definition", "find_references"],
+    "tester": [
+        "read_file", "search_code", "semantic_search", "list_directory", "run_test",
+        "list_tests", "run_single_test", "find_function", "go_to_definition", "find_references",
+    ],
     "coder": [
         "read_file", "search_code", "semantic_search", "list_directory",
         "edit_file", "append_file", "run_command", "run_test", "list_tests",
         "run_single_test", "get_diagnostics", "take_screenshot", "inspect_visuals",
+        "find_function", "go_to_definition", "find_references", "edit_range",
     ],
 }
 
@@ -707,6 +928,31 @@ def parse_tool_calls(
             if not p or upd is None or str(upd).strip() == "":
                 logger.warning("unexecutable text tool call dropped: edit_file missing path or non-empty updated content")
                 continue
+        elif name == "edit_range":
+            p = args.get("path")
+            s = args.get("start_line")
+            e = args.get("end_line")
+            upd = args.get("new_code") if "new_code" in args else args.get("updated")
+            if not p or s is None or e is None or upd is None:
+                logger.warning("unexecutable text tool call dropped: edit_range missing required parameter (path, start_line, end_line, new_code)")
+                continue
+            try:
+                s_int = int(s)
+                e_int = int(e)
+                if s_int < 1 or e_int < s_int:
+                    logger.warning("unexecutable text tool call dropped: edit_range invalid line bounds start=%s end=%s", s, e)
+                    continue
+            except (ValueError, TypeError):
+                logger.warning("unexecutable text tool call dropped: edit_range start_line/end_line not integers")
+                continue
+        elif name == "find_function":
+            if not args.get("name"):
+                logger.warning("unexecutable text tool call dropped: find_function missing name")
+                continue
+        elif name in ("go_to_definition", "find_references"):
+            if not args.get("symbol"):
+                logger.warning("unexecutable text tool call dropped: %s missing symbol", name)
+                continue
         elif name == "read_file":
             if not args.get("path"):
                 logger.warning("unexecutable text tool call dropped: read_file missing path")
@@ -772,10 +1018,18 @@ def _execute_single_tool(
         return _handle_list_directory(workspace, call.arguments)
     elif call.name == "search_code":
         return _handle_search_code(workspace, call.arguments)
+    elif call.name == "find_function":
+        return _handle_find_function(workspace, call.arguments)
+    elif call.name == "go_to_definition":
+        return _handle_go_to_definition(workspace, call.arguments)
+    elif call.name == "find_references":
+        return _handle_find_references(workspace, call.arguments)
     elif call.name == "run_test":
         return _handle_run_test(workspace, call.arguments)
     elif call.name == "edit_file":
         return _handle_edit_file(workspace, call.arguments, staged_changes)
+    elif call.name == "edit_range":
+        return _handle_edit_range(workspace, call.arguments, staged_changes)
     elif call.name == "run_command":
         return _handle_run_command(workspace, call.arguments)
     elif call.name == "get_diagnostics":
@@ -794,28 +1048,29 @@ def execute_tool_calls(
 ) -> str:
     """Execute parsed tool calls and return formatted results for LLM injection.
 
-    *staged_changes* is a mutable list that edit_file appends FileChange objects to.
+    *staged_changes* is a mutable list that edit_file and edit_range append FileChange objects to.
     *agent_role* if specified enforces role-level tool permissions (e.g. read-only for reviewer/documenter).
-    When multiple sequential edit_file calls occur in one turn, enforces atomic multi-patch
+    When multiple sequential edit_file/edit_range calls occur in one turn, enforces atomic multi-patch
     application with intermediate on-disk reads and full checkpoint rollback on failure (Phase 10.20 Part E3).
     """
     if not calls:
         return ""
 
     results: list[str] = []
-    edit_indices = [i for i, c in enumerate(calls) if c.name == "edit_file"]
+    edit_indices = [i for i, c in enumerate(calls) if c.name in ("edit_file", "edit_range")]
 
     # Phase 10.20 Part E3: Atomic Multi-Patch sequence
     if len(edit_indices) > 1:
-        if agent_role and not is_tool_allowed_for_role("edit_file", agent_role):
+        forbidden = next((calls[i] for i in edit_indices if agent_role and not is_tool_allowed_for_role(calls[i].name, agent_role)), None)
+        if forbidden:
             allowed = get_role_manifest(agent_role)
             err_msg = (
-                f"Permission denied: role '{agent_role}' is not allowed to use tool 'edit_file'. "
+                f"Permission denied: role '{agent_role}' is not allowed to use tool '{forbidden.name}'. "
                 f"This role is restricted to read-only tools: {sorted(allowed)}"
             )
             for call in calls:
-                if call.name == "edit_file":
-                    results.append(f"[TOOL_RESULT: edit_file]\nERROR: {err_msg}\n[/TOOL_RESULT]")
+                if call.name in ("edit_file", "edit_range"):
+                    results.append(f"[TOOL_RESULT: {call.name}]\nERROR: {err_msg}\n[/TOOL_RESULT]")
                 else:
                     res = _execute_single_tool(call, workspace, staged_changes, agent_role)
                     results.append(f"[TOOL_RESULT: {call.name}]\n{res.output if res.success else f'ERROR: {res.error}'}\n[/TOOL_RESULT]")
@@ -825,12 +1080,12 @@ def execute_tool_calls(
         edit_calls = [calls[i] for i in edit_indices]
         ok, msg, _ = apply_atomic_patch_sequence(workspace, edit_calls, staged_changes=staged_changes)
         for call in calls:
-            if call.name == "edit_file":
+            if call.name in ("edit_file", "edit_range"):
                 if ok:
                     p = call.arguments.get("path", "")
-                    results.append(f"[TOOL_RESULT: edit_file]\n✓ Staged patch: {p}\n[/TOOL_RESULT]")
+                    results.append(f"[TOOL_RESULT: {call.name}]\n✓ Staged patch: {p}\n[/TOOL_RESULT]")
                 else:
-                    results.append(f"[TOOL_RESULT: edit_file]\nERROR: {msg}\n[/TOOL_RESULT]")
+                    results.append(f"[TOOL_RESULT: {call.name}]\nERROR: {msg}\n[/TOOL_RESULT]")
             else:
                 res = _execute_single_tool(call, workspace, staged_changes, agent_role)
                 results.append(f"[TOOL_RESULT: {call.name}]\n{res.output if res.success else f'ERROR: {res.error}'}\n[/TOOL_RESULT]")
@@ -855,13 +1110,24 @@ def get_tool_instructions(allow_edit: bool = True, role: str | None = None) -> s
     effective_allow_edit = not is_read_only
 
     edit_doc = """
-**edit_file** — Stage a file edit (same as [PROPOSAL] blocks):
+**edit_range** — Surgically edit a specific line range in an existing file (prefer for changes under ~60 lines):
+[TOOL_CALL: edit_range]
+{"path": "src/main.py", "start_line": 42, "end_line": 50, "new_code": "def hello():\\n    return 'world'"}
+[/TOOL_CALL]
+
+**edit_file** — Stage a file edit (use only for whole-file restructures or creating new files):
 [TOOL_CALL: edit_file]
 {"path": "src/main.py", "original": "exact original code", "updated": "new replacement code"}
 [/TOOL_CALL]
 """ if effective_allow_edit else ""
 
-    rules_edit = "- You can use either edit_file tool calls OR traditional [PROPOSAL] blocks for your changes. Both work.\n- For new files, set \"original\" to \"\" (empty string)." if effective_allow_edit else "- You are in read-only analysis mode. Write tools (edit_file, run_command) are disabled."
+    rules_edit = (
+        "- Prefer edit_range for changes under ~60 lines; use edit_file only for whole-file restructures.\n"
+        "- You can use either edit_range / edit_file tool calls OR traditional [PROPOSAL] blocks for your changes. Both work.\n"
+        "- For new files, use edit_file and set \"original\" to \"\" (empty string)."
+        if effective_allow_edit
+        else "- You are in read-only analysis mode. Write tools (edit_file, run_command) are disabled."
+    )
 
     diagnostics_doc = """
 **get_diagnostics** — Check compiler, syntax, and type diagnostics for a file:
@@ -883,6 +1149,21 @@ You have access to workspace tools to explore, read, test, and edit files:
 **list_directory** — List directory contents:
 [TOOL_CALL: list_directory]
 {{"path": "src/", "max_depth": 2}}
+[/TOOL_CALL]
+
+**find_function** — Locate a function or class definition across the workspace:
+[TOOL_CALL: find_function]
+{{"name": "execute_tool_calls"}}
+[/TOOL_CALL]
+
+**go_to_definition** — Jump to the definition of a symbol identifier:
+[TOOL_CALL: go_to_definition]
+{{"symbol": "ToolResult"}}
+[/TOOL_CALL]
+
+**find_references** — Find all usages/references of a symbol in the workspace:
+[TOOL_CALL: find_references]
+{{"symbol": "apply_atomic_patch_sequence"}}
 [/TOOL_CALL]
 
 **search_code** — Search for a function, class, or text in all files:

@@ -28,6 +28,9 @@ export function InlineConsoleApprovalCard({
 
   const isEdit = pendingApproval.action_type === "edit";
   const filePath = pendingApproval.path || pendingApproval.detail || "";
+  const startLine = pendingApproval.start_line ?? pendingApproval.metadata?.start_line;
+  const endLine = pendingApproval.end_line ?? pendingApproval.metadata?.end_line;
+  const isRangeEdit = isEdit && typeof startLine === "number" && typeof endLine === "number";
   const hasIntegrityWarning = isEdit && Boolean(
     pendingApproval.integrity_warning ||
     (pendingApproval.integrity_status && pendingApproval.integrity_status !== "valid")
@@ -107,11 +110,11 @@ export function InlineConsoleApprovalCard({
           </div>
           <div className="flex items-center gap-2 min-w-0">
             <span className={`font-bold text-xs ${isEdit ? "text-primary" : "text-amber-300"}`}>
-              {isEdit ? "Proposal Approval Required" : "Command Execution Required"}
+              {isEdit ? (isRangeEdit ? "Range Edit Approval Required" : "Proposal Approval Required") : "Command Execution Required"}
             </span>
             {isEdit && filePath && (
-              <span className="text-[10.5px] px-2 py-0.5 rounded bg-primary/15 text-primary font-mono truncate border border-primary/25 max-w-[240px]">
-                {filePath}
+              <span className="text-[10.5px] px-2 py-0.5 rounded bg-primary/15 text-primary font-mono truncate border border-primary/25 max-w-[280px]">
+                {isRangeEdit ? `lines ${startLine}-${endLine} of ${filePath}` : filePath}
               </span>
             )}
           </div>
@@ -160,8 +163,12 @@ export function InlineConsoleApprovalCard({
             className="rounded-lg overflow-hidden border border-white/10 bg-[#0d0e11]"
           >
             <div className="grid grid-cols-2 bg-[#141519] border-b border-white/5 text-[10px] font-mono px-3 py-1 text-on-surface-variant">
-              <div className="text-rose-400 font-medium">Original (Disk)</div>
-              <div className="text-emerald-400 font-medium pl-3 border-l border-white/5">Proposed (Updated)</div>
+              <div className="text-rose-400 font-medium">
+                {isRangeEdit ? `Original (Lines ${startLine}-${endLine})` : "Original (Disk)"}
+              </div>
+              <div className="text-emerald-400 font-medium pl-3 border-l border-white/5">
+                {isRangeEdit ? `Proposed (Lines ${startLine}-${endLine})` : "Proposed (Updated)"}
+              </div>
             </div>
             <div className="h-[140px] w-full">
               <MonacoDiffViewer

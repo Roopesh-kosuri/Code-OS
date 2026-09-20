@@ -38,6 +38,12 @@ class LoggingEventHandler(FileSystemEventHandler):
             return
 
         logger.info("workspace file event: %s %s", event.event_type, event.src_path)
+        try:
+            from ..ai.harness.symbol_index import invalidate_file
+            invalidate_file(event.src_path)
+        except Exception:
+            pass
+
         if self.loop and self.loop.is_running():
             asyncio.run_coroutine_threadsafe(index_manager.schedule_file_change(self.workspace, event.src_path), self.loop)
             try:

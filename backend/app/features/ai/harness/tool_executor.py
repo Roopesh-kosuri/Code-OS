@@ -617,6 +617,52 @@ CORE_CODING_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "find_function",
+            "description": "Find a function, method, or class definition across the workspace. Returns path, start_line, end_line, and code snippet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Function, method, or class name to locate.",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_range",
+            "description": "Surgically edit a specific line range in an existing file. Prefer edit_range for small edits (<60 lines) instead of rewriting whole files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the existing file in the workspace.",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Starting line number (1-indexed) of the range to replace.",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Ending line number (1-indexed) of the range to replace.",
+                    },
+                    "new_code": {
+                        "type": "string",
+                        "description": "The replacement code for the specified line range.",
+                    },
+                },
+                "required": ["path", "start_line", "end_line", "new_code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "server_session",
             "description": "Manage background server processes and perform live HTTP requests for full-stack API verification.",
             "parameters": {
@@ -646,7 +692,8 @@ CORE_CODING_TOOLS = [
 SLIM_CODING_TOOLS = [
     t for t in CORE_CODING_TOOLS
     if t["function"]["name"] in (
-        "edit_file", "read_file", "list_directory", "search_code",
+        "edit_file", "edit_range", "read_file", "list_directory", "search_code",
+        "find_function", "find_references", "go_to_definition",
         "semantic_search", "run_command", "run_test", "ask_user", "git_diff"
     )
 ]
@@ -656,7 +703,7 @@ READ_ONLY_TOOLS = [
     t for t in CORE_CODING_TOOLS
     if t["function"]["name"] in (
         "read_file", "list_directory", "search_code", "semantic_search",
-        "find_references", "go_to_definition", "git_diff", "list_tests"
+        "find_function", "find_references", "go_to_definition", "git_diff", "list_tests"
     )
 ]
 
@@ -916,10 +963,9 @@ COMPUTER_TOOLS = [
 # Combined backwards-compatible tools list
 OPENAI_HARNESS_TOOLS = CORE_CODING_TOOLS + BROWSER_TOOLS + COMPUTER_TOOLS
 
-# Heavy tools reserved strictly for Tier 2+
+# Heavy tools reserved strictly for Tier 2+ (write tools, diagnostics, desktop, browser)
 HEAVY_TOOLS = {
-    "find_references",
-    "go_to_definition",
+    "edit_range",
     "get_diagnostics",
     "server_session",
     "browser_open",

@@ -139,7 +139,7 @@ def test_tier1_excludes_heavy_tools():
     tier1_names = {t["function"]["name"] for t in tier1_tools}
 
     # Heavy tools reserved for Tier 2+
-    for heavy in ("find_references", "go_to_definition", "get_diagnostics", "server_session"):
+    for heavy in ("edit_range", "get_diagnostics", "server_session"):
         assert heavy not in tier1_names, f"Heavy tool '{heavy}' found in Tier 1 manifest"
 
     # Browser tools strictly excluded from Tier 1 by default
@@ -152,6 +152,7 @@ def test_tier1_excludes_heavy_tools():
     # Tier 2 allows heavy tools
     tier2_tools = get_tools_for_tier(2)
     tier2_names = {t["function"]["name"] for t in tier2_tools}
+    assert "edit_range" in tier2_names
     assert "find_references" in tier2_names
     assert "go_to_definition" in tier2_names
     assert "get_diagnostics" in tier2_names

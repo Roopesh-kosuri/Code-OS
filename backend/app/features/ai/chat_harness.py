@@ -147,7 +147,7 @@ from .harness import (
     _load_interrupted_state, _clear_interrupted_state,
     _compact_conversation_history, _clean_response_text, _is_response_truncated,
     PATCH_STYLE_RETRY_DIRECTIVE, format_truncation_exhausted_error,
-    check_rewrite_size_guard, is_whole_file_rewrite_intent,
+    check_rewrite_size_guard, is_whole_file_rewrite_intent, get_surgical_edit_directive,
     _generate_diff_summary,
     DAGPlanStep, _parse_plan, _parse_plan_dag, _replan_on_failure,
     _classify_rules, _classify_task_effort, _is_deep_query, _is_quick_task_query,
@@ -157,6 +157,7 @@ from .harness import (
     step_matches_work,
     _clean_rel_path, _read_file_cached, _find_mismatch_context, _validate_smart_edit,
     _handle_append_file, _handle_list_tests, _handle_run_single_test, _handle_get_diagnostics,
+    _handle_find_function, _handle_go_to_definition, _handle_find_references, _handle_edit_range,
     _is_command_safe, _is_command_malicious, _load_project_memory, _handle_memory_write,
     _should_audit_staged_changes, MALICIOUS_COMMAND_PATTERNS, SAFE_COMMAND_ALLOWLIST,
     SAFE_COMMAND_PREFIXES, AGENT_TOOLS, HARNESS_TOOLS, OPENAI_HARNESS_TOOLS,
@@ -639,6 +640,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
         last_raw_tool_call: str | None = None
         rejected_memory_facts: dict[str, int] = {}
         memory_write_disabled: bool = False
+        surgical_edits: int = 0
+        fullfile_edits: int = 0
 
         iteration = 0
         while iteration < max_iterations:
@@ -1120,7 +1123,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     "token_count": tokens_used,
                     "details": "Fast path streamed answer successfully",
                 })
-                yield _sse_metrics(1, 0, duration_ms, tier=0, tokens_used=tokens_used)
+                yield _sse_metrics(1, 0, duration_ms, tier=0, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
                 yield _sse_done(True, "Answer streamed successfully.")
                 return
 
@@ -1328,7 +1331,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     "token_count": tokens_used,
                     "details": f"Completed after clarification with substantive answer prose ({len(clean_prose)} chars)",
                 })
-                yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+                yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
                 yield _sse_done(True, "All tasks completed and verified successfully.")
                 return
 
@@ -1390,7 +1393,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             "token_count": tokens_used,
                             "details": f"Completed via tool argument termination signal in {iteration + 1} iterations, {total_tools_executed} tools",
                         })
-                        yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+                        yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
                         yield _sse_done(finalization_ok, "Task completed and verified successfully." if finalization_ok else "Task completed with staged changes requiring resolution.")
                         return
 
@@ -1452,6 +1455,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         status_desc = f"Running test case: {detail}..."
                     elif tc.name == "edit_file":
                         status_desc = f"Staging edit for {detail}..."
+                    elif tc.name == "edit_range":
+                        s_line = tc.arguments.get("start_line", "")
+                        e_line = tc.arguments.get("end_line", "")
+                        status_desc = f"Surgically editing {detail}:{s_line}-{e_line}..."
                     elif tc.name == "append_file":
                         status_desc = f"Appending chunk to {detail}..."
                     elif tc.name == "search_code" or tc.name == "semantic_search":
@@ -1462,6 +1469,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         status_desc = f"Saving preference: '{detail}'..."
                     elif tc.name == "ask_user":
                         status_desc = f"Asking user: '{detail}'..."
+                    elif tc.name == "find_function":
+                        status_desc = f"Locating function '{detail}'..."
                     elif tc.name == "find_references":
                         status_desc = f"Finding references for symbol '{detail}'..."
                     elif tc.name == "go_to_definition":
@@ -1537,6 +1546,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             )
                             if success_m:
                                 yield _sse_memory_updated(fact_text)
+                    elif tc.name == "find_function":
+                        result = _handle_find_function(workspace, tc.arguments)
                     elif tc.name == "find_references":
                         result = _handle_find_references(workspace, tc.arguments)
                     elif tc.name == "go_to_definition":
@@ -1940,7 +1951,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                 result = ToolResult(tool_name="ask_user", success=False, output="", error="User clarifying question timed out after 120s.")
                             finally:
                                 _pending_user_responses.pop(action_id, None)
-                    elif tc.name in ("edit_file", "append_file"):
+                    elif tc.name in ("edit_file", "edit_range", "append_file"):
                         raw_target = str(tc.arguments.get("path", "") or "")
                         target_clean = _clean_rel_path(raw_target).lower()
                         target_base = Path(target_clean).name.lower()
@@ -1999,6 +2010,14 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             })
                             result = ToolResult(tool_name=tc.name, success=False, output="", error=intent_err)
                             turn_all_tools_successful = False
+                        elif tc.name == "edit_range":
+                            consecutive_failed_edits_per_path[target_clean] = consecutive_failed_edits_per_path.get(target_clean, 0) + 1
+                            result = _handle_edit_range(workspace, tc.arguments, staged_changes)
+                            if result.success:
+                                surgical_edits += 1
+                                logger.info("[EDIT_MODE] surgical=%d fullfile=%d", surgical_edits, fullfile_edits)
+                            else:
+                                turn_all_tools_successful = False
                         elif tc.name == "edit_file":
                             consecutive_failed_edits_per_path[target_clean] = consecutive_failed_edits_per_path.get(target_clean, 0) + 1
                             parsed_updated = tc.arguments.get("updated", "")
@@ -2012,6 +2031,14 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             if tier_sugg:
                                 yield _sse_event("tier_suggestion", tier_sugg)
                                 yield _sse_status("tier_suggestion", tier_sugg["message"], tier=tier_sugg["suggested_tier"])
+
+                            surg_directive = get_surgical_edit_directive(
+                                path=raw_target,
+                                updated=str(parsed_updated or ""),
+                                original=str(tc.arguments.get("original", "")),
+                            )
+                            if surg_directive:
+                                logger.info("chat_harness size_guard: %s", surg_directive)
 
                             model_emitted_updated = parsed_updated
                             if tc.raw_text:
@@ -2043,6 +2070,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                                         staged_changes[existing_idx] = change
                                     else:
                                         staged_changes.append(change)
+                                    fullfile_edits += 1
+                                    logger.info("[EDIT_MODE] surgical=%d fullfile=%d", surgical_edits, fullfile_edits)
                                     _append_activity_log(workspace, {
                                         "action_type": "edit_byte_count_chain",
                                         "target": change.path,
@@ -2708,7 +2737,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         "token_count": tokens_used,
                         "details": f"Completed in {iteration + 1} iterations, {total_tools_executed} tools",
                     })
-                    yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+                    yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
                     yield _sse_done(True, "All tasks completed and verified successfully.")
                     return
 
@@ -2842,7 +2871,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 })
                 if truncation_retries > 0:
                     logger.info("[TRUNCATION_METRIC] model=%s tokens=%d retry_count=%d final_status=recovered", chat_request.model, tokens_used, truncation_retries)
-                yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+                yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
                 yield _sse_done(True, "All tasks completed and verified successfully.")
                 return
 
@@ -2893,7 +2922,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     "token_count": tokens_used,
                     "details": f"Completed in {iteration + 1} iterations, {total_tools_executed} tools",
                 })
-                yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+                yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
                 if total_tools_executed > 0 or staged_changes:
                     yield _sse_done(True, "All tasks completed and verified successfully.")
                 else:
@@ -2907,7 +2936,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             duration_ms = (time.time() - start_time) * 1000.0
             tokens_used = _message_token_count(messages, effective_prov_key, chat_request.model)
             _clear_interrupted_state(workspace)
-            yield _sse_metrics(1, total_tools_executed, duration_ms, tier=0, tokens_used=tokens_used)
+            yield _sse_metrics(1, total_tools_executed, duration_ms, tier=0, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
             yield _sse_done(False, "Fast answer could not be generated. Please try again or switch model in the dropdown.")
             return
 
@@ -2955,7 +2984,7 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             "token_count": tokens_used,
             "details": f"Iteration limit ({max_iterations}) reached",
         })
-        yield _sse_metrics(max_iterations, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used)
+        yield _sse_metrics(max_iterations, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
 
         report_lines = [
             f"Rony Agent reached iteration limit ({max_iterations}). Partial progress report:",
