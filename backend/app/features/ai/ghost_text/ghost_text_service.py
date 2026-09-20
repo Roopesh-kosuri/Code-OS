@@ -35,7 +35,8 @@ def _normalize_path(path_str: str, ws: str = "") -> str:
         norm_w = _normalize_workspace(ws)
         if p.lower().startswith(norm_w.lower() + "/"):
             p = p[len(norm_w) + 1:]
-    p = p.lstrip("./")
+    if p.startswith("./"):
+        p = p[2:]
     return p
 
 
@@ -239,13 +240,15 @@ def accept_ghost_text(editor_id: str, file_path: str = "") -> dict:
     rel_path = entry.get("file_path", "")
     updated_content = entry.get("updated", "")
 
-    # Write to disk
-    if Path(rel_path).is_absolute():
-        full_path = Path(rel_path)
-    elif ws:
-        full_path = Path(ws) / rel_path
-    else:
-        full_path = Path(rel_path).resolve()
+    # Containment check
+    if not ws:
+        return {"status": "error", "error": f"path_outside_workspace: {rel_path}"}
+
+    from app.core.paths import ensure_within_workspace
+    try:
+        full_path = ensure_within_workspace(ws, rel_path)
+    except Exception:
+        return {"status": "error", "error": f"path_outside_workspace: {rel_path}"}
 
     try:
         full_path.parent.mkdir(parents=True, exist_ok=True)

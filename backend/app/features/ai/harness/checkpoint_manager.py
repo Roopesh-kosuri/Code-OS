@@ -12,6 +12,8 @@ from typing import Any, List, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
+from .symbol_index import invalidate_file
+
 SENSITIVE_FILE_PATTERNS = (
     ".env", ".env.*", "*.env",
     "*.pem", "id_rsa", "id_rsa*", "*.key",
@@ -190,6 +192,10 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
                     failures.append(f"{rf}: restored bytes do not match checkpoint")
                 else:
                     restored.append(rf)
+                    try:
+                        invalidate_file(fp)
+                    except Exception as inv_err:
+                        logger.warning("Failed to invalidate %s after restore: %s", rf, inv_err)
                 continue
 
             snapshot_error = snapshot.stderr.decode("utf-8", errors="replace")
@@ -215,6 +221,10 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
                 failures.append(f"{rf}: created path still exists after rollback")
             else:
                 restored.append(rf)
+                try:
+                    invalidate_file(fp)
+                except Exception as inv_err:
+                    logger.warning("Failed to invalidate %s after unlink: %s", rf, inv_err)
     except Exception as exc:
         return False, f"Undo operation failed: {exc}", restored
 

@@ -534,19 +534,34 @@ def apply_approved_changes(job_id: str) -> Dict[str, Any]:
         }
 
     workspace = job_data["workspace"]
-    workspace_path = Path(normalize_path(workspace))
+
+    from app.core.paths import ensure_within_workspace
+
+    # Multi-file atomicity: validate ALL paths up front before ANY deletion or write
+    validated_targets: Dict[str, Path] = {}
+    for path, entry in list(job_data["files"].items()):
+        is_approved = entry.get("approved", False)
+        diff_chunks = [c for c in entry.get("chunks", []) if c.get("type") in ("insert", "delete")]
+        has_approved_chunk = any(c.get("approved") is True for c in diff_chunks)
+        if is_approved or has_approved_chunk:
+            try:
+                verified = ensure_within_workspace(workspace, path)
+                validated_targets[path] = verified
+            except Exception:
+                return {
+                    "success": False,
+                    "error": f"path_outside_workspace: {path}",
+                    "applied_files": [],
+                    "rejected_files": [],
+                }
 
     applied_files: List[str] = []
     rejected_files: List[str] = []
 
     for path, entry in list(job_data["files"].items()):
-        is_approved = entry.get("approved", False)
-        diff_chunks = [c for c in entry["chunks"] if c["type"] in ("insert", "delete")]
-        has_approved_chunk = any(c.get("approved") is True for c in diff_chunks)
-
-        if is_approved or has_approved_chunk:
-            full_path = workspace_path / path
-            if entry["status"] == "deleted" and is_approved:
+        if path in validated_targets:
+            full_path = validated_targets[path]
+            if entry["status"] == "deleted" and entry.get("approved", False):
                 if full_path.exists():
                     try:
                         full_path.unlink()

@@ -65,7 +65,16 @@ async def save_endpoint(req: SavePipelineRequest) -> Dict[str, Any]:
         if not ws_path.is_dir():
             raise HTTPException(status_code=400, detail=f"Workspace path '{req.workspace}' does not exist")
 
-        dest_file = ws_path / req.file_path.lstrip("/\\")
+        raw_target = req.file_path
+        if raw_target.startswith(("/", "\\")) and not Path(raw_target).is_absolute():
+            raw_target = raw_target.lstrip("/\\")
+
+        try:
+            from app.core.paths import ensure_within_workspace
+            dest_file = ensure_within_workspace(req.workspace, raw_target)
+        except Exception as exc:
+            raise HTTPException(status_code=403, detail=f"path_outside_workspace: {req.file_path}") from exc
+
         dest_file.parent.mkdir(parents=True, exist_ok=True)
         dest_file.write_text(req.yaml_content, encoding="utf-8")
 

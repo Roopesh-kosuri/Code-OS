@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -126,14 +126,26 @@ async def apply_refactoring_changes(req: ApplyRequest) -> Dict[str, Any]:
                 },
             )
 
-    ws_path = Path(req.workspace).resolve()
-    applied_files = []
+    from app.core.paths import ensure_within_workspace
 
+    # Multi-file atomicity: validate ALL paths up front before ANY writes
+    validated_changes: List[Tuple[dict, Path]] = []
+    for change in req.changes:
+        rel_file = change.get("file", "")
+        try:
+            target_path = ensure_within_workspace(req.workspace, rel_file)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=403,
+                detail=f"path_outside_workspace: {rel_file}",
+            ) from exc
+        validated_changes.append((change, target_path))
+
+    applied_files = []
     try:
-        for change in req.changes:
+        for change, target_path in validated_changes:
             rel_file = change.get("file", "")
             content = change.get("updated_content", "")
-            target_path = ws_path / rel_file
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(content.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
             applied_files.append(rel_file)
@@ -143,6 +155,8 @@ async def apply_refactoring_changes(req: ApplyRequest) -> Dict[str, Any]:
             "applied_files": applied_files,
             "message": f"Successfully applied refactor to {len(applied_files)} file(s).",
         }
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Apply error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed applying changes to workspace: {exc}")

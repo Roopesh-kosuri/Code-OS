@@ -81,6 +81,12 @@ async def apply_fix_endpoint(req: ApplyFixRequest) -> Dict[str, Any]:
             "resolved": resolved,
             "status": "resolved" if resolved else "pending",
         }
+    except ValueError as exc:
+        if "path_outside_workspace" in str(exc):
+            raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Apply fix failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Apply fix failed: {exc}")

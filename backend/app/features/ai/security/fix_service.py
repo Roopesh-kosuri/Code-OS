@@ -252,7 +252,12 @@ def apply_fix(vulnerability_id: str, patch_diff: str, workspace: Optional[str] =
     if not rel_file:
         raise ValueError("Could not determine target file from patch")
 
-    target_path = ws_path / rel_file
+    from app.core.paths import ensure_within_workspace
+    try:
+        target_path = ensure_within_workspace(ws, rel_file)
+    except Exception as exc:
+        raise ValueError(f"path_outside_workspace: {rel_file}") from exc
+
     if not target_path.exists():
         raise FileNotFoundError(f"Target file {rel_file} does not exist in workspace {ws}")
 
