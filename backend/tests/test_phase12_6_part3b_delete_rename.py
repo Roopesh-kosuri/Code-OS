@@ -1148,3 +1148,81 @@ def test_no_unrouted_workspace_writes_scan():
                 unrouted.append(f"{rel}:{lineno} in {fn}(): {prim}")
 
     assert unrouted == [], f"Found unrouted workspace write primitives:\n" + "\n".join(unrouted)
+
+
+def test_prose_rejection_empty_original_rejected():
+    """Prove that empty or whitespace original cannot be replaced with conversational prose into a .ts file."""
+    from app.features.ai.harness.content_integrity import validate_language_syntax
+    conversational_text = "Here is the code you requested to handle authentication.\n"
+    
+    # 1. Empty original -> REJECTED
+    ok, err = validate_language_syntax("auth.ts", conversational_text, original_content="")
+    assert ok is False
+    assert "conversational prose" in err
+
+    # Whitespace-only original -> REJECTED
+    ok_ws, err_ws = validate_language_syntax("auth.ts", conversational_text, original_content="   \n\t  ")
+    assert ok_ws is False
+    assert "conversational prose" in err_ws
+
+    # None original -> REJECTED
+    ok_none, err_none = validate_language_syntax("auth.ts", conversational_text, original_content=None)
+    assert ok_none is False
+    assert "conversational prose" in err_none
+
+
+def test_prose_rejection_todo_stub_original_rejected():
+    """Prove that comment stubs like '// TODO\\n' cannot be replaced with conversational prose."""
+    from app.features.ai.harness.content_integrity import validate_language_syntax
+    conversational_text = "Here is the implementation of the user service.\n"
+
+    # 2. original="// TODO\n" -> REJECTED
+    ok, err = validate_language_syntax("service.ts", conversational_text, original_content="// TODO\n")
+    assert ok is False
+    assert "conversational prose" in err
+
+    # Block comment stub -> REJECTED
+    ok_block, err_block = validate_language_syntax("service.ts", conversational_text, original_content="/* TODO: write code */\n")
+    assert ok_block is False
+    assert "conversational prose" in err_block
+
+
+def test_prose_rejection_version_stub_allowed():
+    """Prove that legacy staging version stubs ('version 1\\n' -> 'version 2\\n') remain allowed,
+    while prose smuggling into version stubs is strictly blocked.
+    """
+    from app.features.ai.harness.content_integrity import validate_language_syntax
+
+    # 3. original="version 1\n" + "version 2\n" -> ALLOWED
+    ok, err = validate_language_syntax("stg_file.ts", "version 2\n", original_content="version 1\n")
+    assert ok is True
+    assert err == ""
+
+    # Smuggle attempt: original="version 1\n" + conversational prose -> REJECTED
+    smuggle_text = "Here is the updated version with bug fixes and improvements.\n"
+    ok_smuggle, err_smuggle = validate_language_syntax("stg_file.ts", smuggle_text, original_content="version 1\n")
+    assert ok_smuggle is False
+    assert "conversational prose" in err_smuggle
+
+    # Real code replaced with version stub -> REJECTED (original had code)
+    ok_code, err_code = validate_language_syntax("real.ts", "version 2\n", original_content="const active = true;\n")
+    assert ok_code is False
+    assert "conversational prose" in err_code
+
+
+def test_safe_write_file_has_zero_production_callers():
+    """Prove that safe_write_file in app.core.paths has zero production callers anywhere in backend/app."""
+    import ast
+    backend_app_dir = Path(__file__).resolve().parent.parent / "app"
+    matches = []
+    for py_file in backend_app_dir.rglob("*.py"):
+        if py_file.name == "paths.py":
+            continue
+        tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id == "safe_write_file":
+                matches.append(f"{py_file.relative_to(backend_app_dir)}:{node.lineno}")
+            elif isinstance(node, ast.Attribute) and node.attr == "safe_write_file":
+                matches.append(f"{py_file.relative_to(backend_app_dir)}:{node.lineno}")
+
+    assert matches == [], f"Found unexpected callers of safe_write_file in production code:\n" + "\n".join(matches)

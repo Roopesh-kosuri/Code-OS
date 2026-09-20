@@ -34,6 +34,19 @@ _JS_CODE_KEYWORDS = frozenset({
     "module.exports", "console.log"
 })
 
+_JS_CODE_PUNCTS = (";", "{", "}", "=", "(", ")", "=>", "//", "/*", "*/", ":", "<", ">", "[", "]")
+
+_CONVERSATIONAL_WORDS = frozenset({
+    "here", "there", "please", "certainly", "sure", "sorry",
+    "note", "below", "above", "following", "snippet",
+    "i", "you", "we", "they", "my", "your", "our",
+    "is", "are", "was", "were", "be", "been",
+    "have", "has", "had", "do", "does", "did",
+    "would", "should", "could", "can", "will",
+    "the", "this", "that", "these", "those",
+    "code", "file", "function", "feature", "implementation", "solution",
+})
+
 
 def is_placeholder_content(text: str) -> tuple[bool, str]:
     """Detect if the content contains lazy placeholders or TODO stubs instead of real code."""
@@ -323,12 +336,22 @@ def validate_language_syntax(path: str, content: str, original_content: str | No
             has_js_keywords = any(kw in words for kw in _JS_CODE_KEYWORDS)
             has_code_puncts = any(c in content for c in (";", "{", "}", "=", "(", ")", "=>"))
             if not has_js_keywords and not has_code_puncts:
-                if original_content is not None:
+                content_lower_words = set(re.findall(r"\b[a-zA-Z_]\w*\b", content.lower()))
+                is_conversational = bool(content_lower_words & _CONVERSATIONAL_WORDS)
+                if is_conversational:
+                    return False, f"File '{path}' contains conversational prose rather than valid JavaScript/TypeScript code"
+
+                # Narrow exemption ONLY for non-empty legacy stubs/metadata (e.g. "version 1\n" -> "version 2\n")
+                # 1. Empty or whitespace-only original NEVER gets an exemption.
+                # 2. Original containing code syntax, comments (//, /*), or keywords NEVER gets an exemption.
+                # 3. Content must NOT be conversational prose and must be a short stub.
+                if original_content and original_content.strip():
                     orig_words = set(re.findall(r"\b[a-zA-Z_]\w*\b", original_content))
                     orig_has_js = any(kw in orig_words for kw in _JS_CODE_KEYWORDS)
-                    orig_has_puncts = any(c in original_content for c in (";", "{", "}", "=", "(", ")", "=>"))
-                    if not orig_has_js and not orig_has_puncts:
+                    orig_has_code = any(c in original_content for c in _JS_CODE_PUNCTS)
+                    if not orig_has_js and not orig_has_code and len(lines) <= 3 and len(content.split()) <= 10:
                         return True, ""
+
                 return False, f"File '{path}' contains conversational prose rather than valid JavaScript/TypeScript code"
 
     return True, ""
