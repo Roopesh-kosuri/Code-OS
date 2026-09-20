@@ -258,7 +258,34 @@ def stage_resolve(
         if disk_exists:
             try:
                 disk_bytes = full_p.read_bytes()
-                disk_text = disk_bytes.decode("utf-8", errors="replace").replace("\r\n", "\n")
+                # Check for unsupported encodings (UTF-16 BOM)
+                if disk_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
+                    return (
+                        False,
+                        RejectionDict(
+                            code="unsupported_encoding",
+                            reason_text=f"Unsupported encoding for '{rel_p}': UTF-16 files cannot be safely modified.",
+                            stage="resolve",
+                        ),
+                        [],
+                        [],
+                    )
+                # UTF-8 validation (strict)
+                try:
+                    b_decode = disk_bytes[3:] if disk_bytes.startswith(b"\xef\xbb\xbf") else disk_bytes
+                    disk_text = b_decode.decode("utf-8")
+                except UnicodeDecodeError as dec_err:
+                    return (
+                        False,
+                        RejectionDict(
+                            code="unsupported_encoding",
+                            reason_text=f"Unsupported encoding for '{rel_p}': file contains non-UTF-8 bytes ({dec_err}).",
+                            stage="resolve",
+                        ),
+                        [],
+                        [],
+                    )
+                disk_text = disk_text.replace("\r\n", "\n")
                 disk_lines = disk_text.splitlines()
                 total_lines = len(disk_lines)
             except Exception as read_err:
@@ -642,10 +669,15 @@ def stage_apply(
             full_p = ensure_within_workspace(str(workspace_root), rel_p)
             snap_bytes = initial_snapshots.get(rel_p)
 
-            # Preserve line ending style: CRLF if original used CRLF, otherwise LF
-            has_crlf = snap_bytes is not None and b"\r\n" in snap_bytes
+            # Line ending style determination:
+            # - New file: default to LF (\n)
+            # - Existing file: preserve CRLF if dominant, otherwise LF (normalizes mixed endings to dominant)
+            crlf_count = snap_bytes.count(b"\r\n") if snap_bytes is not None else 0
+            bare_lf_count = (snap_bytes.count(b"\n") - crlf_count) if snap_bytes is not None else 0
+            use_crlf = crlf_count > bare_lf_count
+
             clean_text = proj_text.replace("\r\n", "\n")
-            if has_crlf:
+            if use_crlf:
                 final_text = clean_text.replace("\n", "\r\n")
             else:
                 final_text = clean_text
@@ -850,7 +882,8 @@ def apply_mutations(
         if full_p.is_file():
             b = full_p.read_bytes()
             initial_snapshots[rel_p] = b
-            initial_texts[rel_p] = b.decode("utf-8", errors="replace").replace("\r\n", "\n")
+            b_dec = b[3:] if b.startswith(b"\xef\xbb\xbf") else b
+            initial_texts[rel_p] = b_dec.decode("utf-8", errors="replace").replace("\r\n", "\n")
         else:
             initial_snapshots[rel_p] = None
             initial_texts[rel_p] = ""

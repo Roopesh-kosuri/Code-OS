@@ -599,9 +599,134 @@ def test_symlink_escape_rejected(tmp_path: Path, tmp_path_factory):
     assert res.rejection.code == "symlink_escape"
 
 
+def test_symlink_escape_branch_executes_via_mocked_resolve(tmp_path: Path):
+    """Ensure symlink_escape branch executes deterministically via mock in all environments."""
+    from fastapi import HTTPException
+    mock_link = tmp_path / "mock_link.txt"
+
+    def mock_ensure(ws, target):
+        if "mock_link.txt" in str(target):
+            raise HTTPException(status_code=403, detail="Path is outside workspace")
+        return tmp_path / target
+
+    real_is_symlink = Path.is_symlink
+
+    def mock_is_symlink(self):
+        if "mock_link.txt" in str(self):
+            return True
+        return real_is_symlink(self)
+
+    mut = Mutation(kind=MutationKind.WRITE_FULL, path="mock_link.txt", new_content="payload")
+    with patch("app.features.ai.harness.mutation_pipeline.ensure_within_workspace", side_effect=mock_ensure):
+        with patch.object(Path, "is_symlink", mock_is_symlink):
+            res = apply_mutations(str(tmp_path), [mut], mode="AGENT")
+            assert res.success is False
+            assert res.rejection.code == "symlink_escape"
+            assert res.rejection.stage == "resolve"
+            assert not mock_link.exists()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 6. ENCODING / LINE ENDINGS
 # ═══════════════════════════════════════════════════════════════════════════
+
+def test_edit_range_on_invalid_utf8_file_rejects_cleanly(tmp_path: Path):
+    """Files containing invalid UTF-8 bytes reject with code='unsupported_encoding' without corrupting disk."""
+    target = tmp_path / "corrupt.bin"
+    invalid_bytes = b"header\x80\x81\xfe\xfffooter"
+    target.write_bytes(invalid_bytes)
+
+    mut = Mutation(
+        kind=MutationKind.EDIT_RANGE,
+        path="corrupt.bin",
+        start_line=1,
+        end_line=1,
+        updated="valid text\n",
+        anchor="header",
+    )
+    res = apply_mutations(str(tmp_path), [mut], mode="AGENT")
+    assert res.success is False
+    assert res.rejection.code == "unsupported_encoding"
+    assert res.rejection.stage == "resolve"
+    # Disk bytes must remain identical
+    assert target.read_bytes() == invalid_bytes
+
+
+def test_edit_range_on_utf16_file_rejects_cleanly(tmp_path: Path):
+    """UTF-16 files with BOM reject with code='unsupported_encoding' without disk mutation."""
+    target = tmp_path / "unicode16.txt"
+    utf16_bytes = b"\xff\xfe" + "def compute():\n    return 42\n".encode("utf-16-le")
+    target.write_bytes(utf16_bytes)
+
+    mut = Mutation(
+        kind=MutationKind.EDIT_RANGE,
+        path="unicode16.txt",
+        start_line=1,
+        end_line=2,
+        updated="def compute():\n    return 100\n",
+        anchor="def compute():",
+    )
+    res = apply_mutations(str(tmp_path), [mut], mode="AGENT")
+    assert res.success is False
+    assert res.rejection.code == "unsupported_encoding"
+    assert res.rejection.stage == "resolve"
+    assert target.read_bytes() == utf16_bytes
+
+
+def test_write_full_over_existing_utf16_file_behavior_defined(tmp_path: Path):
+    """WRITE_FULL over existing UTF-16 file rejects with unsupported_encoding to prevent destroying encoding."""
+    target = tmp_path / "doc_utf16.txt"
+    utf16_bytes = b"\xfe\xff" + "Initial UTF-16 content\n".encode("utf-16-be")
+    target.write_bytes(utf16_bytes)
+
+    mut = Mutation(
+        kind=MutationKind.WRITE_FULL,
+        path="doc_utf16.txt",
+        new_content="Overwritten UTF-8 text\n",
+    )
+    res = apply_mutations(str(tmp_path), [mut], mode="AGENT")
+    assert res.success is False
+    assert res.rejection.code == "unsupported_encoding"
+    assert res.rejection.stage == "resolve"
+    assert target.read_bytes() == utf16_bytes
+
+
+def test_mixed_line_endings_preserved_or_normalized_behavior_defined(tmp_path: Path):
+    """Mixed line endings normalize to dominant style (CRLF dominant -> CRLF, LF dominant -> LF)."""
+    # 1. CRLF dominant: 3 CRLF lines vs 1 LF line
+    target_crlf = tmp_path / "dominant_crlf.py"
+    target_crlf.write_bytes(b"line 1\r\nline 2\r\nline 3\r\nline 4\n")
+
+    mut1 = Mutation(kind=MutationKind.WRITE_FULL, path="dominant_crlf.py", new_content="out 1\nout 2\n")
+    res1 = apply_mutations(str(tmp_path), [mut1], mode="AGENT")
+    assert res1.success is True
+    # Normalized to CRLF
+    assert target_crlf.read_bytes() == b"out 1\r\nout 2\r\n"
+
+    # 2. LF dominant: 3 LF lines vs 1 CRLF line
+    target_lf = tmp_path / "dominant_lf.py"
+    target_lf.write_bytes(b"line 1\nline 2\nline 3\nline 4\r\n")
+
+    mut2 = Mutation(kind=MutationKind.WRITE_FULL, path="dominant_lf.py", new_content="out 1\r\nout 2\r\n")
+    res2 = apply_mutations(str(tmp_path), [mut2], mode="AGENT")
+    assert res2.success is True
+    # Normalized to LF
+    assert target_lf.read_bytes() == b"out 1\nout 2\n"
+
+
+def test_create_new_file_defaults_documented(tmp_path: Path):
+    """Newly created files default to LF (\\n) line endings and standard UTF-8 (no BOM)."""
+    new_target = tmp_path / "created.py"
+    assert not new_target.exists()
+
+    mut = Mutation(kind=MutationKind.CREATE, path="created.py", content="alpha = 1\nbeta = 2\n")
+    res = apply_mutations(str(tmp_path), [mut], mode="AGENT")
+    assert res.success is True
+
+    raw_bytes = new_target.read_bytes()
+    assert not raw_bytes.startswith(b"\xef\xbb\xbf")
+    assert b"\r" not in raw_bytes
+    assert raw_bytes == b"alpha = 1\nbeta = 2\n"
 
 def test_crlf_file_stays_crlf_after_edit_range(tmp_path: Path):
     """A file with CRLF line endings preserves CRLF after EDIT_RANGE."""
