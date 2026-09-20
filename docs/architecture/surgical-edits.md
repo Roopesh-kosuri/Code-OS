@@ -1,4 +1,7 @@
-# Surgical Edit Architecture (CODE OS v5.0.0 — Phase 12.5)
+# Surgical Edit Architecture (CODE OS v5.0.0 — Phase 12.5 & Phase 12.6)
+
+> **Phase 12.6 Architecture Note**:
+> In Phase 12.6, all surgical edits, range patches, and whole-file operations route through the unified disk execution engine detailed in [Unified Mutation Pipeline Architecture](mutation-pipeline.md). Surgical edit anchors, relocation scans, and layered syntax gates are fully integrated into Stage 1 (`resolve`), Stage 2 (`preflight`), Stage 3 (`validate`), and Stage 4 (`apply`).
 
 ## Overview
 
