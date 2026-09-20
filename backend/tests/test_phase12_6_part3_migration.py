@@ -547,8 +547,11 @@ async def test_valid_proposal_makes_symbols_visible_via_find_function_immediatel
         applied = await apply_proposal(proposal_id)
         assert applied.status in ("applied", "pending")
 
-    # Re-index on demand (watcher suppressed): index was synchronously invalidated
-    index_file(module_path)
+    # Prove pipeline's synchronous invalidation purged the stale cache entry WITHOUT watcher
+    from app.features.ai.harness.symbol_index import _symbol_index
+    assert str(module_path.resolve()) not in _symbol_index._cache
+
+    # Query find_function directly WITHOUT manual re-index: triggers fresh parse and finds new symbol
     res_after = _handle_find_function(ws, {"name": "calculate_metric"})
     assert res_after.success is True
     assert "calculate_metric" in res_after.output
