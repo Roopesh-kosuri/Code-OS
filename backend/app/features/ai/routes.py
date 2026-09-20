@@ -324,6 +324,18 @@ async def reject_pending_action(action_id: str, payload: ApprovalDecisionPayload
     return {"status": "rejected", "action_id": action_id}
 
 
+@router.post("/pending-approvals/{action_id}/reread")
+@router.post("/chat-agent/reread/{action_id}")
+async def reread_pending_action(action_id: str) -> dict:
+    """Non-auto-approving flow: re-read disk and restage pending approval (Phase 12.5.1 G2)."""
+    from .harness.approval_coordinator import reread_and_restage_approval
+    res = await reread_and_restage_approval(action_id)
+    if not res:
+        logger.warning("reread_pending_action: action %s not found or re-read failed", action_id)
+        return {"status": "not_found", "action_id": action_id}
+    return res
+
+
 class VerifyBrowserPayload(BaseModel):
     workspace: str
     target: str | None = None

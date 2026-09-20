@@ -105,6 +105,15 @@ export interface PendingApprovalState {
   metadata?: Record<string, any>;
   start_line?: number;
   end_line?: number;
+  edit_type?: string;
+  anchor_state?: string;
+  relocation_event?: {
+    relocated?: boolean;
+    old_range?: [number, number];
+    new_range?: [number, number];
+    reason?: string;
+    reason_text?: string;
+  };
   integrity_status?: "valid" | "incomplete" | "suspicious" | "blocked";
   integrity_warning?: string;
 }
@@ -322,6 +331,7 @@ type AIState = {
   dismissInterruptedState: (workspace?: string) => Promise<void>;
   approveAction: (actionId: string, alwaysAllow?: boolean, trustPattern?: string) => Promise<void>;
   rejectAction: (actionId: string) => Promise<void>;
+  rereadApproval: (actionId: string) => Promise<void>;
   respondToUserQuestion: (actionId: string, answer: string) => Promise<void>;
   sendAgentMessage: (content: string, attachedPaths?: string[]) => Promise<void>;
   undoTurn: (commitHash: string, touchedFiles: string[]) => Promise<{ success: boolean; message: string; restored_files: string[] }>;
@@ -593,6 +603,9 @@ export function createSSEStreamHandler(
         integrity_warning: data.integrity_warning,
         start_line: typeof data.start_line === "number" ? data.start_line : data.metadata?.start_line,
         end_line: typeof data.end_line === "number" ? data.end_line : data.metadata?.end_line,
+        edit_type: data.edit_type || data.metadata?.edit_type || data.anchor_state || data.metadata?.anchor_state,
+        anchor_state: data.anchor_state || data.metadata?.anchor_state || data.edit_type || data.metadata?.edit_type,
+        relocation_event: data.relocation_event || data.metadata?.relocation_event,
         metadata: data.metadata || (typeof data.start_line === "number" ? { start_line: data.start_line, end_line: data.end_line } : undefined),
       };
       set((state) => {
@@ -1107,6 +1120,44 @@ export const useAIStore = create<AIState>((set, get) => ({
           pendingApproval: remaining[0] || null,
         };
       });
+    }
+  },
+
+  rereadApproval: async (actionId: string) => {
+    try {
+      const res = await api.post<any>(`/api/ai/chat-agent/reread/${actionId}`);
+      if (res && res.status === "restaged" && res.approval) {
+        const newApproval: PendingApprovalState = {
+          action_id: res.approval.action_id,
+          action_type: res.approval.action_type || "edit",
+          detail: res.approval.detail,
+          reason: res.approval.reason,
+          proposal_id: res.approval.proposal_id,
+          path: res.approval.path,
+          diff_summary: res.approval.diff_summary,
+          start_line: res.approval.start_line,
+          end_line: res.approval.end_line,
+          edit_type: res.approval.edit_type || "anchored",
+          anchor_state: res.approval.anchor_state || "anchored",
+          relocation_event: res.approval.relocation_event,
+          metadata: res.approval.metadata,
+          integrity_status: res.approval.integrity_status,
+          integrity_warning: res.approval.integrity_warning,
+        };
+        set((state) => {
+          const currentList = state.pendingApprovals || [];
+          const nextList = currentList.map((a) => (a.action_id === actionId ? newApproval : a));
+          return {
+            pendingApprovals: nextList,
+            pendingApproval: state.pendingApproval?.action_id === actionId ? newApproval : state.pendingApproval,
+          };
+        });
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("code-os:proposal-updated", { detail: res.approval.action_id }));
+        }
+      }
+    } catch (err) {
+      console.warn("Reread approval notice:", err);
     }
   },
 

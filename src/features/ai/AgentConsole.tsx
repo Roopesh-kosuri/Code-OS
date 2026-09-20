@@ -1271,6 +1271,7 @@ export function AgentConsole({ compact = false }: { compact?: boolean }) {
                 pendingApproval={pendingApproval}
                 onApprove={(actionId) => approveAction(actionId)}
                 onReject={(actionId) => rejectAction(actionId)}
+                onReread={(actionId) => useAIStore.getState().rereadApproval(actionId)}
               />
             )}
 

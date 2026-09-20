@@ -7,23 +7,27 @@ import {
   Clock,
   ExternalLink,
   Loader2,
+  RotateCcw,
 } from "lucide-react";
-import type { PendingApprovalState } from "../../stores/aiStore";
+import { useAIStore, type PendingApprovalState } from "../../stores/aiStore";
 import { MonacoDiffViewer, parseUnifiedDiff, getLanguageFromPath } from "../editor/MonacoDiffModal";
 
 export interface InlineConsoleApprovalCardProps {
   pendingApproval: PendingApprovalState;
   onApprove: (actionId: string) => void | Promise<void>;
   onReject: (actionId: string) => void | Promise<void>;
+  onReread?: (actionId: string) => void | Promise<void>;
 }
 
 export function InlineConsoleApprovalCard({
   pendingApproval,
   onApprove,
   onReject,
+  onReread,
 }: InlineConsoleApprovalCardProps) {
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
+  const [isRereading, setIsRereading] = useState(false);
   const [integrityConfirmed, setIntegrityConfirmed] = useState(false);
 
   const isEdit = pendingApproval.action_type === "edit";
@@ -39,6 +43,19 @@ export function InlineConsoleApprovalCard({
 
   const rawCmd = pendingApproval.command || pendingApproval.detail || "";
   const cleanCmd = rawCmd.replace(/^\(command:\s*/, "").replace(/\s*\)$/, "").trim();
+
+  // Relocation event and anchor state (Phase 12.5.1 G2)
+  const relocationEvent = pendingApproval.relocation_event ?? pendingApproval.metadata?.relocation_event;
+  const isRelocated = Boolean(relocationEvent?.relocated);
+  const oldRange = relocationEvent?.old_range;
+  const newRange = relocationEvent?.new_range;
+
+  const anchorState: "anchored" | "line-only" | undefined = (
+    pendingApproval.anchor_state as any) ||
+    (pendingApproval.edit_type as any) ||
+    (pendingApproval.metadata?.anchor_state as any) ||
+    (pendingApproval.metadata?.edit_type as any) ||
+    (isRangeEdit ? "line-only" : undefined);
 
   const diffData = useMemo(() => {
     if (!isEdit) return { original: "", updated: "" };
@@ -68,6 +85,19 @@ export function InlineConsoleApprovalCard({
       await onReject(pendingApproval.action_id);
     } finally {
       setIsRejecting(false);
+    }
+  };
+
+  const handleReread = async () => {
+    setIsRereading(true);
+    try {
+      if (onReread) {
+        await onReread(pendingApproval.action_id);
+      } else {
+        await useAIStore.getState().rereadApproval(pendingApproval.action_id);
+      }
+    } finally {
+      setIsRereading(false);
     }
   };
 
@@ -117,6 +147,18 @@ export function InlineConsoleApprovalCard({
                 {isRangeEdit ? `lines ${startLine}-${endLine} of ${filePath}` : filePath}
               </span>
             )}
+            {isEdit && anchorState && (
+              <span
+                data-testid="anchor-state-badge"
+                className={`text-[9.5px] px-1.5 py-0.5 rounded font-mono font-bold uppercase tracking-wider border ${
+                  anchorState === "anchored"
+                    ? "bg-cyan-500/20 text-cyan-300 border-cyan-500/40"
+                    : "bg-zinc-500/20 text-zinc-300 border-zinc-500/40"
+                }`}
+              >
+                {anchorState}
+              </span>
+            )}
           </div>
         </div>
 
@@ -131,6 +173,36 @@ export function InlineConsoleApprovalCard({
           </span>
         </div>
       </div>
+
+      {/* Amber Relocation Banner (Phase 12.5.1 G2) */}
+      {isRelocated && (
+        <div
+          data-testid="inline-relocation-banner"
+          className="mt-2.5 p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-200 text-xs flex items-center justify-between gap-3 shadow-inner"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-amber-400 font-bold text-sm shrink-0">⚠</span>
+            <div className="flex flex-col min-w-0">
+              <span className="font-bold text-amber-300 text-xs leading-tight">
+                File drifted — edit relocated
+              </span>
+              <span className="text-[10.5px] text-amber-200/90 font-mono truncate">
+                from lines {oldRange?.[0] ?? "?"}-{oldRange?.[1] ?? "?"} to lines {newRange?.[0] ?? "?"}-{newRange?.[1] ?? "?"}
+              </span>
+            </div>
+          </div>
+          <button
+            type="button"
+            data-testid="inline-reread-btn"
+            onClick={handleReread}
+            disabled={isRereading || isApproving || isRejecting}
+            className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-[11px] font-semibold border border-amber-500/40 transition-all cursor-pointer disabled:opacity-50"
+          >
+            {isRereading ? <Loader2 size={12} className="animate-spin text-amber-300" /> : <RotateCcw size={12} className="text-amber-300" />}
+            <span>Re-read and re-confirm</span>
+          </button>
+        </div>
+      )}
 
       {hasIntegrityWarning && (
         <div

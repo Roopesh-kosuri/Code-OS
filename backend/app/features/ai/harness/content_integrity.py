@@ -80,16 +80,25 @@ def _normalize_lang(language_or_path: str) -> str:
     return alias_map.get(raw, raw)
 
 
-def syntax_check(language: str, source: str) -> tuple[bool, str]:
-    """Unified syntax checker for arbitrary code sources across supported languages.
+NON_CODE_EXTENSIONS = frozenset({
+    "md", "txt", "yaml", "yml", "css", "html", "htm", "toml",
+    "xml", "svg", "ini", "cfg", "env", "log", "csv", "tsv",
+    "markdown", "rst", "adoc", "json5", "lock",
+})
 
-    Shared by both check_slice_syntax and check_projected_file_syntax (Phase 12.5 H2.1).
-    """
-    if source is None:
-        return False, "Source content is None"
+UNAVAILABLE_CHECKER_EXTENSIONS = frozenset({
+    "go", "rs", "rb", "php", "swift", "kt", "scala", "lua", "sh", "bash", "zsh",
+    "sql", "r", "dart", "elm", "ex", "exs", "clj", "pl", "pm",
+})
 
-    norm_lang = _normalize_lang(language)
+AVAILABLE_CHECKER_EXTENSIONS = frozenset({
+    "py", "pyw", "json", "js", "jsx", "ts", "tsx", "mjs", "cjs",
+    "c", "cpp", "cc", "cxx", "h", "hpp", "java", "cs",
+})
 
+
+def _evaluate_source_syntax(norm_lang: str, source: str, language_filename: str = "") -> tuple[bool, str]:
+    """Helper to parse code source for recognized languages."""
     # Empty string is valid syntax for Python/JS/C (empty module/file or deleted block)
     if not source.strip():
         if norm_lang == "json":
@@ -98,11 +107,11 @@ def syntax_check(language: str, source: str) -> tuple[bool, str]:
 
     if norm_lang in ("py", "pyw"):
         try:
-            ast.parse(source, filename=language if language.endswith((".py", ".pyw")) else "<syntax_check>")
+            ast.parse(source, filename=language_filename if language_filename.endswith((".py", ".pyw")) else "<syntax_check>")
             return True, ""
         except SyntaxError as exc:
             return False, f"Python syntax error at line {exc.lineno}: {exc.msg}"
-        except Exception as exc:
+        except ValueError as exc:
             return False, f"Python parse error: {exc}"
 
     if norm_lang == "json":
@@ -111,8 +120,6 @@ def syntax_check(language: str, source: str) -> tuple[bool, str]:
             return True, ""
         except json.JSONDecodeError as exc:
             return False, f"JSON syntax error at line {exc.lineno}: {exc.msg}"
-        except Exception as exc:
-            return False, f"JSON parse error: {exc}"
 
     if norm_lang in ("js", "jsx", "ts", "tsx", "mjs", "cjs"):
         open_braces = source.count("{")
@@ -138,6 +145,59 @@ def syntax_check(language: str, source: str) -> tuple[bool, str]:
         return True, ""
 
     return True, ""
+
+
+def syntax_check(language: str, source: str, original_source: str | None = None) -> tuple[bool, str]:
+    """Unified syntax checker enforcing Phase 12.5.1 G5 5-branch fail-mode contract.
+
+    Branches:
+    1. Recognized code ext + checker available + newly broken -> FAIL-CLOSED with precise diagnostic.
+    2. Pre-existing breakage: if original was already broken and patch does not worsen -> ALLOW.
+    3. Recognized code ext + checker unavailable -> FAIL-OPEN, log INFO, print [SYNTAX_SKIP], report 'syntax: unchecked'.
+    4. Non-code extension -> FAIL-OPEN, print [SYNTAX_SKIPPED_NONCODE].
+    5. Internal error / crash during check -> FAIL-OPEN, log WARNING, print [SYNTAX_INTERNAL_ERROR].
+    """
+    if source is None:
+        return False, "Source content is None"
+
+    norm_lang = _normalize_lang(language)
+
+    # Branch 4: Non-code extension -> FAIL-OPEN
+    if norm_lang in NON_CODE_EXTENSIONS:
+        print(f"[SYNTAX_SKIPPED_NONCODE] ext={norm_lang}")
+        logger.debug("syntax: skipped non-code file for ext=%s", norm_lang)
+        return True, ""
+
+    # Branch 3: Recognized code ext but checker unavailable in bundled runtime -> FAIL-OPEN
+    if norm_lang in UNAVAILABLE_CHECKER_EXTENSIONS or norm_lang not in AVAILABLE_CHECKER_EXTENSIONS:
+        logger.info("syntax_check_unavailable for %s, proceeding without", norm_lang)
+        print(f"[SYNTAX_SKIP] ext={norm_lang}")
+        return True, "syntax: unchecked"
+
+    # Available checker with Branch 1, Branch 2, and Branch 5 handling
+    try:
+        ok, err = _evaluate_source_syntax(norm_lang, source, language)
+        if ok:
+            return True, ""
+
+        # Branch 2: Pre-existing breakage rule
+        if original_source is not None:
+            try:
+                orig_ok, orig_err = _evaluate_source_syntax(norm_lang, original_source, language)
+                if not orig_ok:
+                    logger.info("syntax: file already broken pre-patch, patch does not worsen")
+                    print(f"[SYNTAX_PREEXISTING_BROKEN] ext={norm_lang}")
+                    return True, "syntax: file already broken pre-patch, patch does not worsen"
+            except Exception as orig_exc:
+                logger.debug("syntax: error checking original_source: %s", orig_exc)
+
+        # Branch 1: Newly broken code -> FAIL-CLOSED
+        return False, err
+    except Exception as exc:
+        # Branch 5: Internal error / crash during check -> FAIL-OPEN
+        logger.warning("syntax_check internal error for %s: %s", norm_lang, exc)
+        print(f"[SYNTAX_INTERNAL_ERROR] ext={norm_lang}")
+        return True, f"syntax: internal error ({exc})"
 
 
 # ── Layered Syntax Checks (Phase 12.5 H2) ──────────────────────────────────
@@ -177,8 +237,8 @@ def check_slice_syntax(path_or_lang: str, slice_code: str) -> tuple[bool, str]:
     return True, ""
 
 
-def check_projected_file_syntax(path: str, projected_content: str) -> tuple[bool, str]:
-    """Layer 2: Verify syntax of the full file with patch projected in-memory (Phase 12.5 H2.1).
+def check_projected_file_syntax(path: str, projected_content: str, original_content: str | None = None) -> tuple[bool, str]:
+    """Layer 2: Verify syntax of the full file with patch projected in-memory (Phase 12.5 H2.1 + Phase 12.5.1 G5).
 
     Catches contextual breakage across range boundaries (e.g. slice is valid alone
     but leaves surrounding braces unbalanced, breaks outer indentation, or introduces
@@ -188,19 +248,19 @@ def check_projected_file_syntax(path: str, projected_content: str) -> tuple[bool
         return False, "Projected file content is empty"
 
     # Also run language prose check for JS/TS if present
-    ok, err = validate_language_syntax(path, projected_content)
+    ok, err = validate_language_syntax(path, projected_content, original_content=original_content)
     if not ok:
         return False, f"Projected file syntax error: {err}"
     return True, ""
 
 
-def validate_language_syntax(path: str, content: str) -> tuple[bool, str]:
+def validate_language_syntax(path: str, content: str, original_content: str | None = None) -> tuple[bool, str]:
     """Verify that file content parses or conforms to expected syntax for its extension."""
     if not content or not content.strip():
         return False, "File content is empty"
 
     ext = Path(path).suffix.lower()
-    ok, err = syntax_check(ext or path, content)
+    ok, err = syntax_check(ext or path, content, original_source=original_content)
     if not ok:
         return False, err
 

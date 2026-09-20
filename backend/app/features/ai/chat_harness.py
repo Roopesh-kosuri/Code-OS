@@ -1517,10 +1517,13 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     if allowed_tool_names is not None and tc.name not in allowed_tool_names:
                         logger.warning("[TOOL_DENIED] tool=%s tier=%d", tc.name, tier)
                         print(f"[TOOL_DENIED] tool={tc.name} tier={tier}")
-                        eval_context = f"{user_query} {tc.name} {json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else str(tc.arguments)}"
-                        re_tier, _, _ = _classify_rules(eval_context.lower(), request.attached_paths)
-                        if tc.name in HEAVY_TOOLS or tc.name in ("edit_range", "edit_file", "append_file", "server_session", "find_references", "go_to_definition", "get_diagnostics"):
-                            re_tier = max(re_tier, 2)
+                        # Re-eval is context-driven, not request-driven. Requesting a tool does not earn it.
+                        # Denied tool name and arguments carry zero score weight and must NOT be fed to classifier.
+                        re_tier, re_label, re_reason = _classify_task_effort(
+                            user_query=user_query,
+                            attached_paths=request.attached_paths,
+                            is_agent_mode=is_agent_mode,
+                        )
 
                         if re_tier >= 2:
                             tier = max(tier, re_tier)
@@ -1535,8 +1538,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             )
                             active_tools = tier_tools + mcp_tool_defs
                             allowed_tool_names = {t.get("function", {}).get("name") or t.get("name") for t in active_tools if isinstance(t, dict)}
-                            yield _sse_tier_routing(tier, tier_label, reason=f"Mid-turn upgrade: tool '{tc.name}' requires Tier {tier}")
-                            yield _sse_status("tier_upgrade", f"Mid-turn upgrade to Tier {tier} for tool '{tc.name}'", tier=tier)
+                            yield _sse_tier_routing(tier, tier_label, reason=f"Mid-turn upgrade: context requires Tier {tier}")
+                            yield _sse_status("tier_upgrade", f"Mid-turn upgrade to Tier {tier} based on turn context", tier=tier)
                             # Call retried once by proceeding to execution below
                         else:
                             action_id = str(uuid.uuid4())

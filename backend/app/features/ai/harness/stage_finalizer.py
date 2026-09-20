@@ -227,6 +227,10 @@ async def _finalize_staged_changes(
             range_meta["edit_type"] = edit_type
             range_meta["anchor_state"] = edit_type
 
+        reloc_event = next((getattr(c, "relocation_event", None) for c in staged_changes if getattr(c, "relocation_event", None)), None)
+        if reloc_event:
+            range_meta["relocation_event"] = reloc_event
+
         reason_suffix = f" ({range_meta['edit_type']})" if "edit_type" in range_meta else ""
         reason = f"Rony Agent wants to create/modify {summary_paths}{reason_suffix}"
 
@@ -243,6 +247,7 @@ async def _finalize_staged_changes(
             integrity_status=overall_integrity_status,
             integrity_warning=combined_warning,
             metadata=range_meta,
+            relocation_event=reloc_event,
         )
         _pending_approvals[action_id] = pending
 
@@ -256,6 +261,7 @@ async def _finalize_staged_changes(
             diff_summary=diff_summary,
             integrity_status=overall_integrity_status,
             integrity_warning=combined_warning,
+            relocation_event=reloc_event,
             **range_meta,
         )
         yield _sse_status(
@@ -266,7 +272,15 @@ async def _finalize_staged_changes(
         )
 
         try:
-            await asyncio.wait_for(pending.event.wait(), timeout=_get_edit_approval_timeout())
+            while True:
+                await asyncio.wait_for(pending.event.wait(), timeout=_get_edit_approval_timeout())
+                if getattr(pending, "replaced_by", None):
+                    new_aid = pending.replaced_by
+                    if new_aid in _pending_approvals:
+                        logger.info("stage_finalizer: approval replaced by %s; awaiting new decision", new_aid)
+                        pending = _pending_approvals[new_aid]
+                        continue
+                break
             if pending.approved:
                 # Pre-apply checkpoint commit
                 touched_paths = [c.path for c in staged_changes]

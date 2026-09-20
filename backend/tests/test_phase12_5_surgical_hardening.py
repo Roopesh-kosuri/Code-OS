@@ -330,12 +330,13 @@ def test_multi_edit_anchor_resequence_applies_both(tmp_path):
         "    return 1\n"
         "\n"
         "def second():\n"
-        "    return 2\n"
+        "    val = 2\n"
+        "    return val\n"
     )
     f.write_text(initial_code, encoding="utf-8")
 
     staged = [
-        # Edit 1 expands first() by adding 3 lines
+        # Edit 1 expands first() by adding 2 lines
         FileChange(
             path="math_mod.py",
             updated="def first():\n    # new comment\n    val = 10\n    return val",
@@ -344,14 +345,14 @@ def test_multi_edit_anchor_resequence_applies_both(tmp_path):
             end_line=2,
             anchor="def first():\n    return 1",
         ),
-        # Edit 2 targets second() which originally was at line 4-5, but shifts down due to Edit 1
+        # Edit 2 targets second() which originally was at line 4-6, but shifts down due to Edit 1
         FileChange(
             path="math_mod.py",
-            updated="def second():\n    return 200",
-            original="def second():\n    return 2",
+            updated="def second():\n    val = 200\n    return val",
+            original="def second():\n    val = 2\n    return val",
             start_line=4,
-            end_line=5,
-            anchor="def second():\n    return 2",
+            end_line=6,
+            anchor="def second():\n    val = 2\n    return val",
         ),
     ]
 
@@ -360,7 +361,7 @@ def test_multi_edit_anchor_resequence_applies_both(tmp_path):
 
     disk_text = f.read_text(encoding="utf-8")
     assert "val = 10" in disk_text
-    assert "return 200" in disk_text
+    assert "val = 200" in disk_text
 
 
 def test_overlapping_patches_rejected_preapply_no_disk_touch(tmp_path):

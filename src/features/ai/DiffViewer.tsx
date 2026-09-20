@@ -30,6 +30,16 @@ type FileChange = {
   updated: string;
   start_line?: number;
   end_line?: number;
+  anchor?: string;
+  edit_type?: string;
+  anchor_state?: string;
+  relocation_event?: {
+    relocated?: boolean;
+    old_range?: [number, number];
+    new_range?: [number, number];
+    reason?: string;
+    reason_text?: string;
+  };
 };
 
 type Proposal = {
@@ -453,9 +463,18 @@ export function DiffViewer() {
                             )}
                           </div>
                           {isRangeEdit && (
-                            <span className="text-[10px] font-bold text-emerald-400 uppercase font-mono bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
-                              Range Edit (L{change.start_line}-{change.end_line})
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className={`text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded border ${
+                                (change.anchor || change.anchor_state === "anchored" || change.edit_type === "anchored")
+                                  ? "bg-cyan-500/10 text-cyan-300 border-cyan-500/30"
+                                  : "bg-zinc-500/10 text-zinc-300 border-zinc-500/30"
+                              }`}>
+                                {(change.anchor || change.anchor_state === "anchored" || change.edit_type === "anchored") ? "anchored" : "line-only"}
+                              </span>
+                              <span className="text-[10px] font-bold text-emerald-400 uppercase font-mono bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
+                                Range Edit (L{change.start_line}-{change.end_line})
+                              </span>
+                            </div>
                           )}
                           {isNewFile && !isRangeEdit && (
                             <span className="text-[10px] font-bold text-emerald-400 uppercase font-mono bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded">
@@ -463,6 +482,14 @@ export function DiffViewer() {
                             </span>
                           )}
                         </div>
+                        {change.relocation_event?.relocated && (
+                          <div className="p-2.5 bg-amber-500/15 border-b border-amber-500/30 text-amber-200 text-xs flex items-center gap-2 font-sans font-medium">
+                            <span className="text-amber-400 font-bold">⚠</span>
+                            <span>
+                              {change.relocation_event.reason_text || `File drifted — edit relocated from lines ${change.relocation_event.old_range?.[0] ?? "?"}-${change.relocation_event.old_range?.[1] ?? "?"} to lines ${change.relocation_event.new_range?.[0] ?? "?"}-${change.relocation_event.new_range?.[1] ?? "?"}`}
+                            </span>
+                          </div>
+                        )}
                         {isNewFile ? (
                           <div className="p-4 bg-emerald-500/5 max-h-72 overflow-y-auto font-code-sm text-code-sm font-mono">
                             <div className="text-emerald-400 font-bold uppercase tracking-wider text-[10px] mb-2">Creating File</div>

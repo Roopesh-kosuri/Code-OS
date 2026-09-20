@@ -565,7 +565,7 @@ def _handle_edit_range(workspace: str, arguments: dict, staged_changes: list) ->
         if disk_text.endswith("\n"):
             projected_content += "\n"
 
-        proj_ok, proj_err = check_projected_file_syntax(rel_path, projected_content)
+        proj_ok, proj_err = check_projected_file_syntax(rel_path, projected_content, original_content=disk_text)
         if not proj_ok:
             return ToolResult(tool_name="edit_range", success=False, output="", error=f"syntax_error: {proj_err}")
     except Exception as syn_exc:

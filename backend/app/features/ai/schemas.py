@@ -47,6 +47,7 @@ class FileChange(BaseModel):
     start_line: int | None = None
     end_line: int | None = None
     anchor: str | None = None
+    relocation_event: dict[str, Any] | None = None
 
 
 class EditProposalRequest(BaseModel):
@@ -124,6 +125,12 @@ class PendingApprovalDto(BaseModel):
     command: Optional[str] = None
     created_at: float
     expires_at: float
+    relocation_event: dict[str, Any] | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    edit_type: str | None = None
+    anchor_state: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class ResumeResponse(BaseModel):

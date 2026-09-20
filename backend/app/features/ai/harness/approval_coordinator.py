@@ -46,6 +46,8 @@ class PendingApproval:
     metadata: dict[str, Any] = field(default_factory=dict)
     integrity_status: str = "valid"
     integrity_warning: str | None = None
+    relocation_event: dict[str, Any] | None = None
+    replaced_by: str | None = None
     created_at: float = field(default_factory=time.time)
 
 
@@ -326,6 +328,7 @@ async def register_pending_approval(
         "agent_role": pending.agent_role,
         "task_id": tid,
         "metadata": pending.metadata,
+        "relocation_event": pending.relocation_event,
     }
     now = time.time()
     expires_at = now + expires_in_seconds
@@ -451,6 +454,7 @@ async def load_pending_approvals_from_db() -> list[dict]:
                 task_id=task_id,
                 agent_role=payload.get("agent_role", ""),
                 metadata=payload.get("metadata", {}),
+                relocation_event=payload.get("relocation_event") or payload.get("metadata", {}).get("relocation_event"),
                 created_at=created_at,
             )
             _pending_approvals[action_id] = pending
@@ -558,4 +562,116 @@ async def clear_pending_approvals_for_job(job_id: str) -> None:
     to_remove = [aid for aid, p in _pending_approvals.items() if p.metadata.get("job_id") == job_id or (p.task_id and job_id in p.task_id)]
     for aid in to_remove:
         await remove_pending_approval(aid)
+
+
+async def reread_and_restage_approval(action_id: str) -> dict[str, Any] | None:
+    """Non-auto-approving flow that invalidates old card and creates a fresh one (Phase 12.5.1 G2).
+
+    1. Reads target file on disk.
+    2. Updates bounds/anchor against current disk content.
+    3. Re-stages the edit with relocated: False.
+    4. Creates a fresh PendingApproval (requires fresh user approval).
+    5. Invalidates and sets replaced_by on old approval.
+    """
+    import uuid
+    from app.core.paths import ensure_within_workspace
+
+    pending = _pending_approvals.get(action_id)
+    if not pending:
+        await load_pending_approvals_from_db()
+        pending = _pending_approvals.get(action_id)
+    if not pending:
+        return None
+
+    new_action_id = str(uuid.uuid4())
+    ws = pending.workspace
+    rel_p = pending.path
+
+    start_line = pending.metadata.get("start_line")
+    end_line = pending.metadata.get("end_line")
+    reloc_evt = pending.relocation_event or pending.metadata.get("relocation_event")
+    if reloc_evt and reloc_evt.get("new_range"):
+        start_line, end_line = reloc_evt["new_range"]
+
+    # Re-read file content from disk
+    try:
+        full_p = ensure_within_workspace(ws, rel_p)
+        disk_content = full_p.read_text(encoding="utf-8", errors="replace")
+        disk_lines = disk_content.splitlines()
+        total_lines = len(disk_lines)
+    except Exception as exc:
+        logger.error("Failed to re-read file %s: %s", rel_p, exc)
+        return None
+
+    if start_line is not None:
+        start_line = max(1, min(int(start_line), max(1, total_lines)))
+        if end_line is not None:
+            end_line = max(start_line, min(int(end_line), total_lines))
+
+    new_meta = dict(pending.metadata or {})
+    new_meta["start_line"] = start_line
+    new_meta["end_line"] = end_line
+    new_meta["edit_type"] = "anchored"
+    new_meta["anchor_state"] = "anchored"
+    resolved_reloc = {
+        "relocated": False,
+        "old_range": [start_line, end_line] if start_line is not None and end_line is not None else None,
+        "new_range": [start_line, end_line] if start_line is not None and end_line is not None else None,
+        "reason": "reread_confirmed",
+        "reason_text": f"Re-read against current disk at lines {start_line}-{end_line}" if start_line else "Re-read against current disk",
+    }
+    new_meta["relocation_event"] = resolved_reloc
+
+    new_pending = PendingApproval(
+        action_id=new_action_id,
+        action_type=pending.action_type,
+        detail=f"lines {start_line}-{end_line} of {rel_p}" if start_line and end_line else pending.detail,
+        reason=f"Rony Agent wants to modify {rel_p} (re-read anchored)",
+        proposal_id=pending.proposal_id,
+        path=rel_p,
+        diff_summary=pending.diff_summary,
+        workspace=ws,
+        command=pending.command,
+        approved=False,
+        task_id=pending.task_id,
+        agent_role=pending.agent_role,
+        metadata=new_meta,
+        integrity_status=pending.integrity_status,
+        integrity_warning=pending.integrity_warning,
+        relocation_event=resolved_reloc,
+    )
+
+    _pending_approvals[new_action_id] = new_pending
+    pending.replaced_by = new_action_id
+    pending.approved = False
+    pending.event.set()
+    await remove_pending_approval(action_id)
+
+    try:
+        await save_pending_approval(new_pending, workspace=ws, task_id=pending.task_id)
+    except Exception as s_err:
+        logger.debug("Failed to persist re-read pending approval to db: %s", s_err)
+
+    return {
+        "status": "restaged",
+        "old_action_id": action_id,
+        "new_action_id": new_action_id,
+        "approval": {
+            "action_id": new_action_id,
+            "action_type": new_pending.action_type,
+            "detail": new_pending.detail,
+            "reason": new_pending.reason,
+            "proposal_id": new_pending.proposal_id,
+            "path": new_pending.path,
+            "diff_summary": new_pending.diff_summary,
+            "start_line": start_line,
+            "end_line": end_line,
+            "edit_type": "anchored",
+            "anchor_state": "anchored",
+            "relocation_event": resolved_reloc,
+            "metadata": new_meta,
+            "integrity_status": new_pending.integrity_status,
+            "integrity_warning": new_pending.integrity_warning,
+        },
+    }
 
