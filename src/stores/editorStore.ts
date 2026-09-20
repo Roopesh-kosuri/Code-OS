@@ -78,47 +78,86 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   openFile: async (filePath) => {
     console.info("[editor.open] requested", filePath);
-    useWorkspaceStore.getState().selectWorkspaceForPath(filePath);
-    const workspace = useWorkspaceStore.getState().currentWorkspace;
-    if (!workspace) {
-      return;
-    }
-    get().addToRecentFiles(filePath);
-    const existing = get().openFiles.find((file) => file.path === filePath);
-    if (existing) {
-      // Rehydrate if previously evicted
-      if (existing.content === "" && evictedTabCache.has(filePath)) {
-        const cached = evictedTabCache.get(filePath) || "";
-        set((state) => ({
-          openFiles: state.openFiles.map((f) => f.path === filePath ? { ...f, content: cached } : f),
-          activePath: filePath,
-        }));
-        evictedTabCache.delete(filePath);
-        return;
-      }
-      set({ activePath: filePath });
-      return;
-    }
-    const response = await api.get<{ path: string; content: string; language: string }>("/api/files/read", {
-      workspace: workspace.path,
-      path: filePath
-    });
-    console.info("[editor.open] loaded", { path: filePath, language: response.language, bytes: response.content.length });
-    set((state) => {
-      const cleanContent = normalizeEol(response.content || "");
-      let files = [...state.openFiles, { path: filePath, name: filename(filePath), content: cleanContent, language: response.language, dirty: false }];
-      // If over MAX_LIVE_TABS, evict the oldest inactive, clean tab to background cache
-      if (files.length > MAX_LIVE_TABS) {
-        const evictIndex = files.findIndex((f) => f.path !== filePath && !f.dirty && f.content.length > 0);
-        if (evictIndex >= 0) {
-          const toEvict = files[evictIndex];
-          evictedTabCache.set(toEvict.path, toEvict.content);
-          files[evictIndex] = { ...toEvict, content: "" };
+    try {
+      useWorkspaceStore.getState().selectWorkspaceForPath(filePath);
+      let workspace = useWorkspaceStore.getState().currentWorkspace;
+
+      // If no current workspace matches, infer workspace from the file's parent directory
+      if (!workspace) {
+        const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
+        const parentFolder = lastSlash > 0 ? filePath.slice(0, lastSlash) : null;
+        if (parentFolder) {
+          try {
+            await useWorkspaceStore.getState().completeWorkspaceOpen(parentFolder);
+            workspace = useWorkspaceStore.getState().currentWorkspace;
+          } catch (e) {
+            console.warn("[editor.open] auto-workspace inference failed:", e);
+          }
         }
       }
-      return { openFiles: files, activePath: filePath };
-    });
-    localStorage.setItem("code-os:open-tabs", JSON.stringify(get().openFiles.map((file) => file.path)));
+
+      const workspacePath = workspace?.path || (filePath.includes("/") || filePath.includes("\\")
+        ? filePath.slice(0, Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\")))
+        : ".");
+
+      get().addToRecentFiles(filePath);
+      const existing = get().openFiles.find((file) => file.path === filePath);
+      if (existing) {
+        // Rehydrate if previously evicted
+        if (existing.content === "" && evictedTabCache.has(filePath)) {
+          const cached = evictedTabCache.get(filePath) || "";
+          set((state) => ({
+            openFiles: state.openFiles.map((f) => f.path === filePath ? { ...f, content: cached } : f),
+            activePath: filePath,
+          }));
+          evictedTabCache.delete(filePath);
+          return;
+        }
+        set({ activePath: filePath });
+        return;
+      }
+
+      const response = await api.get<{ path: string; content: string; language: string }>("/api/files/read", {
+        workspace: workspacePath,
+        path: filePath
+      });
+      console.info("[editor.open] loaded", { path: filePath, language: response.language, bytes: response.content.length });
+      set((state) => {
+        const cleanContent = normalizeEol(response.content || "");
+        let files = [...state.openFiles, { path: filePath, name: filename(filePath), content: cleanContent, language: response.language, dirty: false }];
+        // If over MAX_LIVE_TABS, evict the oldest inactive, clean tab to background cache
+        if (files.length > MAX_LIVE_TABS) {
+          const evictIndex = files.findIndex((f) => f.path !== filePath && !f.dirty && f.content.length > 0);
+          if (evictIndex >= 0) {
+            const toEvict = files[evictIndex];
+            evictedTabCache.set(toEvict.path, toEvict.content);
+            files[evictIndex] = { ...toEvict, content: "" };
+          }
+        }
+        return { openFiles: files, activePath: filePath };
+      });
+      try {
+        localStorage.setItem("code-os:open-tabs", JSON.stringify(get().openFiles.map((file) => file.path)));
+      } catch {}
+    } catch (err: any) {
+      console.error("[editor.open] failed to open file:", filePath, err);
+      const errMsg = err?.message || "Could not read file from disk";
+      const isConnectionError = errMsg.includes("fetch") || errMsg.includes("connect") || errMsg.includes("Network") || errMsg.includes("token");
+      const helpfulDetail = isConnectionError
+        ? `Could not connect to the CODE OS backend to read "${filename(filePath)}". Please ensure the local backend is connected.`
+        : `Error reading "${filePath}": ${errMsg}`;
+
+      set((state) => {
+        const files = [...state.openFiles.filter(f => f.path !== filePath), {
+          path: filePath,
+          name: filename(filePath),
+          content: `// ⚠️ Unable to open file: ${filename(filePath)}\n// ${helpfulDetail}\n`,
+          language: "plaintext",
+          dirty: false,
+        }];
+        return { openFiles: files, activePath: filePath };
+      });
+    }
   },
   closeFile: (filePath) =>
     set((state) => {

@@ -35,13 +35,13 @@ async def tree(
     path: str | None = Query(None),
     depth: int | None = Query(None),
 ) -> TreeResponse:
-    await _ensure_trusted(workspace)
+    # Read-only directory browsing is permitted in both Trusted and Restricted modes
     return TreeResponse(root=build_tree(workspace, max_depth=max_depth, path=path, depth=depth))
 
 
 @router.get("/read", response_model=FileReadResponse)
 async def read(workspace: str = Query(...), path: str = Query(...)) -> FileReadResponse:
-    await _ensure_trusted(workspace)
+    # Read-only file inspection is permitted in both Trusted and Restricted modes
     content, language = read_file(workspace, path)
     return FileReadResponse(path=path, content=content, language=language)
 

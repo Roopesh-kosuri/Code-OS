@@ -15,16 +15,20 @@ def get_user_data_dir() -> Path:
 
     if sys.platform == "win32":
         app_data = os.environ.get("APPDATA")
-        if app_data:
-            return Path(app_data) / "code_os"
-        return Path.home() / "AppData" / "Roaming" / "code_os"
+        base = Path(app_data) if app_data else Path.home() / "AppData" / "Roaming"
+        # Align with Electron app.getPath("userData") which resolves to "code-os"
+        cand_hyphen = base / "code-os"
+        cand_under = base / "code_os"
+        if cand_hyphen.exists() or not cand_under.exists():
+            return cand_hyphen
+        return cand_under
     elif sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "code_os"
+        base = Path.home() / "Library" / "Application Support"
+        return (base / "code-os") if (base / "code-os").exists() else (base / "code_os")
     else:
         xdg = os.environ.get("XDG_CONFIG_HOME")
-        if xdg:
-            return Path(xdg) / "code_os"
-        return Path.home() / ".config" / "code_os"
+        base = Path(xdg) if xdg else Path.home() / ".config"
+        return (base / "code-os") if (base / "code-os").exists() else (base / "code_os")
 
 
 class Settings(BaseSettings):

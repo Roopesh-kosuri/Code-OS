@@ -22,6 +22,35 @@ function getAppPathSafe(): string {
   }
 }
 
+export function killPort(port: number = 8000): void {
+  try {
+    if (process.platform === "win32") {
+      const netstatOutput = execSync("netstat -ano -p tcp", { stdio: "pipe" }).toString();
+      const pidsToKill = new Set<string>();
+      for (const line of netstatOutput.split(/\r?\n/)) {
+        if (!line.includes("LISTENING")) continue;
+        if (line.includes(`:${port} `) || line.includes(`:${port}\t`)) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parts[parts.length - 1];
+          if (pid && pid !== "0" && pid !== String(process.pid)) {
+            pidsToKill.add(pid);
+          }
+        }
+      }
+      for (const pid of pidsToKill) {
+        try {
+          execSync(`taskkill /F /T /PID ${pid}`, { stdio: "ignore" });
+        } catch {}
+      }
+    } else {
+      const pids = execSync(`lsof -ti :${port}`, { stdio: "pipe" }).toString().trim();
+      if (pids) {
+        execSync(`kill -9 ${pids.split(/\s+/).join(" ")}`, { stdio: "ignore" });
+      }
+    }
+  } catch {}
+}
+
 export interface BackendSpawnOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -325,12 +354,20 @@ export class BackendProcess {
     }
 
     if (await this.isBackendHealthy()) {
-      console.log("[backend] Reusing existing backend on 127.0.0.1:8000");
       const token = findToken();
-      if (token) {
+      if (token && (await this.verifyTokenWithBackend(token))) {
+        console.log("[backend] Reusing existing healthy backend on 127.0.0.1:8000 with valid session token");
+        this.sessionToken = token;
         this._tokenResolve(token);
         return;
       }
+      console.warn("[backend] Existing process on port 8000 is unhealthy or token rejected; terminating stale process");
+      killPort(8000);
+      await new Promise((r) => setTimeout(r, 400));
+    } else {
+      // Ensure port 8000 is completely free of any zombie or hung processes
+      killPort(8000);
+      await new Promise((r) => setTimeout(r, 200));
     }
 
     const backendDir = path.join(process.resourcesPath, "backend");
@@ -491,32 +528,46 @@ export class BackendProcess {
     catch { return false; }
   }
 
+  async verifyTokenWithBackend(token: string): Promise<boolean> {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/workspaces", {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(1000),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   stop(): void {
     this.isStopping = true;
     if (this._restartTimer) {
       clearTimeout(this._restartTimer);
       this._restartTimer = null;
     }
-    if (!this.process) return;
-    const proc = this.process;
-    this.process = null;
-    try {
-      if (proc.pid && process.platform === "win32") {
-        try {
-          execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "ignore" });
-        } catch {}
+    if (this.process) {
+      const proc = this.process;
+      this.process = null;
+      try {
+        if (proc.pid && process.platform === "win32") {
+          try {
+            execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "ignore" });
+          } catch {}
+        }
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          try {
+            if (proc && !proc.killed) {
+              proc.kill("SIGKILL");
+            }
+          } catch {}
+        }, 3000);
+      } catch {
+        proc.kill();
       }
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        try {
-          if (proc && !proc.killed) {
-            proc.kill("SIGKILL");
-          }
-        } catch {}
-      }, 3000);
-    } catch {
-      proc.kill();
     }
+    killPort(8000);
   }
 
   async restart(): Promise<void> {
