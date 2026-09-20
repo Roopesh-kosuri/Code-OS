@@ -1568,6 +1568,23 @@ def stage_rollback(
     return True, None
 
 
+def _cleanup_stale_trash(ws_path: Path) -> None:
+    """Best-effort cleanup of stale crash-leftover directories in .code_os/trash."""
+    trash_base = ws_path / ".code_os" / "trash"
+    if trash_base.is_dir():
+        try:
+            for entry in list(trash_base.iterdir()):
+                try:
+                    if entry.is_dir():
+                        shutil.rmtree(str(entry), ignore_errors=True)
+                    elif entry.is_file():
+                        entry.unlink(missing_ok=True)
+                except Exception as e:
+                    logger.debug("Failed cleaning stale trash entry %s: %s", entry, e)
+        except Exception as iter_err:
+            logger.debug("Failed iterating trash directory %s: %s", trash_base, iter_err)
+
+
 # ── Public API Coordinator ──────────────────────────────────────────────────
 
 def apply_mutations(
@@ -1588,6 +1605,10 @@ def apply_mutations(
     """
     if not mutations:
         return MutationResult(success=True)
+
+    # Clean any stale trash left by a simulated crash on next call
+    ws_norm_path = normalize_workspace(str(workspace_root))
+    _cleanup_stale_trash(ws_norm_path)
 
     # Normalize mutation objects
     typed_mutations: list[Mutation] = []

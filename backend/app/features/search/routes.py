@@ -43,19 +43,22 @@ async def text(
 async def replace(payload: ReplaceRequest) -> list[ReplaceResult]:
     if payload.apply:
         await _ensure_trusted(payload.workspace)
-    return [
-        ReplaceResult(path=str(path), replacements=count)
-        for path, count in replace_text(
-            payload.workspace,
-            payload.query,
-            payload.replacement,
-            payload.apply,
-            payload.regex,
-            payload.case_sensitive,
-            payload.whole_word,
-            payload.files,
-        )
-    ]
+    results = []
+    for item in replace_text(
+        payload.workspace,
+        payload.query,
+        payload.replacement,
+        payload.apply,
+        payload.regex,
+        payload.case_sensitive,
+        payload.whole_word,
+        payload.files,
+    ):
+        path, count = item[0], item[1]
+        skipped = getattr(item, "skipped", False)
+        skip_reason = getattr(item, "skip_reason", None)
+        results.append(ReplaceResult(path=str(path), replacements=count, skipped=skipped, skip_reason=skip_reason))
+    return results
 
 
 @router.get("/symbols", response_model=list[SymbolResult])

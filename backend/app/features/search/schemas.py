@@ -27,6 +27,8 @@ class ReplaceRequest(BaseModel):
 class ReplaceResult(BaseModel):
     path: str
     replacements: int
+    skipped: bool = False
+    skip_reason: str | None = None
 
 
 class SymbolResult(BaseModel):

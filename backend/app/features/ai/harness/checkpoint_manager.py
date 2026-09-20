@@ -176,6 +176,7 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
 
     restored: list[str] = []
     failures: list[str] = []
+    from .mutation_pipeline import Mutation, MutationKind, apply_mutations
     try:
         for rf in rel_paths:
             fp = ws_path / rf
@@ -186,16 +187,16 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
                 timeout=15.0,
             )
             if snapshot.returncode == 0:
-                fp.parent.mkdir(parents=True, exist_ok=True)
-                fp.write_bytes(snapshot.stdout)
+                mut = Mutation(kind=MutationKind.WRITE_FULL, path=rf, raw_bytes=snapshot.stdout)
+                res = apply_mutations(str(ws_path), [mut], mode="FS_OP")
+                if not res.success:
+                    rej_text = res.rejection.reason_text if res.rejection else "mutation failed"
+                    failures.append(f"{rf}: {rej_text}")
+                    continue
                 if not fp.is_file() or hashlib.sha256(fp.read_bytes()).digest() != hashlib.sha256(snapshot.stdout).digest():
                     failures.append(f"{rf}: restored bytes do not match checkpoint")
                 else:
                     restored.append(rf)
-                    try:
-                        invalidate_file(fp)
-                    except Exception as inv_err:
-                        logger.warning("Failed to invalidate %s after restore: %s", rf, inv_err)
                 continue
 
             snapshot_error = snapshot.stderr.decode("utf-8", errors="replace")
@@ -209,7 +210,12 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
                 if fp.is_dir():
                     failures.append(f"{rf}: expected file path is a directory")
                     continue
-                fp.unlink()
+                mut = Mutation(kind=MutationKind.DELETE, path=rf, missing_ok=True)
+                res = apply_mutations(str(ws_path), [mut], mode="FS_OP")
+                if not res.success:
+                    rej_text = res.rejection.reason_text if res.rejection else "delete failed"
+                    failures.append(f"{rf}: {rej_text}")
+                    continue
             parent = fp.parent
             while parent != ws_path:
                 try:
@@ -221,10 +227,6 @@ def undo_turn_files(workspace: str, commit_hash: str, touched_files: list[str]) 
                 failures.append(f"{rf}: created path still exists after rollback")
             else:
                 restored.append(rf)
-                try:
-                    invalidate_file(fp)
-                except Exception as inv_err:
-                    logger.warning("Failed to invalidate %s after unlink: %s", rf, inv_err)
     except Exception as exc:
         return False, f"Undo operation failed: {exc}", restored
 

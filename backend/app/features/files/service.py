@@ -5,11 +5,12 @@ import logging
 import threading
 from collections import OrderedDict
 from pathlib import Path
+from typing import Any
 
 from fastapi import HTTPException
 from ...core.errors import AppError, ErrorCode
 
-from ...core.paths import IGNORED_DIRS, ensure_file, ensure_within_workspace, normalize_path
+from ...core.paths import IGNORED_DIRS, ensure_file, ensure_within_workspace, normalize_path, normalize_workspace
 from .schemas import FileNode
 
 logger = logging.getLogger(__name__)
@@ -274,6 +275,19 @@ def read_file(workspace: str, path: str) -> tuple[str, str]:
     return _normalize_eol(raw), LANGUAGE_BY_SUFFIX.get(target.suffix.lower(), "plaintext")
 
 
+def _raise_rejection(res: Any) -> None:
+    rej = res.rejection
+    reason = rej.reason_text if rej else "Operation failed"
+    code = rej.code if rej else ""
+    if code in ("path_outside_workspace", "symlink_escape", "security_error", "protected_path"):
+        raise HTTPException(status_code=403, detail=reason)
+    if code in ("destination_exists",):
+        raise HTTPException(status_code=409, detail=reason)
+    if code in ("path_not_found",):
+        raise HTTPException(status_code=404, detail=reason)
+    raise HTTPException(status_code=400, detail=reason)
+
+
 def create_entry(workspace: str, path: str, entry_type: str) -> Path:
     if not path or not str(path).strip():
         raise HTTPException(status_code=400, detail="Name cannot be empty")
@@ -282,52 +296,95 @@ def create_entry(workspace: str, path: str, entry_type: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid name")
     if any(c in INVALID_FILENAME_CHARS for c in target.name) or ":" in target.name:
         raise HTTPException(status_code=400, detail=f"Invalid characters in filename: {target.name}")
+    if entry_type not in ("directory", "file"):
+        raise HTTPException(status_code=400, detail="type must be file or directory")
     if target.exists():
         raise HTTPException(status_code=409, detail=f"Path already exists: {target.name}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if entry_type == "directory":
-        target.mkdir()
-    elif entry_type == "file":
-        target.write_text("", encoding="utf-8")
-    else:
-        raise HTTPException(status_code=400, detail="type must be file or directory")
     
-    directory_cache.invalidate(workspace)
+    ws_norm = normalize_workspace(workspace)
+    try:
+        rel = str(target.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel = str(target).replace("\\", "/")
+
+    if entry_type == "directory":
+        mut = Mutation(kind=MutationKind.MKDIR, path=rel)
+    else:
+        mut = Mutation(kind=MutationKind.CREATE, path=rel, new_content="")
+    
+    res = apply_mutations(workspace, [mut], mode="FS_OP")
+    if not res.success:
+        _raise_rejection(res)
     return target
 
 
 def delete_entry(workspace: str, path: str) -> None:
     target = ensure_within_workspace(workspace, path)
-    if target.is_dir():
-        shutil.rmtree(target)
-    elif target.is_file():
-        target.unlink()
-    else:
+    if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
-    directory_cache.invalidate(workspace)
+    
+    ws_norm = normalize_workspace(workspace)
+    try:
+        rel = str(target.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel = str(target).replace("\\", "/")
+
+    mut = Mutation(kind=MutationKind.DELETE, path=rel)
+    res = apply_mutations(workspace, [mut], mode="FS_OP")
+    if not res.success:
+        _raise_rejection(res)
 
 
 def rename_entry(workspace: str, path: str, new_name: str) -> Path:
     if any(part in new_name for part in ("/", "\\")) or new_name in {"", ".", ".."}:
         raise HTTPException(status_code=400, detail="Invalid name")
     source = ensure_within_workspace(workspace, path)
+    if not source.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
     destination = source.with_name(new_name)
     ensure_within_workspace(workspace, str(destination))
     if destination.exists():
         raise HTTPException(status_code=409, detail="Destination exists")
-    source.rename(destination)
-    directory_cache.invalidate(workspace)
+    
+    ws_norm = normalize_workspace(workspace)
+    try:
+        rel_src = str(source.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel_src = str(source).replace("\\", "/")
+    try:
+        rel_dst = str(destination.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel_dst = str(destination).replace("\\", "/")
+
+    mut = Mutation(kind=MutationKind.RENAME_MOVE, old_path=rel_src, new_path=rel_dst, overwrite=False)
+    res = apply_mutations(workspace, [mut], mode="FS_OP")
+    if not res.success:
+        _raise_rejection(res)
     return destination
 
 
 def move_entry(workspace: str, source: str, destination: str) -> Path:
     source_path = ensure_within_workspace(workspace, source)
+    if not source_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
     destination_path = ensure_within_workspace(workspace, destination)
     if destination_path.exists():
         raise HTTPException(status_code=409, detail="Destination exists")
-    destination_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(source_path), str(destination_path))
-    directory_cache.invalidate(workspace)
+    
+    ws_norm = normalize_workspace(workspace)
+    try:
+        rel_src = str(source_path.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel_src = str(source_path).replace("\\", "/")
+    try:
+        rel_dst = str(destination_path.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel_dst = str(destination_path).replace("\\", "/")
+
+    mut = Mutation(kind=MutationKind.RENAME_MOVE, old_path=rel_src, new_path=rel_dst, overwrite=False)
+    res = apply_mutations(workspace, [mut], mode="FS_OP")
+    if not res.success:
+        _raise_rejection(res)
     return destination_path
 
 
@@ -338,12 +395,21 @@ def duplicate_entry(workspace: str, path: str, destination: str | None = None) -
     target = ensure_within_workspace(workspace, destination) if destination else _next_copy_path(source)
     if target.exists():
         raise HTTPException(status_code=409, detail="Destination exists")
-    if source.is_dir():
-        shutil.copytree(source, target)
-    else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    directory_cache.invalidate(workspace)
+    
+    ws_norm = normalize_workspace(workspace)
+    try:
+        rel_src = str(source.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel_src = str(source).replace("\\", "/")
+    try:
+        rel_dst = str(target.relative_to(ws_norm)).replace("\\", "/")
+    except ValueError:
+        rel_dst = str(target).replace("\\", "/")
+
+    mut = Mutation(kind=MutationKind.COPY, src_path=rel_src, dst_path=rel_dst)
+    res = apply_mutations(workspace, [mut], mode="FS_OP")
+    if not res.success:
+        _raise_rejection(res)
     return target
 
 
@@ -386,13 +452,7 @@ def write_file(workspace: str, path: str, content: str) -> None:
     mut = Mutation(kind=MutationKind.WRITE_FULL, path=path, new_content=_normalize_eol(content))
     res = apply_mutations(workspace, [mut], mode="USER_SAVE")
     if not res.success:
-        rej = res.rejection
-        reason = rej.reason_text if rej else "Write failed"
-        code = rej.code if rej else ""
-        if code in ("path_outside_workspace", "symlink_escape", "security_error"):
-            raise HTTPException(status_code=403, detail=reason)
-        raise HTTPException(status_code=400, detail=reason)
-    directory_cache.invalidate(workspace)
+        _raise_rejection(res)
 
 
 def reveal_entry(workspace: str, path: str) -> None:

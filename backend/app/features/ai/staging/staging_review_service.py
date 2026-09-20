@@ -557,7 +557,7 @@ def apply_approved_changes(job_id: str) -> Dict[str, Any]:
 
     from app.features.ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
 
-    write_mutations: list[Mutation] = []
+    batch_mutations: list[Mutation] = []
     files_to_write: list[str] = []
     files_to_delete: list[str] = []
     rejected_files: list[str] = []
@@ -565,10 +565,15 @@ def apply_approved_changes(job_id: str) -> Dict[str, Any]:
     for path, entry in list(job_data["files"].items()):
         if path in validated_targets:
             if entry["status"] == "deleted" and entry.get("approved", False):
+                batch_mutations.append(Mutation(
+                    kind=MutationKind.DELETE,
+                    path=path,
+                    missing_ok=True,
+                ))
                 files_to_delete.append(path)
             else:
                 final_content = _reconstruct_file_content(entry)
-                write_mutations.append(Mutation(
+                batch_mutations.append(Mutation(
                     kind=MutationKind.WRITE_FULL,
                     path=path,
                     new_content=final_content.replace("\r\n", "\n").replace("\r", "\n"),
@@ -577,8 +582,8 @@ def apply_approved_changes(job_id: str) -> Dict[str, Any]:
         else:
             rejected_files.append(path)
 
-    if write_mutations:
-        res = apply_mutations(workspace, write_mutations, mode="AGENT")
+    if batch_mutations:
+        res = apply_mutations(workspace, batch_mutations, mode="AGENT")
         if not res.success:
             return {
                 "success": False,
@@ -586,15 +591,6 @@ def apply_approved_changes(job_id: str) -> Dict[str, Any]:
                 "applied_files": [],
                 "rejected_files": list(job_data["files"].keys()),
             }
-
-    # Handle Part 3b deletions
-    for path in files_to_delete:
-        full_path = validated_targets[path]
-        if full_path.exists():
-            try:
-                full_path.unlink()
-            except Exception as e:
-                logger.error("Failed to delete %s: %s", full_path, e)
 
     applied_files = files_to_write + files_to_delete
 

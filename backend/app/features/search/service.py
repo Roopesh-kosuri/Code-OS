@@ -1,7 +1,9 @@
 import os
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from fastapi import HTTPException
 
 from ...core.paths import IGNORED_DIRS, normalize_path
@@ -145,6 +147,25 @@ def search_text(
     return matches
 
 
+@dataclass
+class ReplaceEntry:
+    path: Path
+    count: int
+    skipped: bool = False
+    skip_reason: Optional[str] = None
+
+    def __iter__(self):
+        yield self.path
+        yield self.count
+
+    def __getitem__(self, idx: int):
+        if idx == 0:
+            return self.path
+        elif idx == 1:
+            return self.count
+        raise IndexError("ReplaceEntry only supports index 0 (path) and 1 (count)")
+
+
 def replace_text(
     workspace: str,
     query: str,
@@ -154,8 +175,8 @@ def replace_text(
     case_sensitive: bool = False,
     whole_word: bool = False,
     files: list[str] | None = None,
-) -> list[tuple[Path, int]]:
-    results: list[tuple[Path, int]] = []
+) -> list[ReplaceEntry]:
+    results: list[ReplaceEntry] = []
     if not query:
         return results
 
@@ -171,6 +192,9 @@ def replace_text(
             if str(f).lower().replace("\\", "/") in normalized_targets
         ]
 
+    pending_mutations: list[tuple[Path, str, str, int]] = []
+    ws_norm = normalize_path(workspace)
+
     for path in target_files:
         if time.monotonic() - start_time > REGEX_TIMEOUT_SECONDS:
             raise HTTPException(
@@ -178,14 +202,36 @@ def replace_text(
                 detail=f"Regex execution timed out (> {REGEX_TIMEOUT_SECONDS}s)"
             )
         try:
-            original = path.read_text(encoding="utf-8", errors="ignore")
-            updated, count = matcher.subn(replacement, original)
-            if count > 0:
-                results.append((path, count))
-                if apply:
-                    path.write_text(updated, encoding="utf-8")
+            raw_bytes = path.read_bytes()
         except OSError:
             continue
+
+        try:
+            original = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            results.append(ReplaceEntry(path=path, count=0, skipped=True, skip_reason="encoding"))
+            continue
+
+        updated, count = matcher.subn(replacement, original)
+        if count > 0:
+            results.append(ReplaceEntry(path=path, count=count))
+            try:
+                rel = str(path.relative_to(ws_norm)).replace("\\", "/")
+            except ValueError:
+                rel = str(path).replace("\\", "/")
+            pending_mutations.append((path, rel, updated, count))
+
+    if apply and pending_mutations:
+        from ..ai.harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+        mutations = [
+            Mutation(kind=MutationKind.WRITE_FULL, path=rel, new_content=upd)
+            for _, rel, upd, _ in pending_mutations
+        ]
+        res = apply_mutations(workspace, mutations, mode="FS_OP")
+        if not res.success:
+            rej = res.rejection
+            reason = rej.reason_text if rej else "Failed to apply replacements"
+            raise HTTPException(status_code=500, detail=f"Replace failed: {reason}")
 
     return results
 

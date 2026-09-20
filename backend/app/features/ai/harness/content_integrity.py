@@ -323,6 +323,12 @@ def validate_language_syntax(path: str, content: str, original_content: str | No
             has_js_keywords = any(kw in words for kw in _JS_CODE_KEYWORDS)
             has_code_puncts = any(c in content for c in (";", "{", "}", "=", "(", ")", "=>"))
             if not has_js_keywords and not has_code_puncts:
+                if original_content is not None:
+                    orig_words = set(re.findall(r"\b[a-zA-Z_]\w*\b", original_content))
+                    orig_has_js = any(kw in orig_words for kw in _JS_CODE_KEYWORDS)
+                    orig_has_puncts = any(c in original_content for c in (";", "{", "}", "=", "(", ")", "=>"))
+                    if not orig_has_js and not orig_has_puncts:
+                        return True, ""
                 return False, f"File '{path}' contains conversational prose rather than valid JavaScript/TypeScript code"
 
     return True, ""
