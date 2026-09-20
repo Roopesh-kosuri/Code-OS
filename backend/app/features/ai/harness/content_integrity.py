@@ -147,12 +147,57 @@ def _evaluate_source_syntax(norm_lang: str, source: str, language_filename: str 
     return True, ""
 
 
+def _count_syntax_errors(norm_lang: str, source: str) -> int:
+    """Estimate number of syntax errors in code source to compare pre vs post patch (Phase 12.5.1 V5)."""
+    if not source or not source.strip():
+        return 0
+
+    if norm_lang in ("py", "pyw"):
+        try:
+            ast.parse(source)
+            return 0
+        except SyntaxError:
+            pass
+        # Count errors across top-level blocks
+        count = 0
+        blocks = re.split(r'(?m)^(def |class |async def )', source)
+        reconstructed = []
+        if blocks[0].strip():
+            reconstructed.append(blocks[0])
+        for i in range(1, len(blocks), 2):
+            reconstructed.append(blocks[i] + (blocks[i + 1] if i + 1 < len(blocks) else ""))
+        for b in reconstructed:
+            if not b.strip():
+                continue
+            try:
+                ast.parse(b)
+            except SyntaxError:
+                count += 1
+        return max(count, 1)
+
+    if norm_lang in ("js", "jsx", "ts", "tsx", "mjs", "cjs", "c", "cpp", "cc", "cxx", "h", "hpp", "java", "cs"):
+        diff_braces = abs(source.count("{") - source.count("}"))
+        diff_parens = abs(source.count("(") - source.count(")"))
+        diff_brackets = abs(source.count("[") - source.count("]"))
+        return diff_braces + diff_parens + diff_brackets
+
+    if norm_lang == "json":
+        try:
+            json.loads(source)
+            return 0
+        except json.JSONDecodeError:
+            return 1
+
+    return 0
+
+
 def syntax_check(language: str, source: str, original_source: str | None = None) -> tuple[bool, str]:
     """Unified syntax checker enforcing Phase 12.5.1 G5 5-branch fail-mode contract.
 
     Branches:
     1. Recognized code ext + checker available + newly broken -> FAIL-CLOSED with precise diagnostic.
-    2. Pre-existing breakage: if original was already broken and patch does not worsen -> ALLOW.
+    2. Pre-existing breakage: if original was already broken and patch does not worsen (error count unchanged or reduced) -> ALLOW.
+       If patch introduces additional errors (error count increases) -> REJECT.
     3. Recognized code ext + checker unavailable -> FAIL-OPEN, log INFO, print [SYNTAX_SKIP], report 'syntax: unchecked'.
     4. Non-code extension -> FAIL-OPEN, print [SYNTAX_SKIPPED_NONCODE].
     5. Internal error / crash during check -> FAIL-OPEN, log WARNING, print [SYNTAX_INTERNAL_ERROR].
@@ -180,14 +225,20 @@ def syntax_check(language: str, source: str, original_source: str | None = None)
         if ok:
             return True, ""
 
-        # Branch 2: Pre-existing breakage rule
+        # Branch 2: Pre-existing breakage rule with error count comparison
         if original_source is not None:
             try:
                 orig_ok, orig_err = _evaluate_source_syntax(norm_lang, original_source, language)
                 if not orig_ok:
-                    logger.info("syntax: file already broken pre-patch, patch does not worsen")
-                    print(f"[SYNTAX_PREEXISTING_BROKEN] ext={norm_lang}")
-                    return True, "syntax: file already broken pre-patch, patch does not worsen"
+                    orig_count = _count_syntax_errors(norm_lang, original_source)
+                    new_count = _count_syntax_errors(norm_lang, source)
+                    if new_count <= orig_count:
+                        logger.info("syntax: file already broken pre-patch (%d errors), patch does not worsen (%d errors)", orig_count, new_count)
+                        print(f"[SYNTAX_PREEXISTING_BROKEN] ext={norm_lang}")
+                        return True, "syntax: file already broken pre-patch, patch does not worsen"
+                    else:
+                        logger.warning("syntax: file already broken pre-patch (%d errors), but patch worsened it (%d errors)", orig_count, new_count)
+                        return False, f"Syntax worsened: introduced additional syntax error(s) (from {orig_count} to {new_count}): {err}"
             except Exception as orig_exc:
                 logger.debug("syntax: error checking original_source: %s", orig_exc)
 

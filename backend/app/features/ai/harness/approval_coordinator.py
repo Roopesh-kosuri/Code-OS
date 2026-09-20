@@ -48,6 +48,7 @@ class PendingApproval:
     integrity_warning: str | None = None
     relocation_event: dict[str, Any] | None = None
     replaced_by: str | None = None
+    status: str = "pending"
     created_at: float = field(default_factory=time.time)
 
 
@@ -611,6 +612,7 @@ async def reread_and_restage_approval(action_id: str) -> dict[str, Any] | None:
     new_meta = dict(pending.metadata or {})
     new_meta["start_line"] = start_line
     new_meta["end_line"] = end_line
+    new_meta["status"] = "pending"
     new_meta["edit_type"] = "anchored"
     new_meta["anchor_state"] = "anchored"
     resolved_reloc = {
@@ -633,6 +635,7 @@ async def reread_and_restage_approval(action_id: str) -> dict[str, Any] | None:
         workspace=ws,
         command=pending.command,
         approved=False,
+        status="pending",
         task_id=pending.task_id,
         agent_role=pending.agent_role,
         metadata=new_meta,
@@ -642,6 +645,7 @@ async def reread_and_restage_approval(action_id: str) -> dict[str, Any] | None:
     )
 
     _pending_approvals[new_action_id] = new_pending
+    pending.status = "invalidated"
     pending.replaced_by = new_action_id
     pending.approved = False
     pending.event.set()

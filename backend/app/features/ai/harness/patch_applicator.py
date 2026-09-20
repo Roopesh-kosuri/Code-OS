@@ -259,6 +259,12 @@ def apply_atomic_patch_sequence(
                         subsequent_anchors.append((j, anch_next, matches_before))
 
                 # Simulate applying patch k on sim_text in-memory
+                anch_curr = p_curr.get("anchor")
+                if anch_curr:
+                    m_sim = _find_anchor_matches(sim_text, sim_text.splitlines(), anch_curr)
+                    if len(m_sim) == 1:
+                        r_curr = m_sim[0]
+
                 upd = p_curr.get("updated", "")
                 if r_curr[0] is not None and r_curr[1] is not None:
                     s_k, e_k = r_curr

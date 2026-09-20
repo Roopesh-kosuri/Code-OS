@@ -429,3 +429,235 @@ def test_g5_syntax_branch5_internal_error_fail_open(capsys):
         assert "syntax: internal error" in err
         captured = capsys.readouterr()
         assert "[SYNTAX_INTERNAL_ERROR] ext=py" in captured.out
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# V2.5: Denied Tool Arguments Never Passed To Classifier
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_denied_tool_args_not_fed_to_classifier(tmp_path):
+    """V2.5: Denied-tool path calls _classify_task_effort with turn context only (NO tool name/args)."""
+    from unittest.mock import MagicMock, patch
+    from app.features.ai.chat_harness import ChatAgentRequest, run_chat_agent
+    from app.features.ai.providers.base import ProviderStreamEvent
+
+    captured_kwargs = []
+
+    def mock_classify(*args, **kwargs):
+        captured_kwargs.append((args, kwargs))
+        return (1, "Quick Task", "gemini-2.5-flash")
+
+    tool_call_chunk = (
+        "[TOOL_CALL]\n"
+        '{"name": "edit_range", "arguments": {"path": "foo.py", "start_line": 1, "end_line": 5, "updated": "secret_arg_value"}}\n'
+        "[/TOOL_CALL]\n\n"
+        "[DONE]\n"
+    )
+
+    async def mock_stream(*args, **kwargs):
+        yield tool_call_chunk
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(return_value=mock_stream())
+
+    req = ChatAgentRequest(
+        messages=[{"role": "user", "content": "say hi"}],
+        workspace=str(tmp_path),
+        model="gemini-2.5-flash",
+        provider="mock",
+    )
+
+    from unittest.mock import AsyncMock
+    with patch("app.features.ai.chat_harness._classify_task_effort", side_effect=mock_classify) as mock_cls, \
+         patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+
+        async for sse in run_chat_agent(req):
+            if "tool_denied" in sse or "escalation" in sse:
+                break
+
+        assert len(captured_kwargs) >= 1
+        for args, kwargs in captured_kwargs:
+            user_q = kwargs.get("user_query", "") or (args[0] if args else "")
+            assert "edit_range" not in str(user_q)
+            assert "secret_arg_value" not in str(user_q)
+            assert "foo.py" not in str(user_q)
+            assert "edit_range" not in str(args)
+            assert "secret_arg_value" not in str(args)
+            assert "secret_arg_value" not in str(kwargs)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# V3: Multi-Patch Chain Propagation (A -> B -> C)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_three_patch_chain_anchor_propagation(tmp_path: Path):
+    """V3.2: 3-patch chain (A->B->C): A inserts text X, B depends on anchor Y, C depends on anchor Z (which B duplicates)."""
+    target = tmp_path / "chain.py"
+    initial_code = (
+        "# header\n"
+        "anchor_y = 'anchor_y_original_text'\n"
+        "middle = 1\n"
+        "anchor_z = 'anchor_z_unique_before_b'\n"
+        "# footer\n"
+    )
+    target.write_text(initial_code, encoding="utf-8")
+
+    # Patch A inserts text X above anchor_y
+    # Patch B targets anchor_y and its updated code introduces a duplicate of anchor_z
+    # Patch C targets anchor_z (which is unique in initial text, but made ambiguous by B)
+    patches = [
+        {
+            "path": "chain.py",
+            "start_line": 1,
+            "end_line": 1,
+            "original": "# header",
+            "updated": "# header\ntext_x_inserted = True",
+            "anchor": "# header",
+        },
+        {
+            "path": "chain.py",
+            "start_line": 2,
+            "end_line": 2,
+            "original": "anchor_y = 'anchor_y_original_text'",
+            "updated": "anchor_y = 'updated'\nanchor_z = 'anchor_z_unique_before_b'",
+            "anchor": "anchor_y = 'anchor_y_original_text'",
+        },
+        {
+            "path": "chain.py",
+            "start_line": 4,
+            "end_line": 4,
+            "original": "anchor_z = 'anchor_z_unique_before_b'",
+            "updated": "anchor_z = 'final_updated'",
+            "anchor": "anchor_z = 'anchor_z_unique_before_b'",
+        },
+    ]
+
+    success, err, touched = apply_atomic_patch_sequence(str(tmp_path), patches)
+    assert success is False
+    assert "seq_anchor_ambiguous" in err
+    assert "subsequent patch would become ambiguous" in err
+    # Zero disk writes
+    assert target.read_text(encoding="utf-8") == initial_code
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# V5: Harder Pre-Existing Breakage Cases
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_syntax_preexisting_one_error_fixed_another_remains():
+    """V5.1: File has errors at line 2 AND line 6. Patch fixes line 2 but leaves line 6 broken -> ALLOW."""
+    orig_code = (
+        "def error_one():\n"
+        "    if True\n"
+        "        pass\n"
+        "\n"
+        "def error_two():\n"
+        "    if False\n"
+        "        pass\n"
+    )
+    patched_code = (
+        "def error_one():\n"
+        "    if True:\n"
+        "        pass\n"
+        "\n"
+        "def error_two():\n"
+        "    if False\n"
+        "        pass\n"
+    )
+    ok, msg = syntax_check("py", patched_code, original_source=orig_code)
+    assert ok is True
+    assert "already broken pre-patch" in msg
+
+
+def test_syntax_preexisting_error_swapped_for_different_error():
+    """V5.1: Swapping error E1 for E2 (same count=1) -> ALLOW. Introducing extra error (count 1->2) -> REJECT."""
+    orig_code = (
+        "def error_one():\n"
+        "    if True\n"
+        "        pass\n"
+        "\n"
+        "def clean_func():\n"
+        "    return 42\n"
+    )
+    swapped_code = (
+        "def error_one():\n"
+        "    if True:\n"
+        "        pass\n"
+        "\n"
+        "def clean_func():\n"
+        "    if False\n"
+        "        return 42\n"
+    )
+    ok_swap, msg_swap = syntax_check("py", swapped_code, original_source=orig_code)
+    assert ok_swap is True
+    assert "already broken pre-patch" in msg_swap
+
+    worsened_code = (
+        "def error_one():\n"
+        "    if True\n"
+        "        pass\n"
+        "\n"
+        "def clean_func():\n"
+        "    if False\n"
+        "        return 42\n"
+    )
+    ok_worse, msg_worse = syntax_check("py", worsened_code, original_source=orig_code)
+    assert ok_worse is False
+    assert "Syntax worsened" in msg_worse or "Python syntax error" in msg_worse
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# V6: Re-Read Non-Auto-Approve Assertion
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_reread_never_auto_approves(tmp_path: Path):
+    """V6.3: reread_and_restage_approval yields fresh PendingApproval with status='pending' and approved=False."""
+    f = tmp_path / "module.py"
+    f.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+
+    action_id = "act-test-v6"
+    old_pending = PendingApproval(
+        action_id=action_id,
+        action_type="edit",
+        detail="lines 1-2 of module.py",
+        reason="Test",
+        workspace=str(tmp_path),
+        path="module.py",
+        approved=False,
+        status="pending",
+        metadata={
+            "start_line": 1,
+            "end_line": 2,
+            "relocation_event": {
+                "relocated": True,
+                "old_range": [1, 2],
+                "new_range": [2, 3],
+            },
+        },
+    )
+    _pending_approvals[action_id] = old_pending
+
+    res = await reread_and_restage_approval(action_id)
+    assert res is not None
+    assert res["status"] == "restaged"
+    new_aid = res["new_action_id"]
+
+    # (a) Old approval invalidated
+    assert old_pending.status == "invalidated"
+    assert old_pending.replaced_by == new_aid
+    assert old_pending.approved is False
+    assert action_id not in _pending_approvals
+
+    # (b) & (c) New approval is pending and NOT approved
+    assert new_aid in _pending_approvals
+    new_pending = _pending_approvals[new_aid]
+    assert new_pending.status == "pending"
+    assert new_pending.approved is False
+    assert new_pending.metadata["status"] == "pending"
+    assert not new_pending.event.is_set()
+
+    # Cleanup
+    _pending_approvals.pop(new_aid, None)
+
