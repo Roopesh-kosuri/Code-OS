@@ -394,3 +394,121 @@ async def test_adapter_rejections_keep_module_error_shape(tmp_path: Path, adapte
         res = accept_ghost_text(eid)
         assert res.get("status") == "error"
         assert "path_outside_workspace" in res.get("error", "")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ROW 11 & STAGING FOLLOW-UPS (AGENT MODE & DELETE NON-EXECUTION ON ROLLBACK)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_apply_proposal_uses_agent_mode_rejects_broken_python(tmp_path: Path):
+    """Proposals run in AGENT mode; broken Python code fails the syntax gate and rejects."""
+    from app.features.ai.service import apply_proposal
+    from app.features.ai.schemas import EditProposalDto, FileChange
+
+    ws = str(tmp_path)
+    broken_file = tmp_path / "broken_proposal.py"
+    broken_file.write_text("def valid_original():\n    pass\n", encoding="utf-8")
+
+    proposal_id = "prop-test-agent-mode"
+    mock_proposal = EditProposalDto(
+        id=proposal_id,
+        workspace=ws,
+        status="pending",
+        summary="Test proposal with broken syntax",
+        changes=[
+            FileChange(
+                path="broken_proposal.py",
+                original="def valid_original():\n    pass\n",
+                updated="def broken_syntax(:\n    print('bad')\n",
+            )
+        ],
+        diff="",
+    )
+
+    with patch("app.features.ai.service.get_proposal", return_value=mock_proposal):
+        with pytest.raises(HTTPException) as exc_info:
+            await apply_proposal(proposal_id)
+
+    assert exc_info.value.status_code == 500
+    assert "syntax error" in str(exc_info.value.detail).lower() or "syntax_error" in str(exc_info.value.detail).lower()
+    # Disk remains untouched
+    assert "def valid_original" in broken_file.read_text(encoding="utf-8")
+
+
+def test_staging_apply_write_fails_delete_not_executed(tmp_path: Path):
+    """In a batch with write + delete: if write fails syntax gate, delete is NOT executed."""
+    from app.features.ai.staging.staging_review_service import _STAGED_REVIEWS, apply_approved_changes
+
+    ws = str(tmp_path)
+
+    # 1. File to delete exists on disk
+    f_del = tmp_path / "to_delete.py"
+    f_del.write_text("def will_be_deleted():\n    pass\n", encoding="utf-8")
+
+    # 2. File to write exists on disk
+    f_write = tmp_path / "to_write.py"
+    f_write_init = "def clean_code():\n    return 1\n"
+    f_write.write_text(f_write_init, encoding="utf-8")
+
+    job_id = "test-job-write-fails-delete-retained"
+    _STAGED_REVIEWS[job_id] = {
+        "job_id": job_id,
+        "workspace": ws,
+        "files": {
+            "to_delete.py": {
+                "status": "deleted",
+                "approved": True,
+                "original": "def will_be_deleted():\n    pass\n",
+                "updated": "",
+                "chunks": [],
+            },
+            "to_write.py": {
+                "status": "modified",
+                "approved": True,
+                "original": f_write_init,
+                "updated": "def broken_syntax(:\n    return 2\n",
+                "chunks": [],
+            },
+        },
+    }
+
+    result = apply_approved_changes(job_id)
+    assert result.get("success") is False
+
+    # The delete was NEVER executed — file still exists on disk!
+    assert f_del.exists() is True
+    assert "will_be_deleted" in f_del.read_text(encoding="utf-8")
+
+    # The write was restored / never persisted broken code
+    assert f_write.read_text(encoding="utf-8").replace("\r\n", "\n") == f_write_init
+
+    _STAGED_REVIEWS.pop(job_id, None)
+
+
+def test_monaco_write_file_crlf_preserved(tmp_path: Path):
+    """Spot check: CRLF file through Monaco write_file stays CRLF on disk."""
+    ws = str(tmp_path)
+    target = tmp_path / "crlf_file.py"
+    target.write_bytes(b"line 1\r\nline 2\r\nline 3\r\n")
+
+    files_service.write_file(ws, "crlf_file.py", "line 1\nupdated line 2\nline 3\n")
+    assert target.read_bytes() == b"line 1\r\nupdated line 2\r\nline 3\r\n"
+
+
+def test_monaco_write_file_invalid_utf8_rejected_bytes_untouched(tmp_path: Path):
+    """Spot check: Saving over invalid-UTF-8 file rejects with bytes untouched."""
+    ws = str(tmp_path)
+    target = tmp_path / "binary_corrupt.bin"
+    corrupt_bytes = b"start\x80\x81\xfe\xffend"
+    target.write_bytes(corrupt_bytes)
+
+    with pytest.raises(HTTPException) as exc_info:
+        files_service.write_file(ws, "binary_corrupt.bin", "new clean content\n")
+
+    assert exc_info.value.status_code == 400
+    assert "Unsupported encoding" in str(exc_info.value.detail)
+    # Target bytes must remain 100% untouched
+    assert target.read_bytes() == corrupt_bytes
+
+

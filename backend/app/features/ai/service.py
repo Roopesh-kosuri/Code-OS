@@ -965,16 +965,23 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
             merged_contents[change.path] = merged
 
 
-    # 2. Write merged contents (delegates to files.service.write_file which routes via mutation_pipeline)
-    from ..files.service import write_file
-    for rel_path, content in merged_contents.items():
-        try:
-            write_file(proposal.workspace, rel_path, content)
-        except Exception as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to write merged changes to {rel_path}: {exc}"
-            )
+    # 2. Write merged contents via mutation_pipeline in AGENT mode (enforcing syntax gate, containment, atomic rollback)
+    from .harness.mutation_pipeline import Mutation, MutationKind, apply_mutations
+    mutations = [
+        Mutation(kind=MutationKind.WRITE_FULL, path=rel_path, new_content=content)
+        for rel_path, content in merged_contents.items()
+    ]
+    res = apply_mutations(proposal.workspace, mutations, mode="AGENT")
+    if not res.success:
+        rej = res.rejection
+        reason = rej.reason_text if rej else "Mutation failed"
+        code = rej.code if rej else ""
+        if code in ("path_outside_workspace", "symlink_escape", "security_error"):
+            raise HTTPException(status_code=403, detail=reason)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to write merged changes: {reason}"
+        )
             
     db = await get_db()
     await db.execute("UPDATE edit_proposals SET status = ? WHERE id = ?", ("applied", proposal_id))
