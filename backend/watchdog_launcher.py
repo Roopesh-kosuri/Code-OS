@@ -15,6 +15,39 @@ import sys
 import time
 from pathlib import Path
 
+import sys
+import os
+from pathlib import Path
+
+# Dynamically ensure search paths include bundled python site-packages and app folder
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_path_candidates = [
+    _script_dir,
+    os.path.join(_script_dir, "app"),
+    os.path.abspath(os.path.join(_script_dir, "..", "python", "Lib", "site-packages")),
+    os.path.abspath(os.path.join(_script_dir, "..", "..", "resources", "python", "Lib", "site-packages")),
+    os.path.abspath(os.path.join(_script_dir, "..", "python", "lib", "python3.11", "site-packages")),
+]
+if getattr(sys, "frozen", False):
+    _exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+    _path_candidates.extend([
+        getattr(sys, "_MEIPASS", ""),
+        os.path.join(_exe_dir, "_internal"),
+        _exe_dir,
+        os.path.abspath(os.path.join(_exe_dir, "..", "python", "Lib", "site-packages")),
+    ])
+for _cand in _path_candidates:
+    if _cand and os.path.isdir(_cand) and _cand not in sys.path:
+        sys.path.insert(0, _cand)
+
+# Static imports ensure PyInstaller AST traces and bundles these core server packages
+try:
+    import uvicorn
+    import fastapi
+    import starlette
+except ImportError:
+    pass
+
 
 # ── 1. Dynamic User Data Directory Resolution ──────────────────────────────────
 
@@ -99,10 +132,25 @@ logger = logging.getLogger("watchdog")
 def run_worker():
     """Directly start FastAPI backend with uvicorn in current process."""
     logger.info("Initializing CODE OS backend worker...")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        script_dir,
+        os.path.join(script_dir, "app"),
+        os.path.abspath(os.path.join(script_dir, "..", "python", "Lib", "site-packages")),
+        os.path.abspath(os.path.join(script_dir, "..", "..", "resources", "python", "Lib", "site-packages")),
+        os.path.abspath(os.path.join(script_dir, "..", "python", "lib", "python3.11", "site-packages")),
+    ]
     if getattr(sys, "frozen", False):
-        bundle_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
-        if bundle_dir not in sys.path:
-            sys.path.insert(0, bundle_dir)
+        base_dir = os.path.dirname(sys.executable)
+        candidates.extend([
+            getattr(sys, "_MEIPASS", ""),
+            os.path.join(base_dir, "_internal"),
+            base_dir,
+            os.path.abspath(os.path.join(base_dir, "..", "python", "Lib", "site-packages")),
+        ])
+    for cand in candidates:
+        if cand and os.path.isdir(cand) and cand not in sys.path:
+            sys.path.insert(0, cand)
 
     try:
         import uvicorn

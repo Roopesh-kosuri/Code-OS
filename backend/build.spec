@@ -77,8 +77,17 @@ for pkg in core_packages:
         datas += d
         binaries += b
         hidden_imports += h
+        print(f"[build.spec] Collected {pkg}: {len(d)} datas, {len(b)} binaries, {len(h)} hidden imports")
     except Exception as exc:
         print(f"[build.spec] Notice: collect_all('{pkg}') skipped: {exc}")
+
+for sub_pkg in ['uvicorn', 'fastapi', 'starlette', 'anyio']:
+    try:
+        subs = collect_submodules(sub_pkg)
+        hidden_imports += subs
+        print(f"[build.spec] Collected {len(subs)} submodules for {sub_pkg}")
+    except Exception as exc:
+        print(f"[build.spec] Notice: collect_submodules('{sub_pkg}') skipped: {exc}")
 
 # Platform-specific OS terminal emulation hooks
 if sys.platform == 'win32':

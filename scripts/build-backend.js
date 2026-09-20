@@ -52,8 +52,17 @@ function runPyInstaller(pythonCmd) {
   }
 }
 
-// Try py first on Windows, then python, then python3
-const commands = process.platform === 'win32' ? ['py', 'python', 'python3'] : ['python3', 'python'];
+// Prioritize bundled python runtime containing all pre-installed dependencies
+const bundledPython = path.join(ROOT, 'resources', 'python', process.platform === 'win32' ? 'python.exe' : 'bin/python3');
+const commands = [];
+if (fs.existsSync(bundledPython)) {
+  commands.push(bundledPython);
+}
+if (process.platform === 'win32') {
+  commands.push('py', 'python', 'python3');
+} else {
+  commands.push('python3', 'python');
+}
 let ran = false;
 
 for (const cmd of commands) {

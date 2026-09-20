@@ -37,6 +37,12 @@ extraResources:
     to: "tiktoken"
     filter:
       - "**/*"
+  - from: "backend/app"
+    to: "backend/app"
+    filter:
+      - "**/*"
+  - from: "backend/watchdog_launcher.py"
+    to: "backend/watchdog_launcher.py"
   - from: "backend/dist/backend"
     to: "backend"
     filter:

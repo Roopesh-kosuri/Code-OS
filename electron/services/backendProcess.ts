@@ -84,12 +84,10 @@ function getBundledPythonPath(): string | null {
 function findPythonCommand(): string | null {
   const b = getBundledPythonPath();
   if (b) return b;
-  // In packaged mode (!isDev), NEVER fall back to system python. Only bundled python is permitted.
-  if (isDev) {
-    for (const cmd of ["python3", "python"]) {
-      const v = getPythonVersion(cmd);
-      if (v && isVersionSupported(v)) { console.log(`[backend] Dev mode System Python ${v}: ${cmd}`); return cmd; }
-    }
+  // Fall back to system Python if bundled python runtime is missing
+  for (const cmd of ["python3", "python", "py"]) {
+    const v = getPythonVersion(cmd);
+    if (v && isVersionSupported(v)) { console.log(`[backend] System Python ${v}: ${cmd}`); return cmd; }
   }
   return null;
 }
@@ -335,8 +333,32 @@ export class BackendProcess {
       }
     }
 
-    // Strategy 1: Bundled PyInstaller binary (correct packaged build)
+    const backendDir = path.join(process.resourcesPath, "backend");
+    const bundledPython = getBundledPythonPath();
+    const watchdogPy = path.join(backendDir, "watchdog_launcher.py");
     const bin = getBundledBinaryPath();
+
+    // Strategy 1: Bundled Python Runtime (Primary & Recommended)
+    // Instantly boots Python 3.11 with pre-installed FastAPI, Uvicorn, and dependencies.
+    // Sub-second startup, immune to PyInstaller frozen extraction issues.
+    if (bundledPython && fs.existsSync(backendDir)) {
+      console.log(`[backend] Starting backend with bundled Python: ${bundledPython}`);
+      const args = fs.existsSync(watchdogPy)
+        ? [watchdogPy, "--worker"]
+        : ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"];
+
+      await this._spawnProcess(bundledPython, args, {
+        cwd: backendDir,
+        env: buildBackendEnv({
+          CODE_OS_DATA_DIR: getUserDataPath(),
+          CODE_OS_HOME: getUserDataPath(),
+          PYTHONPATH: backendDir,
+        }),
+      });
+      return;
+    }
+
+    // Strategy 2: Bundled PyInstaller binary (Fallback if bundled Python runtime is not present)
     if (bin) {
       console.log("[backend] Starting bundled binary (first launch may take 15-20 s)...");
       await this._spawnProcess(bin, [], {
@@ -349,34 +371,40 @@ export class BackendProcess {
       return;
     }
 
-    // Strategy 2: System Python + uvicorn (incomplete package / dev without binary)
-    const backendDir = path.join(process.resourcesPath, "backend");
-    const uvicornArgs = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"];
-    const pythonCmd = findPythonCommand();
+    // Strategy 3: System Python fallback (Dev or machines with system Python 3.11+)
+    const systemPython = findPythonCommand();
+    if (systemPython && fs.existsSync(backendDir)) {
+      console.log(`[backend] Starting backend with system Python: ${systemPython}`);
+      const args = fs.existsSync(watchdogPy)
+        ? [watchdogPy, "--worker"]
+        : ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"];
 
-    if (!pythonCmd) {
-      this.lastError =
-        "The CODE OS backend binary is missing from this installation and " +
-        "Python 3.11+ is not installed on this machine.\n\n" +
-        "Please download the latest release from:\n" +
-        "  https://github.com/Roopesh-kosuri/code-os/releases\n\n" +
-        "Developers: run 'npm run build:backend-exe' before packaging.";
-      console.error(`[backend] ${this.lastError}`);
-      try {
-        dialog.showErrorBox(
-          "CODE OS - Backend Not Available",
-          "The bundled backend binary is missing from this installation.\n\n" +
-          "Download the latest installer from:\n  https://github.com/Roopesh-kosuri/code-os/releases\n\n" +
-          "Developers: run 'npm run build:backend-exe' before packaging.",
-        );
-      } catch { /* headless */ }
+      await this._spawnProcess(systemPython, args, {
+        cwd: backendDir,
+        env: buildBackendEnv({
+          CODE_OS_DATA_DIR: getUserDataPath(),
+          CODE_OS_HOME: getUserDataPath(),
+          PYTHONPATH: backendDir,
+        }),
+      });
       return;
     }
 
-    await this._spawnProcess(pythonCmd, uvicornArgs, {
-      cwd: backendDir,
-      env: buildBackendEnv({ CODE_OS_HOME: getUserDataPath(), PYTHONPATH: backendDir }),
-    });
+    // Strategy 4: All spawn strategies failed — show user-friendly guidance
+    this.lastError =
+      "The CODE OS backend could not start because Python 3.11+ is not available on this installation.\n\n" +
+      "Please download the latest release installer from:\n" +
+      "  https://github.com/Roopesh-kosuri/code-os/releases\n\n" +
+      "Or install Python 3.11+ from https://python.org/downloads and relaunch CODE OS.";
+    console.error(`[backend] ${this.lastError}`);
+    try {
+      dialog.showErrorBox(
+        "CODE OS - Backend Not Available",
+        "The Python backend runtime failed to start.\n\n" +
+        "Please download the latest release installer from:\n  https://github.com/Roopesh-kosuri/code-os/releases\n\n" +
+        "Or install Python 3.11+ from python.org/downloads and relaunch CODE OS.",
+      );
+    } catch { /* headless */ }
   }
 
   private async _spawnProcess(cmd: string, args: string[], options: { cwd: string; env: NodeJS.ProcessEnv }): Promise<void> {
