@@ -100,15 +100,6 @@ deb:
 
 mac:
   icon: "build/icon.png"
-  extraResources:
-    - from: "build/python-runtime/darwin/python"
-      to: "python"
-      filter:
-        - "**/*"
-    - from: "build/node-runtime/darwin/node"
-      to: "node"
-      filter:
-        - "**/*"
   target:
     - target: dmg
       arch:
@@ -119,10 +110,5 @@ mac:
         - x64
         - arm64
   category: public.app-category.developer-tools
-  hardenedRuntime: true
   gatekeeperAssess: false
-  entitlements: "build/entitlements.mac.plist"
-  entitlementsInherit: "build/entitlements.mac.inherit.plist"
-  notarize:
-    teamId: "${APPLE_TEAM_ID}"
-  artifactName: "${productName}-${version}-${os}-${arch}${env.MAC_BUILD_SUFFIX}.${ext}"
+  artifactName: "${productName}-${version}-${os}-${arch}.${ext}"

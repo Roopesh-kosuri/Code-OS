@@ -1,9 +1,8 @@
-name: macOS Production Release Build (macOS ONLY)
+name: macOS & Linux Production Release Builds
 
-# NOTE: This workflow builds and publishes installers for macOS ONLY.
-# Windows (.exe) and Linux (.AppImage) installers are strictly built locally
-# on developer machines to bundle platform-specific hardware acceleration
-# and prevent runner timeout or CI matrix conflicts.
+# Builds and attaches macOS (.dmg, .zip) and Linux (.AppImage, .deb)
+# installers directly to the GitHub Release.
+# Windows installers (.exe, .zip) are built locally to bundle native drivers.
 
 on:
   push:
@@ -21,7 +20,7 @@ permissions:
 
 jobs:
   build-macos:
-    name: Build macOS Installer (dmg) - macOS ONLY
+    name: Build macOS Installers (dmg + zip)
     runs-on: macos-latest
     timeout-minutes: 60
     env:
@@ -64,8 +63,8 @@ jobs:
           npm run build:vite
           npm run build:electron
 
-      - name: Package macOS DMG Installer
-        run: npx electron-builder --mac dmg --publish never
+      - name: Package macOS Installers (dmg + zip)
+        run: npx electron-builder --mac dmg zip --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
@@ -79,13 +78,85 @@ jobs:
             release/*.zip
           if-no-files-found: warn
 
-      - name: Upload macOS DMG to GitHub Release
+      - name: Upload macOS Installers to GitHub Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          tag_name: ${{ github.ref_name || inputs.tag_name || 'v4.0.0' }}
+          tag_name: ${{ github.ref_name || inputs.tag_name || 'v5.0.0' }}
           files: |
             release/*.dmg
             release/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    name: Build Linux Installers (AppImage + deb)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install System Dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg pkg-config xvfb libarchive-tools rpm ruby ruby-dev build-essential
+          sudo gem install --no-document fpm || true
+
+      - name: Install Python Backend Dependencies & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary pyinstaller
+          pip install --prefer-binary -r backend/requirements.txt
+
+      - name: Install Frontend Node Dependencies
+        run: npm install
+
+      - name: Compile Backend PyInstaller Package (--onedir mode)
+        run: node scripts/build-backend.js
+
+      - name: Compile Frontend Assets & Electron Main
+        run: |
+          npm run build:vite
+          npm run build:electron
+
+      - name: Package Linux Installers (AppImage + deb)
+        run: npx electron-builder --linux AppImage deb --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload Linux Installer Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CODE-OS-Linux-Installers
+          path: |
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: warn
+
+      - name: Upload Linux Installers to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag_name || 'v5.0.0' }}
+          files: |
+            release/*.AppImage
+            release/*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
