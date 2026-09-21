@@ -1,13 +1,6 @@
-name: macOS & Linux Production Release Builds
-
-# Builds and attaches macOS (.dmg, .zip) and Linux (.AppImage, .deb)
-# installers directly to the GitHub Release.
-# Windows installers (.exe, .zip) are built locally to bundle native drivers.
+name: Linux Production Release Build
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
@@ -19,76 +12,6 @@ permissions:
   contents: write
 
 jobs:
-  build-macos:
-    name: Build macOS Installers (dmg + zip)
-    runs-on: macos-latest
-    timeout-minutes: 60
-    env:
-      NODE_OPTIONS: "--max-old-space-size=4096"
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: 'npm'
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install System Dependencies (macOS)
-        run: |
-          HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg pkg-config || true
-
-      - name: Install Python Backend Dependencies & PyInstaller
-        run: |
-          python -m pip install --upgrade pip
-          pip install --prefer-binary pyinstaller
-          pip install --prefer-binary -r backend/requirements.txt
-
-      - name: Install Frontend Node Dependencies
-        run: npm install
-
-      - name: Compile Backend PyInstaller Package (--onedir mode)
-        run: node scripts/build-backend.js
-
-      - name: Compile Frontend Assets & Electron Main
-        run: |
-          npm run build:vite
-          npm run build:electron
-
-      - name: Package macOS Installers (dmg + zip)
-        run: npx electron-builder --mac dmg zip --publish never
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
-
-      - name: Upload macOS Installer Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: CODE-OS-macOS-Installer
-          path: |
-            release/*.dmg
-            release/*.zip
-          if-no-files-found: warn
-
-      - name: Upload macOS Installers to GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: ${{ github.ref_name || inputs.tag_name || 'v5.0.0' }}
-          files: |
-            release/*.dmg
-            release/*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   build-linux:
     name: Build Linux Installers (AppImage + deb)
     runs-on: ubuntu-latest
