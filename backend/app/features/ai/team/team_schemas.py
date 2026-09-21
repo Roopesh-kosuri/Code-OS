@@ -223,3 +223,22 @@ def calculate_token_cost(model: str, input_tokens: int = 0, output_tokens: int =
     out_cost = (output_tokens / 1_000_000.0) * pricing["output_per_million"]
     return round(in_cost + out_cost, 6)
 
+
+class TeamTaskResult(dict):
+    """Result of a team task execution supporting attribute and dict access."""
+    def __init__(self, status: str = "completed", error: str = "", artifacts: Optional[list[Any]] = None, role: str = "", **kwargs: Any) -> None:
+        super().__init__(status=status, error=error, artifacts=artifacts or [], role=role, **kwargs)
+        self.status = status
+        self.error = error
+        self.artifacts = artifacts or []
+        self.role = role
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(f"'TeamTaskResult' object has no attribute '{name}'")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        self[name] = value
+

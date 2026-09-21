@@ -87,6 +87,20 @@ class BaseTeamRole(ABC):
     role: TeamRole
     allowed_tools: set[str]
 
+    def can_execute_task(self, task: Any) -> bool:
+        """Check whether this role has permission to execute the given task."""
+        ctx = getattr(task, "context", None) or {}
+        tt = getattr(task, "type", None) or ctx.get("type") or ctx.get("task_type") or ""
+        req = set(getattr(task, "required_tools", None) or ctx.get("required_tools") or ctx.get("tools") or [])
+        if str(tt).lower() in ("write", "edit", "write_file", "edit_file", "code"):
+            req.add("edit_file")
+        elif tt and tt in ("read", "read_file", "run_test", "run_command", "git_diff", "git_log"):
+            req.add(tt)
+        if not req.issubset(self.allowed_tools):
+            return False
+        path = ctx.get("path") or ctx.get("file") or ctx.get("target_file")
+        return all(self.validate_tool_permission(t, {"path": path} if path else None)[0] for t in req)
+
     def validate_tool_permission(self, tool_name: str, arguments: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
         """Check whether the tool (and its specific arguments) is permitted for this role."""
         if tool_name not in self.allowed_tools:

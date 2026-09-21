@@ -272,7 +272,10 @@ class ComputerController:
             # Fallback for Windows via PowerShell Get-Process
             try:
                 cmd = ["powershell", "-NoProfile", "-Command", "Get-Process | Where-Object {$_.MainWindowTitle -ne ''} | Select-Object -ExpandProperty MainWindowTitle"]
-                res = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                res = await asyncio.to_thread(
+                    subprocess.run, cmd, capture_output=True, timeout=5,
+                    text=True, encoding="utf-8", errors="replace"
+                )
                 titles = [l.strip() for l in res.stdout.splitlines() if l.strip()]
             except Exception as e:
                 logger.warning("ComputerController: failed to list windows: %s", e)
@@ -305,7 +308,10 @@ class ComputerController:
             """
             try:
                 ps_env = dict(os.environ, TARGET_WINDOW_TITLE=title)
-                subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], env=ps_env, timeout=5)
+                await asyncio.to_thread(
+                    subprocess.run, ["powershell", "-NoProfile", "-Command", ps_script],
+                    env=ps_env, timeout=5, text=True, encoding="utf-8", errors="replace"
+                )
                 await asyncio.sleep(0.5)
                 return {"success": True, "focused": title}
             except Exception as e:

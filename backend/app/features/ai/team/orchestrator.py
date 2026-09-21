@@ -29,6 +29,7 @@ from .team_schemas import (
     TeamRole,
     TeamSSEEvent,
     TeamTask,
+    TeamTaskResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,13 +164,15 @@ class TeamOrchestrator:
         try:
             await self._run_task_with_semaphore(task, prior_handoffs)
         except Exception as exc:
-            return {"status": "failed", "error": str(exc), "token_usage": 0, "cost_usd": 0.0}
+            return TeamTaskResult(status="failed", error=str(exc), token_usage=0, cost_usd=0.0)
         res = self.task_results.get(task.task_id) or {}
         if isinstance(res, dict):
             res.setdefault("status", task.status)
             res.setdefault("error", task.error or "")
-            return res
-        return {"status": task.status, "error": task.error or "", "result": res}
+            return res if isinstance(res, TeamTaskResult) else TeamTaskResult(**res)
+        return TeamTaskResult(status=task.status, error=task.error or "", result=res)
+
+    dispatch_task = execute_task
 
     async def execute_dag(
         self,
@@ -469,8 +472,14 @@ class TeamOrchestrator:
                     logger.warning("Smart model router error: %s", ex)
 
             try:
-                # ── 2. Execute Task Logic ───────────────────────────────
                 result = await self._execute_task_dispatch(task, prior_handoffs)
+
+                if result.get("status") == "denied":
+                    task.status = "denied"
+                    task.error = result.get("error", "Task denied by role permission gate")
+                    self.task_results[task.task_id] = result
+                    self.failed_task_ids.add(task.task_id)
+                    return
 
                 # ── 2.5 Verification Gate between Coder and Reviewer ────
                 role_val = (task.role.value if isinstance(task.role, TeamRole) else str(task.role)).lower()
@@ -633,6 +642,15 @@ class TeamOrchestrator:
 
         # 4. Role handler instantiation and tool execution
         role_handler = get_role_instance(task.role, custom_roles=self.custom_roles)
+        role_name = task.role.value if isinstance(task.role, TeamRole) else str(task.role)
+        if not role_handler.can_execute_task(task):
+            task_type = getattr(task, "type", task.context.get("type", "task") if task.context else "task")
+            logger.warning("Role %s denied task %s", role_name, task.title)
+            return TeamTaskResult(
+                status="denied",
+                error=f"Role {role_name} lacks permission for {task_type}",
+                artifacts=[],
+            )
 
         # 5. Dispatch via AgentFactory
         role_str = task.role.value if isinstance(task.role, TeamRole) else str(task.role)
