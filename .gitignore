@@ -84,6 +84,8 @@ task-*.log
 # Internal Audit, Handoff & Session State (Repo Hygiene - Private, Never Push)
 docs/audit/
 docs/audit/**
+code_os_audit/
+code_os_audit/**
 PHASE_STATE.md
 docs/TEAM_CONSOLE_AUDIT.md
 docs/SYSTEM_VERIFICATION_REPORT.md
