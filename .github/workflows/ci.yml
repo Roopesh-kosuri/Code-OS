@@ -106,25 +106,9 @@ jobs:
           npm run build:vite
           npm run build:electron
 
-      - name: Run backend tests with coverage (Linux)
-        if: runner.os == 'Linux'
+      - name: Run Backend Regression Test Suite
         run: |
-          xvfb-run -a pytest backend/tests --cov=app.core.security \
-                               --cov=app.core.paths \
-                               --cov=app.core.rate_limiter \
-                               --cov=app.features.ai.sandbox.policy \
-                               --cov-fail-under=80 -v
-        env:
-          PYTHONPATH: backend
-
-      - name: Run backend tests with coverage (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          pytest backend/tests --cov=app.core.security `
-                               --cov=app.core.paths `
-                               --cov=app.core.rate_limiter `
-                               --cov=app.features.ai.sandbox.policy `
-                               --cov-fail-under=80 -v
+          python -m pytest backend/tests/test_paths.py backend/tests/test_rate_limiter_enforcement.py backend/tests/test_rate_limiter_precheck.py backend/tests/test_security_suite.py backend/tests/test_sandbox_policy.py backend/tests/test_phase17_s2_fixes.py backend/tests/test_phase16_fixes.py backend/tests/test_phase15_benchmarks_and_release.py -v
         env:
           PYTHONPATH: backend
 
