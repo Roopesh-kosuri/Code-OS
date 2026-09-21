@@ -317,6 +317,56 @@ def _finalization_succeeded(event: str) -> bool | None:
         return False
 
 
+def _track_pre_images(changes: list[Any], workspace: str, turn_pre_images: dict[str, bytes | None]) -> None:
+    for c in changes:
+        c_path = getattr(c, "path", str(c))
+        if c_path not in turn_pre_images:
+            try:
+                full_p = ensure_within_workspace(workspace, c_path)
+                turn_pre_images[c_path] = full_p.read_bytes() if full_p.is_file() else None
+            except Exception:
+                turn_pre_images[c_path] = None
+
+
+def _track_finalization_event(event: str, turn_applied_paths: list[str], turn_readback_statuses: dict[str, str]) -> None:
+    if "event: finalization" in event:
+        try:
+            for l in event.splitlines():
+                if l.startswith("data:"):
+                    p_data = json.loads(l[5:].strip())
+                    if p_data.get("success"):
+                        for f in p_data.get("files", []):
+                            if f not in turn_applied_paths:
+                                turn_applied_paths.append(f)
+                            turn_readback_statuses[f] = "passed"
+        except Exception:
+            pass
+
+
+async def _execute_turn_verification(
+    workspace: str,
+    turn_applied_paths: list[str],
+    turn_pre_images: dict[str, bytes | None],
+    turn_readback_statuses: dict[str, str],
+    settings: dict[str, Any] | None = None,
+    cancellation_event: Optional[asyncio.Event] = None,
+) -> AsyncIterator[str]:
+    from app.features.ai.harness.verification_matrix import execute_verification_matrix, VerdictState
+    verify_events: list[str] = []
+    verdict, _ = await execute_verification_matrix(
+        workspace_root=workspace,
+        touched_files=turn_applied_paths,
+        pre_images=turn_pre_images,
+        readback_statuses=turn_readback_statuses,
+        raw_settings=settings,
+        event_emitter=verify_events.append,
+        cancellation_event=cancellation_event,
+    )
+    for ve in verify_events:
+        yield ve
+    yield _sse_done(verdict.state == VerdictState.VERIFIED, verdict.summary_line)
+
+
 async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
     """Run the complete adaptive autonomous coding agent loop, streaming typed SSE events."""
     start_time = time.time()
@@ -720,6 +770,9 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
 
         # ── Step 4: Execution Loop ───────────────────────────────────────────
         staged_changes: list[FileChange] = []
+        turn_applied_paths: list[str] = []
+        turn_pre_images: dict[str, bytes | None] = {}
+        turn_readback_statuses: dict[str, str] = {}
         dag_plan_steps: list[DAGPlanStep] | None = None
         current_step = 0
         consecutive_failures = 0
@@ -1420,9 +1473,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
             is_only_ask_user = bool(tool_calls and all(tc.name == "ask_user" for tc in tool_calls))
             if is_only_ask_user and len(clean_prose) >= 50:
                 logger.info("chat_harness: response contains substantive answer after clarification; completing turn instead of re-prompting ask_user")
+                _track_pre_images(staged_changes, workspace, turn_pre_images)
                 finalization_ok = not staged_changes
                 async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                     yield event
+                    _track_finalization_event(event, turn_applied_paths, turn_readback_statuses)
                     outcome = _finalization_succeeded(event)
                     if outcome is not None:
                         finalization_ok = outcome
@@ -1442,7 +1497,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                     "details": f"Completed after clarification with substantive answer prose ({len(clean_prose)} chars)",
                 })
                 yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
-                yield _sse_done(True, "All tasks completed and verified successfully.")
+                async for ve in _execute_turn_verification(workspace, turn_applied_paths, turn_pre_images, turn_readback_statuses, getattr(chat_request, "settings", None)):
+                    yield ve
                 return
 
             if tool_calls:
@@ -1461,13 +1517,15 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             f"- **Status**: Execution halted by per-turn tool cap to prevent runaway loops.\n"
                             f"- **Tools Executed**: {total_tools_executed}\n"
                             f"- **Staged Changes**: {', '.join(c.path for c in staged_changes) if staged_changes else 'None'}\n"
-                            f"- **Summary**: Successfully completed partial steps. Staged changes require review or approval before proceeding."
+                            f"- **Summary**: Completed partial steps. Staged changes require review or approval before proceeding."
                         )
                         yield _sse_status("tool_cap_reached", f"Tool cap reached ({total_tools_executed}/{MAX_TOOL_CALLS_PER_TURN}). Emitting honest partial report...", tools=total_tools_executed)
                         yield _sse_token(cap_report)
                         if staged_changes:
+                            _track_pre_images(staged_changes, workspace, turn_pre_images)
                             async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages), extra_texts=_get_tool_prose(tool_results_list if 'tool_results_list' in locals() else None)):
                                 yield event
+                                _track_finalization_event(event, turn_applied_paths, turn_readback_statuses)
                         _append_activity_log(workspace, {
                             "action_type": "tool_cap_reached",
                             "target": user_query[:100],
@@ -1487,8 +1545,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         yield _sse_status("termination_signal", "Termination token [DONE] detected in tool arguments. Finalizing turn...", tool=tc.name)
                         finalization_ok = not staged_changes
                         if staged_changes:
+                            _track_pre_images(staged_changes, workspace, turn_pre_images)
                             async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages), extra_texts=_get_tool_prose(tool_results_list if 'tool_results_list' in locals() else None)):
                                 yield event
+                                _track_finalization_event(event, turn_applied_paths, turn_readback_statuses)
                                 outcome = _finalization_succeeded(event)
                                 if outcome is not None:
                                     finalization_ok = outcome
@@ -1504,7 +1564,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                             "details": f"Completed via tool argument termination signal in {iteration + 1} iterations, {total_tools_executed} tools",
                         })
                         yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
-                        yield _sse_done(finalization_ok, "Task completed and verified successfully." if finalization_ok else "Task completed with staged changes requiring resolution.")
+                        if finalization_ok:
+                            async for ve in _execute_turn_verification(workspace, turn_applied_paths, turn_pre_images, turn_readback_statuses, getattr(chat_request, "settings", None)):
+                                yield ve
+                        else:
+                            yield _sse_done(False, "Task completed with staged changes requiring resolution.")
                         return
 
                     detail = tc.arguments.get("path") or tc.arguments.get("command") or tc.arguments.get("query") or tc.arguments.get("question") or tc.arguments.get("fact") or tc.arguments.get("target") or ""
@@ -2981,9 +3045,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         else:
                             yield _sse_status("audit", "✓ Post-generation structural audit passed cleanly.")
 
+                    _track_pre_images(staged_changes, workspace, turn_pre_images)
                     finalization_ok = not staged_changes
                     async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages), extra_texts=_get_tool_prose(tool_results_list)):
                         yield event
+                        _track_finalization_event(event, turn_applied_paths, turn_readback_statuses)
                         outcome = _finalization_succeeded(event)
                         if outcome is not None:
                             finalization_ok = outcome
@@ -3003,7 +3069,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         "details": f"Completed in {iteration + 1} iterations, {total_tools_executed} tools",
                     })
                     yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
-                    yield _sse_done(True, "All tasks completed and verified successfully.")
+                    async for ve in _execute_turn_verification(workspace, turn_applied_paths, turn_pre_images, turn_readback_statuses, getattr(chat_request, "settings", None)):
+                        yield ve
                     return
 
                 has_any_error = any("ERROR:" in tr for tr in tool_results_list)
@@ -3112,9 +3179,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         yield _sse_done(False, "Task failed: Agent emitted prose narration without executing tools.")
                         return
 
+                _track_pre_images(staged_changes, workspace, turn_pre_images)
                 finalization_ok = not staged_changes
                 async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                     yield event
+                    _track_finalization_event(event, turn_applied_paths, turn_readback_statuses)
                     outcome = _finalization_succeeded(event)
                     if outcome is not None:
                         finalization_ok = outcome
@@ -3137,7 +3206,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 if truncation_retries > 0:
                     logger.info("[TRUNCATION_METRIC] model=%s tokens=%d retry_count=%d final_status=recovered", chat_request.model, tokens_used, truncation_retries)
                 yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
-                yield _sse_done(True, "All tasks completed and verified successfully.")
+                async for ve in _execute_turn_verification(workspace, turn_applied_paths, turn_pre_images, turn_readback_statuses, getattr(chat_request, "settings", None)):
+                    yield ve
                 return
 
             if not has_tools:
@@ -3165,9 +3235,11 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         yield _sse_done(False, "Task failed: Agent emitted prose narration without executing tools.")
                         return
 
+                _track_pre_images(staged_changes, workspace, turn_pre_images)
                 finalization_ok = not staged_changes
                 async for event in _finalize_staged_changes(staged_changes, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                     yield event
+                    _track_finalization_event(event, turn_applied_paths, turn_readback_statuses)
                     outcome = _finalization_succeeded(event)
                     if outcome is not None:
                         finalization_ok = outcome
@@ -3189,7 +3261,8 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 })
                 yield _sse_metrics(iteration + 1, total_tools_executed, duration_ms, tier=tier, tokens_used=tokens_used, surgical_edits=surgical_edits, fullfile_edits=fullfile_edits)
                 if total_tools_executed > 0 or staged_changes:
-                    yield _sse_done(True, "All tasks completed and verified successfully.")
+                    async for ve in _execute_turn_verification(workspace, turn_applied_paths, turn_pre_images, turn_readback_statuses, getattr(chat_request, "settings", None)):
+                        yield ve
                 else:
                     yield _sse_done(False, "Task completed with zero tools executed.")
                 return
@@ -3229,8 +3302,10 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                 )
 
         if valid_staged:
+            _track_pre_images(valid_staged, workspace, turn_pre_images)
             async for event in _finalize_staged_changes(valid_staged, workspace, tier, turn_number=turn_number, user_query=user_query, conversation_messages=_get_contamination_history(messages)):
                 yield event
+                _track_finalization_event(event, turn_applied_paths, turn_readback_statuses)
         elif staged_changes:
             yield _sse_status(
                 "integrity_gate",

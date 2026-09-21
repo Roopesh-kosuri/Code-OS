@@ -66,7 +66,7 @@ class DAGEngine:
                         logger.debug("Spec coverage check skipped: %s", cov_exc)
                     
                     await update_job_status(job_id, "completed")
-                    await add_job_log(job_id, "Workflow execution completed successfully.")
+                    await add_job_log(job_id, "Workflow execution verified.")
                     break
                     
                 # Check if any task failed (but only if no tasks are still waiting for user input)
@@ -294,7 +294,7 @@ class DAGEngine:
 
             await update_task_status(task_id, "completed", reasoning_summary=output.reasoning_summary, structured_data=output.structured_data)
             if is_verified:
-                await add_job_log(job_id, f"Agent [{role}] successfully completed task '{task['title']}'.")
+                await add_job_log(job_id, f"Agent [{role}] completed task '{task['title']}' (verified).")
                 if verifications_run:
                     await add_job_log(job_id, f"[VERIFICATIONS RUN] {', '.join(sorted(set(verifications_run)))}")
             else:
