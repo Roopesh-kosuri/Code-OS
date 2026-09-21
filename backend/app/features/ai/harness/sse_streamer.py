@@ -176,6 +176,41 @@ def _sse_metrics(
     return _sse_event("metrics", payload)
 
 
+def _sse_verification_started(workspace: str, touched_files: list[str], hooks: list[str]) -> str:
+    return _sse_event("verification_started", {
+        "workspace": workspace,
+        "touched_files": touched_files,
+        "hooks": hooks,
+    })
+
+
+def _sse_verification_hook_finished(
+    hook: str,
+    status: str,
+    summary: str,
+    duration_ms: int = 0,
+    details: list[str] | None = None,
+    skip_reason: str | None = None,
+    caveats: list[str] | None = None,
+) -> str:
+    return _sse_event("verification_hook_finished", {
+        "hook": hook,
+        "status": status,
+        "summary": summary,
+        "duration_ms": duration_ms,
+        "details": details or [],
+        "skip_reason": skip_reason,
+        "caveats": caveats or [],
+    })
+
+
+def _sse_verification_result(verdict: dict[str, Any], results: list[dict[str, Any]]) -> str:
+    return _sse_event("verification_result", {
+        "verdict": verdict,
+        "results": results,
+    })
+
+
 def _sse_done(success: bool, message: str = "", **kwargs: Any) -> str:
     payload = {"success": success, "message": message}
     payload.update(kwargs)

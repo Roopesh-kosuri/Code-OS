@@ -405,3 +405,204 @@ def completion_line(verdict: Verdict) -> str:
         return f"Completed with verification failures: {reasons_text}."
 
     return f"Completed unverified: unknown verdict state '{state_str}'."
+
+
+# ── Turn-Level Verification Orchestrator (Part 2 & Part 6) ──────────────────
+
+# Per-workspace lock to ensure one verification at a time per workspace
+_WORKSPACE_VERIFY_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+async def execute_verification_matrix(
+    workspace_root: str | Path,
+    touched_files: list[str],
+    pre_images: dict[str, bytes | None] | None = None,
+    readback_statuses: dict[str, str] | None = None,
+    raw_settings: dict[str, Any] | None = None,
+    event_emitter: Optional[Callable[[str], Any]] = None,
+    cancellation_event: Optional[asyncio.Event] = None,
+) -> tuple[Verdict, list[VerifyResult]]:
+    """Execute the full verification matrix for a turn, task, or job.
+    
+    Runs once per turn, never blocks applied mutations, emits typed SSE events,
+    and returns (verdict, results).
+    """
+    from app.core.paths import normalize_workspace
+    from app.features.ai.harness.sse_streamer import (
+        _sse_verification_hook_finished,
+        _sse_verification_result,
+        _sse_verification_started,
+    )
+    from app.features.ai.harness.activity_logger import _append_activity_log
+
+    ws_path = normalize_workspace(str(workspace_root))
+    ws_key = str(ws_path)
+
+    lock = _WORKSPACE_VERIFY_LOCKS.setdefault(ws_key, asyncio.Lock())
+    async with lock:
+        settings = parse_verify_settings(raw_settings)
+
+        # 1. Master switch check: code_os_verify_enabled
+        if not settings.get("code_os_verify_enabled", True):
+            verdict = Verdict(
+                state=VerdictState.UNVERIFIED,
+                reasons=["verification disabled by setting"],
+                summary_line="Completed unverified: verification disabled by setting.",
+            )
+            if event_emitter:
+                event_emitter(_sse_verification_result(verdict.to_dict(), []))
+            return verdict, []
+
+        # 2. If no files touched
+        if not touched_files:
+            verdict = Verdict(
+                state=VerdictState.VERIFIED,
+                caveats=["no files modified"],
+                summary_line="Verified (no files modified).",
+            )
+            if event_emitter:
+                event_emitter(_sse_verification_result(verdict.to_dict(), []))
+            return verdict, []
+
+        results: list[VerifyResult] = []
+
+        # 3. Synchronous S7 readback status check
+        rb_dict = readback_statuses or {}
+        rb_failed_items = [f"{k}: {v}" for k, v in rb_dict.items() if v != "passed"]
+        if rb_failed_items:
+            rb_res = VerifyResult(
+                hook="readback_hash",
+                status=VerifyStatus.FAILED,
+                summary="disk state suspect: readback failed",
+                details=rb_failed_items,
+                duration_ms=1,
+            )
+            results.append(rb_res)
+            # Skip heavy hooks per specification: disk state suspect
+            verdict = compute_verdict(results, {"changed_files": touched_files})
+            if event_emitter:
+                event_emitter(_sse_verification_started(ws_key, touched_files, ["readback_hash"]))
+                event_emitter(_sse_verification_hook_finished(
+                    hook="readback_hash",
+                    status=rb_res.status.value,
+                    summary=rb_res.summary,
+                    duration_ms=rb_res.duration_ms,
+                    details=rb_res.details,
+                ))
+                event_emitter(_sse_verification_result(verdict.to_dict(), [r.to_dict() for r in results]))
+            return verdict, results
+
+        rb_res = VerifyResult(
+            hook="readback_hash",
+            status=VerifyStatus.PASSED,
+            summary="readback verified",
+            duration_ms=1,
+        )
+        results.append(rb_res)
+
+        # Build active hooks list
+        hooks = ["readback_hash", "security_scan", "test_suite"]
+        has_lockfile = any(Path(f).name in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml") for f in touched_files)
+        if has_lockfile:
+            hooks.append("npm_audit")
+
+        if event_emitter:
+            event_emitter(_sse_verification_started(ws_key, touched_files, hooks))
+            event_emitter(_sse_verification_hook_finished(
+                hook="readback_hash",
+                status=rb_res.status.value,
+                summary=rb_res.summary,
+                duration_ms=rb_res.duration_ms,
+            ))
+
+        # Check cancellation
+        if cancellation_event and cancellation_event.is_set():
+            verdict = Verdict(
+                state=VerdictState.UNVERIFIED,
+                reasons=["verification cancelled by user"],
+                summary_line="Completed unverified: verification cancelled by user.",
+            )
+            return verdict, results
+
+        # 4. Security Scan Hook
+        supp_count = 0
+        if settings.get("code_os_verify_security_enabled", True):
+            from app.features.ai.harness.verify_security import run_security_scan_hook
+            sec_res, supp_count = await run_security_scan_hook(ws_path, touched_files, pre_images)
+            results.append(sec_res)
+            if event_emitter:
+                event_emitter(_sse_verification_hook_finished(
+                    hook="security_scan",
+                    status=sec_res.status.value if isinstance(sec_res.status, VerifyStatus) else str(sec_res.status),
+                    summary=sec_res.summary,
+                    duration_ms=sec_res.duration_ms,
+                    details=sec_res.details,
+                    caveats=sec_res.caveats,
+                ))
+
+        # Check cancellation
+        if cancellation_event and cancellation_event.is_set():
+            verdict = Verdict(
+                state=VerdictState.UNVERIFIED,
+                reasons=["verification cancelled by user"],
+                summary_line="Completed unverified: verification cancelled by user.",
+            )
+            return verdict, results
+
+        # 5. Test Suite Hook
+        from app.features.ai.harness.verify_runners import run_test_suite_hook
+        test_res = await run_test_suite_hook(ws_path, touched_files, pre_images, raw_settings=settings)
+        results.append(test_res)
+        if event_emitter:
+            event_emitter(_sse_verification_hook_finished(
+                hook="test_suite",
+                status=test_res.status.value if isinstance(test_res.status, VerifyStatus) else str(test_res.status),
+                summary=test_res.summary,
+                duration_ms=test_res.duration_ms,
+                details=test_res.details,
+                skip_reason=test_res.skip_reason,
+                caveats=test_res.caveats,
+            ))
+
+        # 6. npm audit Hook (if lockfile touched)
+        if has_lockfile:
+            from app.features.ai.harness.verify_security import run_npm_audit_hook
+            audit_res = await run_npm_audit_hook(ws_path)
+            results.append(audit_res)
+            if event_emitter:
+                event_emitter(_sse_verification_hook_finished(
+                    hook="npm_audit",
+                    status=audit_res.status.value if isinstance(audit_res.status, VerifyStatus) else str(audit_res.status),
+                    summary=audit_res.summary,
+                    duration_ms=audit_res.duration_ms,
+                    details=audit_res.details,
+                    skip_reason=audit_res.skip_reason,
+                ))
+
+        # 7. Compute Consolidated Verdict
+        changed_info = {
+            "changed_files": touched_files,
+            "suppressions_added": supp_count,
+        }
+        verdict = compute_verdict(results, changed_info)
+
+        # 8. Emit Final verification_result Event
+        if event_emitter:
+            event_emitter(_sse_verification_result(verdict.to_dict(), [r.to_dict() for r in results]))
+
+        # 9. Record in Activity Log (persistence without DB migration)
+        try:
+            _append_activity_log(
+                ws_key,
+                "verification_matrix",
+                verdict.summary_line,
+                {
+                    "verdict": verdict.to_dict(),
+                    "results": [r.to_dict() for r in results],
+                    "touched_files": touched_files,
+                },
+            )
+        except Exception as log_err:
+            logger.debug("Activity log append skipped: %s", log_err)
+
+        return verdict, results
