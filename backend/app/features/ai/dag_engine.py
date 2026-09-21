@@ -263,7 +263,7 @@ class DAGEngine:
             is_verified = True
             verifications_run: list[str] = []
             if output.proposals:
-                from ..core.paths import ensure_within_workspace
+                from app.core.paths import ensure_within_workspace
                 from .harness.content_integrity import validate_language_syntax
                 import hashlib
                 for p in output.proposals:
