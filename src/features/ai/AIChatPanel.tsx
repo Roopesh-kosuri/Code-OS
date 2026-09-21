@@ -37,6 +37,7 @@ import { useWorkspaceStore } from "../../stores/workspaceStore";
 import { api } from "../../lib/api";
 import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { DockedApprovalCard } from "./DockedApprovalCard";
+import { VerificationBadge } from "./VerificationBadge";
 import { Sparkles, Zap, CheckCircle2, XCircle, ExternalLink, AlertTriangle, Globe } from "lucide-react";
 import { PromptEnhancerBar } from "../intelligence/PromptEnhancerBar";
 import { useIntelligenceStore } from "../../stores/intelligenceStore";
@@ -274,6 +275,7 @@ export function AIChatPanel() {
   const agentStatus = useAIStore((s) => s.agentStatus);
   const agentPlan = useAIStore((s) => s.agentPlan);
   const agentToolHistory = useAIStore((s) => s.agentToolHistory);
+  const currentVerification = useAIStore((s) => s.currentVerification);
   const retryStatus = useAIStore((s) => s.retryStatus);
   const recoveryPayload = useAIStore((s) => s.recoveryPayload);
   const clearRecovery = useAIStore((s) => s.clearRecovery);
@@ -1376,6 +1378,11 @@ export function AIChatPanel() {
                     </div>
                   </div>
                 )}
+
+                {/* Phase 14: Verification Matrix Evidence Badge */}
+                <VerificationBadge
+                  verification={message.verification || (index === messages.length - 1 ? currentVerification : undefined)}
+                />
               </div>
             </div>
           );

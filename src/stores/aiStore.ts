@@ -229,6 +229,32 @@ export interface RAGContextInfo {
   files: string[];
 }
 
+export interface VerificationHookResult {
+  hook: string;
+  status: "passed" | "failed" | "warn" | "skipped" | "unverified" | string;
+  summary: string;
+  duration_ms: number;
+  details?: string[];
+  skip_reason?: string;
+  caveats?: string[];
+}
+
+export interface VerificationVerdict {
+  state: "verified" | "unverified" | "failed" | string;
+  reasons: string[];
+  caveats: string[];
+  summary_line: string;
+}
+
+export interface VerificationState {
+  status: "idle" | "verifying" | "verified" | "unverified" | "failed" | string;
+  workspace?: string;
+  touched_files?: string[];
+  hooks?: string[];
+  results: VerificationHookResult[];
+  verdict?: VerificationVerdict;
+}
+
 export interface ExtendedChatMessage extends ChatMessage {
   id?: string;
   model?: string;
@@ -243,6 +269,7 @@ export interface ExtendedChatMessage extends ChatMessage {
   commands?: CommandExecution[];
   checkpoint?: CheckpointInfo;
   ragContext?: RAGContextInfo;
+  verification?: VerificationState;
 }
 
 export interface ChatThread {
@@ -291,6 +318,7 @@ type AIState = {
   fetchInterruptedTasks: () => Promise<void>;
   streamStartTimestamp: number | null;
   lastTokenTimestamp: number | null;
+  currentVerification: VerificationState | null;
 
   // Adaptive Orchestration (Rony <-> 5-Agent Team)
   escalationRecommended: boolean;
@@ -705,6 +733,89 @@ export function createSSEStreamHandler(
           escalationActionId: actionId,
         };
       });
+    } else if (eventType === "verification_started") {
+      const vState: VerificationState = {
+        status: "verifying",
+        workspace: data.workspace,
+        touched_files: data.touched_files || [],
+        hooks: data.hooks || [],
+        results: [],
+      };
+      set((state) => {
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = { ...last, verification: vState };
+        }
+        return { currentVerification: vState, messages };
+      });
+    } else if (eventType === "verification_hook_finished") {
+      const hookRes: VerificationHookResult = {
+        hook: data.hook || "",
+        status: data.status || "unverified",
+        summary: data.summary || "",
+        duration_ms: data.duration_ms || 0,
+        details: Array.isArray(data.details) ? data.details : [],
+        skip_reason: data.skip_reason,
+        caveats: Array.isArray(data.caveats) ? data.caveats : [],
+      };
+      set((state) => {
+        const currentV = state.currentVerification || {
+          status: "verifying",
+          results: [],
+        };
+        const existingResults = [...currentV.results];
+        const existingIdx = existingResults.findIndex((r) => r.hook === hookRes.hook);
+        if (existingIdx >= 0) {
+          existingResults[existingIdx] = hookRes;
+        } else {
+          existingResults.push(hookRes);
+        }
+        const updatedV: VerificationState = {
+          ...currentV,
+          results: existingResults,
+        };
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = { ...last, verification: updatedV };
+        }
+        return { currentVerification: updatedV, messages };
+      });
+    } else if (eventType === "verification_result") {
+      const verdict = data.verdict || {
+        state: "unverified",
+        reasons: [],
+        caveats: [],
+        summary_line: "",
+      };
+      const results: VerificationHookResult[] = Array.isArray(data.results)
+        ? data.results.map((r: any) => ({
+            hook: r.hook,
+            status: r.status,
+            summary: r.summary,
+            duration_ms: r.duration_ms || 0,
+            details: r.details || [],
+            skip_reason: r.skip_reason,
+            caveats: r.caveats || [],
+          }))
+        : [];
+      set((state) => {
+        const updatedV: VerificationState = {
+          status: verdict.state,
+          workspace: state.currentVerification?.workspace,
+          touched_files: state.currentVerification?.touched_files,
+          hooks: state.currentVerification?.hooks,
+          results: results.length > 0 ? results : (state.currentVerification?.results || []),
+          verdict,
+        };
+        const messages = [...state.messages];
+        const last = messages[messages.length - 1];
+        if (last && last.role === "assistant") {
+          messages[messages.length - 1] = { ...last, verification: updatedV };
+        }
+        return { currentVerification: updatedV, messages };
+      });
     } else if (eventType === "done") {
       const isSuccess = data.success !== false;
       const doneMsg = data.message || (isSuccess ? "Task completed" : "Task stopped");
@@ -832,6 +943,7 @@ export const useAIStore = create<AIState>((set, get) => ({
   pendingUserResponse: null,
   streamStartTimestamp: null,
   lastTokenTimestamp: null,
+  currentVerification: null,
 
   // Adaptive Orchestration
   escalationRecommended: false,
@@ -1559,7 +1671,8 @@ export const useAIStore = create<AIState>((set, get) => ({
       pendingUserResponse: null,
       pendingApproval: null,
       pendingApprovals: [],
-  interruptedTasks: [],
+      interruptedTasks: [],
+      currentVerification: null,
     }));
 
     const t_echo = performance.now();
