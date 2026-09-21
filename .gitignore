@@ -93,6 +93,9 @@ docs/CODEX_HANDOFF.md
 docs/CODE_SIGNING_PLAN.md
 docs/PRE_COMMIT_CHECKLIST.md
 docs/RELEASE_CLEANUP.md
+brag-output/
+*transcript*
+brain/
 
 # Audio & Media Test Outputs (Preserve core UI assets)
 *.wav
