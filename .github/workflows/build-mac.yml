@@ -7,16 +7,14 @@ name: macOS Production Release Build (macOS ONLY)
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g. v4.0.0)'
+        description: 'Release Tag (e.g. v5.0.0)'
         required: false
-        default: 'v4.0.0'
+        default: 'v5.0.0'
 
 permissions:
   contents: write

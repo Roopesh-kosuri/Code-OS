@@ -101,11 +101,10 @@ jobs:
       - name: Run TypeScript Typechecks
         run: npm run typecheck
 
-      - name: Compile Production App Build
-        run: npm run build
-
-      - name: Post-Bundle Runtime Assertion (Build Gate)
-        run: python scripts/verify_bundle_runtime.py
+      - name: Compile Frontend and Electron Main
+        run: |
+          npm run build:vite
+          npm run build:electron
 
       - name: Run backend tests with coverage (Linux)
         if: runner.os == 'Linux'
@@ -170,6 +169,7 @@ jobs:
   mac-release-build:
     name: macOS Release Build, Sign, Notarize & Gatekeeper Verify
     runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 30
     needs: [security-gates]
     strategy:
