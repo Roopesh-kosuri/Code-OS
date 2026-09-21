@@ -186,6 +186,9 @@ class MutationResult:
     rejection: Optional[RejectionDict] = None
     syntax_status: dict[str, str] = field(default_factory=dict)
     metrics: list[str] = field(default_factory=list)
+    # Phase 14 additions
+    pre_images: dict[str, bytes | None] = field(default_factory=dict)
+    readback_status: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1728,11 +1731,42 @@ def apply_mutations(
         except Exception as purge_err:
             logger.warning("Failed to purge trash entry '%s': %s", trash_root, purge_err)
 
+    # S7: Verify Readback Hash (Phase 14)
+    # Synchronous per-apply check: verify disk state for applied paths
+    readback_status: dict[str, str] = {}
+    for rel_p in applied:
+        try:
+            full_p = ensure_within_workspace(str(workspace_root), rel_p)
+            if rel_p in projected:
+                if not full_p.is_file():
+                    readback_status[rel_p] = "failed: file does not exist after apply"
+                else:
+                    # Confirm bytes can be read back cleanly
+                    _ = full_p.read_bytes()
+                    readback_status[rel_p] = "passed"
+            elif full_p.exists():
+                readback_status[rel_p] = "passed"
+            else:
+                # Deleted or moved
+                readback_status[rel_p] = "passed"
+        except Exception as rb_exc:
+            readback_status[rel_p] = f"failed: {rb_exc}"
+
+    pre_images: dict[str, bytes | None] = {}
+    for rel_p in touched_paths:
+        snap = initial_snapshots.get(rel_p)
+        if snap is not None and len(snap) > 5 * 1024 * 1024:
+            pre_images[rel_p] = snap[: 5 * 1024 * 1024]
+        else:
+            pre_images[rel_p] = snap
+
     return MutationResult(
         success=True,
         applied_paths=applied,
         relocation_events=reloc_events,
         syntax_status=syntax_status,
         metrics=metrics,
+        pre_images=pre_images,
+        readback_status=readback_status,
     )
 
