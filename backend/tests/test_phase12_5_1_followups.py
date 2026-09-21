@@ -661,3 +661,177 @@ async def test_reread_never_auto_approves(tmp_path: Path):
     # Cleanup
     _pending_approvals.pop(new_aid, None)
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 12.6 Pre-Certification: Real Denied-Tool Path Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_denied_tool_real_path_no_nameerror_card_and_honest_deny(tmp_path):
+    """Real Tier 1 turn with denied tool runs classifier re-eval without NameError and emits card + honest deny."""
+    from unittest.mock import MagicMock, AsyncMock, patch
+    from app.features.ai.chat_harness import ChatAgentRequest, run_chat_agent, _pending_approvals
+    from app.features.ai.harness import plan_parser
+
+    real_classify = plan_parser._classify_task_effort
+    spy_classify = MagicMock(wraps=real_classify)
+
+    # get_diagnostics is NOT in Tier 1 manifest
+    tool_call_chunk = (
+        "[TOOL_CALL: get_diagnostics]\n"
+        '{"path": "foo.py"}\n'
+        "[/TOOL_CALL]\n\n"
+        "[DONE]\n"
+    )
+
+    async def mock_stream(*args, **kwargs):
+        yield tool_call_chunk
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(return_value=mock_stream())
+
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=str(tmp_path),
+        messages=[{"role": "user", "content": "quick check"}],
+    )
+
+    events = []
+    with patch("app.features.ai.chat_harness._classify_task_effort", spy_classify), \
+         patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+        async for evt in run_chat_agent(req):
+            events.append(evt)
+            if "approval_required" in evt:
+                # User declines tier upgrade -> deterministic honest deny
+                for aid, p in list(_pending_approvals.items()):
+                    if p.action_type == "tier_upgrade":
+                        p.approved = False
+                        p.event.set()
+
+    # 1. No NameError or unhandled agent execution error
+    assert not any("NameError" in e or "Agent execution error" in e for e in events)
+
+    # 2. Classifier spy was called twice: once at turn start, once on denied tool re-eval
+    assert spy_classify.call_count >= 2
+    # Second call args: verified that is_agent_mode was passed as a valid boolean (not undefined)
+    re_call_kwargs = spy_classify.call_args_list[1].kwargs
+    assert "is_agent_mode" in re_call_kwargs
+    assert isinstance(re_call_kwargs["is_agent_mode"], bool)
+
+    # 3. Deterministic outcome: approval card was presented, then honest tool_denied was emitted
+    has_card = any("approval_required" in e for e in events) or any("approval_request" in e and "tier_upgrade" in e for e in events)
+    assert has_card, "Expected approval card for tier_upgrade"
+
+    has_honest_deny = any("tool_denied" in e for e in events)
+    assert has_honest_deny, "Expected honest tool_denied error after declining card"
+
+
+@pytest.mark.asyncio
+async def test_denied_tool_real_path_no_nameerror_card_approved_upgrades(tmp_path):
+    """Real Tier 1 turn with denied tool upgrades deterministically when user approves card."""
+    from unittest.mock import MagicMock, AsyncMock, patch
+    from app.features.ai.chat_harness import ChatAgentRequest, run_chat_agent, _pending_approvals
+    from app.features.ai.harness import plan_parser
+
+    real_classify = plan_parser._classify_task_effort
+    spy_classify = MagicMock(wraps=real_classify)
+
+    tool_call_chunk = (
+        "[TOOL_CALL: get_diagnostics]\n"
+        '{"path": "foo.py"}\n'
+        "[/TOOL_CALL]\n\n"
+        "[DONE]\n"
+    )
+
+    async def mock_stream(*args, **kwargs):
+        yield tool_call_chunk
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(return_value=mock_stream())
+
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=str(tmp_path),
+        messages=[{"role": "user", "content": "quick check"}],
+    )
+
+    events = []
+    with patch("app.features.ai.chat_harness._classify_task_effort", spy_classify), \
+         patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+        async for evt in run_chat_agent(req):
+            events.append(evt)
+            if "approval_required" in evt:
+                # User approves tier upgrade -> deterministic upgrade to Tier 2
+                for aid, p in list(_pending_approvals.items()):
+                    if p.action_type == "tier_upgrade":
+                        p.approved = True
+                        p.event.set()
+
+    # 1. No NameError
+    assert not any("NameError" in e or "Agent execution error" in e for e in events)
+
+    # 2. Classifier was called for re-eval
+    assert spy_classify.call_count >= 2
+
+    # 3. Deterministic upgrade outcome
+    has_tier_upgrade = any("tier_upgrade" in e and "Upgraded to Tier 2" in e for e in events)
+    assert has_tier_upgrade, "Expected upgrade to Tier 2 on card approval"
+
+
+@pytest.mark.asyncio
+async def test_denied_tool_real_path_context_auto_upgrades_without_card(tmp_path):
+    """When turn context warrants Tier 2+, re-eval automatically upgrades deterministically without needing a card."""
+    from unittest.mock import MagicMock, AsyncMock, patch
+    from app.features.ai.chat_harness import ChatAgentRequest, run_chat_agent
+    from app.features.ai.harness import plan_parser
+
+    tool_call_chunk = (
+        "[TOOL_CALL: get_diagnostics]\n"
+        '{"path": "foo.py"}\n'
+        "[/TOOL_CALL]\n\n"
+        "[DONE]\n"
+    )
+
+    async def mock_stream(*args, **kwargs):
+        yield tool_call_chunk
+
+    mock_provider = MagicMock()
+    mock_provider.stream_chat = MagicMock(return_value=mock_stream())
+
+    req = ChatAgentRequest(
+        provider="mock",
+        model="mock-model",
+        workspace=str(tmp_path),
+        messages=[{"role": "user", "content": "Refactor database migrations across auth, billing, storage modules"}],
+        attached_paths=["auth.py", "billing.py", "storage.py"],
+    )
+
+    call_count = 0
+    def spy_classify(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Force first call to Tier 1 so turn starts in Tier 1
+            return 1, "Quick Task", "Initial tier 1"
+        # Second call runs the REAL classifier
+        return plan_parser._classify_task_effort(*args, **kwargs)
+
+    events = []
+    with patch("app.features.ai.chat_harness._classify_task_effort", side_effect=spy_classify), \
+         patch("app.features.ai.chat_harness.provider_for", new=AsyncMock(return_value=mock_provider)):
+        async for evt in run_chat_agent(req):
+            events.append(evt)
+
+    # 1. No NameError
+    assert not any("NameError" in e or "Agent execution error" in e for e in events)
+
+    # 2. Both calls executed
+    assert call_count >= 2
+
+    # 3. Deterministic auto-upgrade based on context
+    has_midturn_upgrade = any("tier_upgrade" in e for e in events) or any("Mid-turn upgrade" in e for e in events)
+    assert has_midturn_upgrade, "Expected mid-turn auto-upgrade based on turn context"
+
+

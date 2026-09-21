@@ -1514,15 +1514,16 @@ async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:
                         {t.get("function", {}).get("name") or t.get("name") for t in active_tools if isinstance(t, dict)}
                         if active_tools is not None else None
                     )
-                    if allowed_tool_names is not None and tc.name not in allowed_tool_names:
+                    if allowed_tool_names is not None and tc.name not in allowed_tool_names and not (tc.name == "memory_write" and memory_write_disabled):
                         logger.warning("[TOOL_DENIED] tool=%s tier=%d", tc.name, tier)
                         print(f"[TOOL_DENIED] tool={tc.name} tier={tier}")
                         # Re-eval is context-driven, not request-driven. Requesting a tool does not earn it.
                         # Denied tool name and arguments carry zero score weight and must NOT be fed to classifier.
+                        req_is_agent_mode = getattr(request, "is_agent_mode", getattr(request, "agent_mode", False))
                         re_tier, re_label, re_reason = _classify_task_effort(
                             user_query=user_query,
-                            attached_paths=request.attached_paths,
-                            is_agent_mode=is_agent_mode,
+                            attached_paths=getattr(request, "attached_paths", None),
+                            is_agent_mode=req_is_agent_mode,
                         )
 
                         if re_tier >= 2:
