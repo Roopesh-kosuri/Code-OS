@@ -890,9 +890,23 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
         original_stripped = raw_original.replace("\r\n", "\n").strip()
         updated_clean = _strip_code_fences(change.updated)
         
+        # Preserve the trailing newline state of the ORIGINAL block it replaces (CRLF-aware)
+        if raw_original.endswith("\r\n"):
+            if not updated_clean.endswith("\r\n"):
+                updated_clean = updated_clean.rstrip("\r\n") + "\r\n"
+        elif raw_original.endswith("\n"):
+            if not updated_clean.endswith("\n"):
+                updated_clean = updated_clean.rstrip("\r\n") + "\n"
+        else:
+            if raw_original:
+                updated_clean = updated_clean.rstrip("\r\n")
+        
         if not file_path.exists():
             # If creating a new file, ignore what the original section said (it's often descriptive prose)
-            merged_contents[change.path] = updated_clean
+            if change.updated and ("\r\n" in change.updated or raw_original.endswith("\r\n")):
+                merged_contents[change.path] = updated_clean.replace("\r\n", "\n").replace("\n", "\r\n")
+            else:
+                merged_contents[change.path] = updated_clean
         else:
             try:
                 current_text = file_path.read_text(encoding="utf-8", errors="ignore")
@@ -902,13 +916,18 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
                     detail=f"Could not read {change.path}: {exc}"
                 )
                 
+            is_crlf = "\r\n" in current_text or raw_original.endswith("\r\n")
             current_normalized = current_text.replace("\r\n", "\n")
             original_normalized = raw_original.replace("\r\n", "\n")
             # Find the original snippet
 
             if not original_stripped or not current_normalized.strip() or _is_known_placeholder(original_stripped):
                 target_snippet = None
-                merged = updated_clean
+                merged = updated_clean.replace("\r\n", "\n")
+                if raw_original.endswith(("\r\n", "\n")) and not merged.endswith("\n"):
+                    merged += "\n"
+                elif not raw_original.endswith(("\r\n", "\n")) and raw_original and merged.endswith("\n"):
+                    merged = merged.rstrip("\n")
             elif original_normalized in current_normalized:
                 target_snippet = original_normalized
             elif original_stripped in current_normalized:
@@ -930,7 +949,11 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
 
             if target_snippet is None:
                 if not original_stripped or not current_normalized.strip() or _is_known_placeholder(original_stripped):
-                    merged = updated_clean
+                    merged = updated_clean.replace("\r\n", "\n")
+                    if raw_original.endswith(("\r\n", "\n")) and not merged.endswith("\n"):
+                        merged += "\n"
+                    elif not raw_original.endswith(("\r\n", "\n")) and raw_original and merged.endswith("\n"):
+                        merged = merged.rstrip("\n")
                 else:
                     curr_lines = [l.strip() for l in current_normalized.splitlines() if l.strip()]
                     orig_lines = [l.strip() for l in original_stripped.splitlines() if l.strip()]
@@ -939,6 +962,10 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
 
                     if orig_lines and match_ratio >= 0.8:
                         merged = updated_clean.replace("\r\n", "\n")
+                        if raw_original.endswith(("\r\n", "\n")) and not merged.endswith("\n"):
+                            merged += "\n"
+                        elif not raw_original.endswith(("\r\n", "\n")) and raw_original and merged.endswith("\n"):
+                            merged = merged.rstrip("\n")
                     else:
                         logger.warning("apply_proposal: proposed original block not cleanly matched in %s (similarity %.2f)", change.path, match_ratio)
                         raise HTTPException(
@@ -947,12 +974,20 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
                         )
             else:
                 if not target_snippet.strip():
-                    merged = updated_clean
+                    merged = updated_clean.replace("\r\n", "\n")
+                    if raw_original.endswith(("\r\n", "\n")) and not merged.endswith("\n"):
+                        merged += "\n"
+                    elif not raw_original.endswith(("\r\n", "\n")) and raw_original and merged.endswith("\n"):
+                        merged = merged.rstrip("\n")
                 else:
                     count = current_normalized.count(target_snippet)
                     if count > 1:
                         if target_snippet.strip() == current_normalized.strip():
                             merged = updated_clean.replace("\r\n", "\n")
+                            if raw_original.endswith(("\r\n", "\n")) and not merged.endswith("\n"):
+                                merged += "\n"
+                            elif not raw_original.endswith(("\r\n", "\n")) and raw_original and merged.endswith("\n"):
+                                merged = merged.rstrip("\n")
                         else:
                             logger.warning("apply_proposal: snippet appears %d times in %s, skipping ambiguous edit", count, change.path)
                             raise HTTPException(
@@ -962,6 +997,8 @@ async def apply_proposal(proposal_id: str) -> EditProposalDto:
                     else:
                         merged = current_normalized.replace(target_snippet, updated_clean.replace("\r\n", "\n"), 1)
 
+            if is_crlf:
+                merged = merged.replace("\r\n", "\n").replace("\n", "\r\n")
             merged_contents[change.path] = merged
 
 

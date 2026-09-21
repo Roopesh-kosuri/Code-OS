@@ -116,3 +116,86 @@ async def test_bug_b_editing_existing_file_twice_in_a_row(tmp_path, temp_db):
     final_text = existing_file.read_text(encoding="utf-8")
     assert "func_150" in final_text
     assert "# Calculator Header" in final_text
+
+
+@pytest.mark.asyncio
+async def test_apply_proposal_preserves_no_trailing_newline_when_original_lacks_it(tmp_path, temp_db):
+    """(b) When the original block being replaced lacks a trailing newline, replacement must not inject one."""
+    ws_dir = str(tmp_path / "ws_no_newline")
+    Path(ws_dir).mkdir(parents=True, exist_ok=True)
+    await set_workspace_trust(ws_dir, trusted=True)
+
+    file_path = Path(ws_dir) / "module.py"
+    initial_content = "VALUE = 42\nRESULT = VALUE + 1\n"
+    file_path.write_text(initial_content, encoding="utf-8")
+
+    # Replace inline 'VALUE = 42' (no trailing newline) with 'VALUE = 100'
+    orig_block = "VALUE = 42"  # NO trailing newline
+    updated_block = "```python\nVALUE = 100\n```"  # Outer fences with internal newline
+
+    req = EditProposalRequest(
+        workspace=ws_dir,
+        summary="Update value inline",
+        changes=[
+            FileChange(
+                path="module.py",
+                original=orig_block,
+                updated=updated_block,
+            )
+        ],
+    )
+    p = await create_proposal(req)
+    applied = await apply_proposal(p.id)
+    assert applied.status == "applied"
+
+    result_text = file_path.read_text(encoding="utf-8")
+    expected = "VALUE = 100\nRESULT = VALUE + 1\n"
+    assert result_text == expected
+    # Ensure no extra newline was injected between lines
+    assert "VALUE = 100\n\nRESULT" not in result_text
+    assert "VALUE = 100\nRESULT" in result_text
+
+
+@pytest.mark.asyncio
+async def test_apply_proposal_crlf_file_case_preserves_crlf(tmp_path, temp_db):
+    """(c) CRLF file case: CRLF-encoded file and CRLF original block preserve CRLF throughout without line join."""
+    ws_dir = str(tmp_path / "ws_crlf")
+    Path(ws_dir).mkdir(parents=True, exist_ok=True)
+    await set_workspace_trust(ws_dir, trusted=True)
+
+    file_path = Path(ws_dir) / "crlf_app.py"
+    initial_bytes = b"def greet():\r\n    msg = 'hello'\r\n    return msg\r\n\r\ndef farewell():\r\n    return 'bye'\r\n"
+    file_path.write_bytes(initial_bytes)
+
+    # Edit greet function with CRLF block
+    orig_block = "def greet():\r\n    msg = 'hello'\r\n    return msg\r\n"
+    updated_block = "```python\r\ndef greet():\r\n    msg = 'hi'\r\n    return msg\r\n```"
+
+    req = EditProposalRequest(
+        workspace=ws_dir,
+        summary="Update greeting in CRLF file",
+        changes=[
+            FileChange(
+                path="crlf_app.py",
+                original=orig_block,
+                updated=updated_block,
+            )
+        ],
+    )
+    p = await create_proposal(req)
+    applied = await apply_proposal(p.id)
+    assert applied.status == "applied"
+
+    result_bytes = file_path.read_bytes()
+    result_text = result_bytes.decode("utf-8")
+
+    # 1. CRLF line endings preserved
+    assert b"\r\n" in result_bytes
+    # No lone \n without \r
+    assert result_bytes.count(b"\n") == result_bytes.count(b"\r\n")
+
+    # 2. Replacement preserved trailing CRLF; farewell is NOT joined to return msg
+    assert "return msg\r\n\r\ndef farewell" in result_text
+    assert "return msgdef farewell" not in result_text
+    assert "msg = 'hi'" in result_text
+
