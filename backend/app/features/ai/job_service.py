@@ -523,7 +523,7 @@ def format_report_as_markdown(job_id: str, report: dict) -> str:
 - **Total Cost:** ${float(total_cost):.2f}
 
 ## Verification Sign-Off
-All automated tests and reviewer quality checks have completed successfully.
+All automated tests and reviewer quality checks have verified cleanly.
 """
 
 

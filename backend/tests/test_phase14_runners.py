@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from app.features.ai.harness.verification_matrix import (
+    compute_verdict,
+    Verdict,
+    VerdictState,
     VerifyResult,
     VerifyStatus,
 )
@@ -260,3 +263,50 @@ def test_vitest_jest_detection_and_argv_construction(tmp_path: Path):
     assert len(runners) == 1
     assert runners[0]["type"] == "vitest"
     assert "skip_reason" in runners[0]
+
+
+@pytest.mark.asyncio
+async def test_missing_pytest_or_runner_error_yields_unverified_never_failed(tmp_path: Path):
+    """When test runner produces no report XML (e.g. runner crash or missing pytest), status is ERROR and verdict is UNVERIFIED, never FAILED."""
+    err_res = VerifyResult(
+        hook="test_suite",
+        status=VerifyStatus.ERROR,
+        summary="no test report produced (runner exited rc=1): No module named pytest",
+        details=["ModuleNotFoundError: No module named 'pytest'"],
+    )
+    # Even with code files changed, verdict must be UNVERIFIED, not FAILED
+    verdict = compute_verdict([err_res], {"changed_files": ["app/main.py"]})
+    assert verdict.state == VerdictState.UNVERIFIED
+    assert verdict.state != VerdictState.FAILED
+    assert "hook internal error: test_suite" in verdict.reasons or "test_suite" in " ".join(verdict.reasons)
+
+
+@pytest.mark.asyncio
+async def test_missing_module_imports_yields_unverified_never_failed(tmp_path: Path):
+    """When workspace tests fail collection due to missing module dependencies, status is ERROR and verdict is UNVERIFIED, never FAILED."""
+    ws_str = str(tmp_path)
+    await set_workspace_trust(ws_str, True)
+    allow_runner_once(tmp_path, "pytest")
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "service.py").write_text("def run(): pass\n", encoding="utf-8")
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    # Import a package that does not exist in any Python environment
+    (tests_dir / "test_service.py").write_text(
+        "import nonexistent_package_xyz_987654321\n"
+        "from src.service import run\n"
+        "def test_service(): run()\n",
+        encoding="utf-8",
+    )
+
+    res = await run_test_suite_hook(tmp_path, ["src/service.py"])
+    assert res.status in (VerifyStatus.ERROR, VerifyStatus.SKIPPED)
+    assert res.status != VerifyStatus.FAILED
+
+    verdict = compute_verdict([res], {"changed_files": ["src/service.py"]})
+    assert verdict.state == VerdictState.UNVERIFIED
+    assert verdict.state != VerdictState.FAILED
+

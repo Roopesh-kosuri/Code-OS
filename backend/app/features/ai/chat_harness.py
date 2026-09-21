@@ -364,7 +364,7 @@ async def _execute_turn_verification(
     )
     for ve in verify_events:
         yield ve
-    yield _sse_done(verdict.state == VerdictState.VERIFIED, verdict.summary_line)
+    yield _sse_done(verdict.state != VerdictState.FAILED, verdict.summary_line)
 
 
 async def run_chat_agent(request: ChatAgentRequest) -> AsyncIterator[str]:

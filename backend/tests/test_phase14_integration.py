@@ -25,8 +25,16 @@ from app.features.ai.harness.verification_matrix import (
 )
 
 
+FORBIDDEN_COMPLETION_PHRASES = (
+    "successfully completed",
+    "completed successfully",
+    "workflow execution completed successfully",
+    "all tasks completed successfully",
+)
+
+
 def test_no_production_string_says_successfully_completed():
-    """Verify that zero occurrences of the bare phrase 'successfully completed' exist in production code."""
+    """Verify that zero occurrences of bare completion phrases exist in production code."""
     repo_root = Path(__file__).resolve().parent.parent.parent
     backend_app = repo_root / "backend" / "app"
     src_dir = repo_root / "src"
@@ -37,22 +45,30 @@ def test_no_production_string_says_successfully_completed():
     for py_file in backend_app.rglob("*.py"):
         content = py_file.read_text(encoding="utf-8", errors="ignore")
         for line_no, line in enumerate(content.splitlines(), start=1):
-            if "successfully completed" in line.lower():
-                # Allow docstrings/comments that specifically document the ban
-                if "strictly forbidden" in line.lower() or "do not say" in line.lower():
-                    continue
-                violations.append(f"{py_file.relative_to(repo_root)}:{line_no} -> {line.strip()}")
+            line_lower = line.lower()
+            # Allow docstrings/comments that specifically document the ban
+            if "strictly forbidden" in line_lower or "do not say" in line_lower or "forbidden" in line_lower:
+                continue
+            for phrase in FORBIDDEN_COMPLETION_PHRASES:
+                if phrase in line_lower:
+                    violations.append(f"{py_file.relative_to(repo_root)}:{line_no} [{phrase}] -> {line.strip()}")
 
-    # Check src frontend files
+    # Check src frontend files (production code only)
     for ext in ("*.ts", "*.tsx", "*.js", "*.jsx"):
         for js_file in src_dir.rglob(ext):
+            if "__tests__" in js_file.parts or ".test." in js_file.name or ".spec." in js_file.name:
+                continue
             content = js_file.read_text(encoding="utf-8", errors="ignore")
             for line_no, line in enumerate(content.splitlines(), start=1):
-                if "successfully completed" in line.lower():
-                    violations.append(f"{js_file.relative_to(repo_root)}:{line_no} -> {line.strip()}")
+                line_lower = line.lower()
+                if "strictly forbidden" in line_lower or "do not say" in line_lower or "forbidden" in line_lower:
+                    continue
+                for phrase in FORBIDDEN_COMPLETION_PHRASES:
+                    if phrase in line_lower:
+                        violations.append(f"{js_file.relative_to(repo_root)}:{line_no} [{phrase}] -> {line.strip()}")
 
     assert not violations, (
-        f"Found {len(violations)} occurrences of forbidden phrase 'successfully completed':\n"
+        f"Found {len(violations)} occurrences of forbidden completion phrases:\n"
         + "\n".join(violations)
     )
 

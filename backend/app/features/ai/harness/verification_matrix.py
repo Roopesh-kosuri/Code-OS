@@ -552,7 +552,29 @@ async def execute_verification_matrix(
 
         # 5. Test Suite Hook
         from app.features.ai.harness.verify_runners import run_test_suite_hook
-        test_res = await run_test_suite_hook(ws_path, touched_files, pre_images, raw_settings=settings)
+        test_coro = run_test_suite_hook(ws_path, touched_files, pre_images, raw_settings=settings)
+        if cancellation_event:
+            test_task = asyncio.create_task(test_coro)
+            wait_cancel_task = asyncio.create_task(cancellation_event.wait())
+            done, pending = await asyncio.wait([test_task, wait_cancel_task], return_when=asyncio.FIRST_COMPLETED)
+            if wait_cancel_task in done:
+                test_task.cancel()
+                try:
+                    await test_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                verdict = Verdict(
+                    state=VerdictState.UNVERIFIED,
+                    reasons=["verification cancelled by user"],
+                    summary_line="Completed unverified: verification cancelled by user.",
+                )
+                return verdict, results
+            else:
+                wait_cancel_task.cancel()
+                test_res = test_task.result()
+        else:
+            test_res = await test_coro
+
         results.append(test_res)
         if event_emitter:
             event_emitter(_sse_verification_hook_finished(

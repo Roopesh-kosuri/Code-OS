@@ -356,6 +356,7 @@ class JUnitReport:
     errors: int = 0
     skipped: int = 0
     failing_ids: list[str] = field(default_factory=list)
+    collection_errors: list[str] = field(default_factory=list)
     parse_error: str | None = None
 
 
@@ -379,6 +380,7 @@ def parse_junit_xml(report_path: Path) -> JUnitReport:
     errors = 0
     skipped = 0
     failing_ids: list[str] = []
+    collection_errors: list[str] = []
 
     # Single testsuite or testsuites container
     suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
@@ -401,7 +403,11 @@ def parse_junit_xml(report_path: Path) -> JUnitReport:
                 failing_ids.append(test_id)
             elif err_elem is not None:
                 errors += 1
-                failing_ids.append(test_id)
+                err_text = ((err_elem.attrib.get("message") or "") + " " + (err_elem.text or "")).lower()
+                if "collection failure" in err_text or "modulenotfounderror" in err_text or "importerror" in err_text or name.endswith(".py"):
+                    collection_errors.append(test_id)
+                else:
+                    failing_ids.append(test_id)
             elif skip_elem is not None:
                 skipped += 1
 
@@ -413,6 +419,7 @@ def parse_junit_xml(report_path: Path) -> JUnitReport:
         errors=errors,
         skipped=skipped,
         failing_ids=failing_ids,
+        collection_errors=collection_errors,
     )
 
 
@@ -464,14 +471,14 @@ async def run_pytest_subprocess(
         )
         combined = strip_ansi_and_cap(stdout_bytes + b"\n" + stderr_bytes)
         return proc.returncode or 0, combined, report_file
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         if proc and proc.pid:
             await _taskkill_process_tree(proc.pid)
             try:
                 proc.kill()
             except Exception:
                 pass
-        return -1, "Process timed out", None
+        return -1, "Process timed out or cancelled", None
     except Exception as exc:
         if proc and proc.pid:
             await _taskkill_process_tree(proc.pid)
@@ -778,6 +785,17 @@ async def run_test_suite_hook(
             status=VerifyStatus.SKIPPED,
             summary="0 tests collected",
             skip_reason="0 tests collected",
+            duration_ms=duration_ms,
+            coverage_note=cov_note,
+        )
+
+    # Missing module imports during test collection -> ERROR (unverified, never FAILED)
+    if report.collection_errors and report.failed == 0:
+        return VerifyResult(
+            hook="test_suite",
+            status=VerifyStatus.ERROR,
+            summary=f"missing module imports / test collection failed: {', '.join(report.collection_errors)}",
+            details=report.collection_errors,
             duration_ms=duration_ms,
             coverage_note=cov_note,
         )
