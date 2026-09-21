@@ -830,8 +830,28 @@ async def test_denied_tool_real_path_context_auto_upgrades_without_card(tmp_path
     # 2. Both calls executed
     assert call_count >= 2
 
-    # 3. Deterministic auto-upgrade based on context
-    has_midturn_upgrade = any("tier_upgrade" in e for e in events) or any("Mid-turn upgrade" in e for e in events)
-    assert has_midturn_upgrade, "Expected mid-turn auto-upgrade based on turn context"
+    # 3. Deterministic auto-upgrade based on context:
+    # Specifically assert the mid-turn tier_routing event (reason specifies mid-turn upgrade)
+    midturn_tier_routing_evts = [
+        e for e in events
+        if "event: tier_routing" in e and "Mid-turn upgrade: context requires Tier" in e
+    ]
+    assert len(midturn_tier_routing_evts) == 1, (
+        f"Expected exactly 1 mid-turn tier_routing event, got {midturn_tier_routing_evts}"
+    )
+
+    # Specifically assert the typed tier_upgrade status event: {"type": "tier_upgrade", "message": "Mid-turn upgrade to Tier ..."}
+    upgrade_status_evts = [
+        e for e in events
+        if "event: status" in e and '"type": "tier_upgrade"' in e and "Mid-turn upgrade to Tier" in e
+    ]
+    assert len(upgrade_status_evts) == 1, (
+        f"Expected exactly 1 typed tier_upgrade status event, got {upgrade_status_evts}"
+    )
+
+    # Verify no approval card was emitted (auto-upgraded directly without card)
+    assert not any("approval_required" in e or "approval_request" in e for e in events), (
+        "Expected auto-upgrade WITHOUT presenting an approval card"
+    )
 
 
