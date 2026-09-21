@@ -12,7 +12,6 @@ requests (POST, PUT, PATCH, DELETE) and on sensitive GET requests.
 
 Unauthenticated allowlist:
   - GET /health              — liveness probe
-  - GET /api/auth/token      — token verification endpoint
   - GET /api/ai/ollama/*     — Ollama connectivity checks (read-only, non-sensitive)
   - GET /api/health          — liveness probe alias
 
@@ -46,7 +45,6 @@ TOKEN_TTL_SECONDS: float = 24 * 3600.0
 # Paths that are completely open (no auth required).
 _UNAUTHENTICATED_PATHS = frozenset({
     "/health",
-    "/api/auth/token",
     "/api/ai/ollama/health",
     "/api/ai/ollama/models",
     "/api/health",

@@ -172,10 +172,22 @@ def safe_write_file(workspace: str, target: str, content: str) -> Path:
     """
     Safely write file within workspace using atomic temporary write + rename
     and re-verifying resolution to prevent symlink swap races.
+
+    SECURITY ARCHITECTURE AUDIT (Finding 6 / S-004):
+    TOCTOU between resolution and os.replace() is an ACCEPTED RISK on desktop
+    operating systems where portable openat()/renameat2() file descriptor primitives
+    are not available without native C extensions.
+    Defense-in-depth mitigations applied:
+    1. Pre-write workspace boundary check (ensure_within_workspace).
+    2. Parent directory verified non-symlink before creating temporary files.
+    3. Atomic temporary write in the verified parent directory.
+    4. Post-write verify_path_unchanged check (detects post-condition swap).
     """
     import tempfile
     verified_path = ensure_within_workspace(workspace, target)
     parent_dir = verified_path.parent
+    if parent_dir.is_symlink():
+        raise HTTPException(status_code=403, detail="Symlinked parent directories not permitted for safe_write")
     parent_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.NamedTemporaryFile("w", dir=str(parent_dir), delete=False, encoding="utf-8") as tf:

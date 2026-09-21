@@ -362,8 +362,8 @@ def create_pty_session(cwd: str, session_id: str) -> PtySession:
   cmd = _resolve_shell_cmd()
   logger.info("terminal.ws.create session_id=%s shell=%s cwd=%s", session_id, cmd[0], cwd_path)
 
-  # Spawn using the platform-specific PtyProcess class
-  proc = PtyProcessClass.spawn(cmd, cwd=str(cwd_path))
+  # Spawn using the platform-specific PtyProcess class with scrubbed environment
+  proc = PtyProcessClass.spawn(cmd, cwd=str(cwd_path), env=_sanitize_environment())
   session = PtySession(id=session_id, cwd=str(cwd_path), proc=proc)
   t = threading.Thread(target=_start_reader, args=(session,), daemon=True)
   t.start()

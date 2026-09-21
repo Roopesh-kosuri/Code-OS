@@ -20,6 +20,7 @@ Modes:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -189,6 +190,20 @@ class MutationResult:
     # Phase 14 additions
     pre_images: dict[str, bytes | None] = field(default_factory=dict)
     readback_status: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def evidence_payload(self) -> dict[str, str]:
+        """Evidence payload for frontend/logs with 5MB cap per file (Phase 19 / S-006)."""
+        payload: dict[str, str] = {}
+        max_bytes = 5 * 1024 * 1024
+        for k, v in self.pre_images.items():
+            if v is None:
+                payload[k] = ""
+            elif len(v) > max_bytes:
+                payload[k] = v[:max_bytes].decode("utf-8", errors="replace") + " [TRUNCATED]"
+            else:
+                payload[k] = v.decode("utf-8", errors="replace")
+        return payload
 
 
 @dataclass
@@ -1731,8 +1746,8 @@ def apply_mutations(
         except Exception as purge_err:
             logger.warning("Failed to purge trash entry '%s': %s", trash_root, purge_err)
 
-    # S7: Verify Readback Hash (Phase 14)
-    # Synchronous per-apply check: verify disk state for applied paths
+    # S7: Verify Readback Hash (Phase 14 & Phase 19 / S-005)
+    # Synchronous per-apply check: verify disk state for applied paths using cryptographic SHA-256 comparison
     readback_status: dict[str, str] = {}
     for rel_p in applied:
         try:
@@ -1741,9 +1756,38 @@ def apply_mutations(
                 if not full_p.is_file():
                     readback_status[rel_p] = "failed: file does not exist after apply"
                 else:
-                    # Confirm bytes can be read back cleanly
-                    _ = full_p.read_bytes()
-                    readback_status[rel_p] = "passed"
+                    # Determine expected projected bytes
+                    raw_bytes = None
+                    for r in resolved:
+                        if r.rel_p == rel_p and r.mutation.raw_bytes is not None:
+                            raw_bytes = r.mutation.raw_bytes
+                            break
+
+                    if raw_bytes is not None:
+                        expected_bytes = raw_bytes
+                    else:
+                        proj_text = projected[rel_p]
+                        snap_bytes = initial_snapshots.get(rel_p)
+                        crlf_count = snap_bytes.count(b"\r\n") if snap_bytes is not None else 0
+                        bare_lf_count = (snap_bytes.count(b"\n") - crlf_count) if snap_bytes is not None else 0
+                        use_crlf = crlf_count > bare_lf_count
+
+                        clean_text = proj_text.replace("\r\n", "\n")
+                        final_text = clean_text.replace("\n", "\r\n") if use_crlf else clean_text
+
+                        has_bom = snap_bytes is not None and snap_bytes.startswith(b"\xef\xbb\xbf")
+                        expected_bytes = (b"\xef\xbb\xbf" if has_bom else b"") + final_text.encode("utf-8")
+
+                    actual_disk_bytes = full_p.read_bytes()
+                    expected_hash = hashlib.sha256(expected_bytes).hexdigest()
+                    disk_hash = hashlib.sha256(actual_disk_bytes).hexdigest()
+
+                    if expected_hash != disk_hash:
+                        readback_status[rel_p] = (
+                            f"failed: sha256 mismatch (projected={expected_hash} != disk={disk_hash})"
+                        )
+                    else:
+                        readback_status[rel_p] = "passed"
             elif full_p.exists():
                 readback_status[rel_p] = "passed"
             else:
@@ -1752,13 +1796,10 @@ def apply_mutations(
         except Exception as rb_exc:
             readback_status[rel_p] = f"failed: {rb_exc}"
 
+    # Phase 19 (S-006): Baseline reconstruction preserves untruncated bytes
     pre_images: dict[str, bytes | None] = {}
     for rel_p in touched_paths:
-        snap = initial_snapshots.get(rel_p)
-        if snap is not None and len(snap) > 5 * 1024 * 1024:
-            pre_images[rel_p] = snap[: 5 * 1024 * 1024]
-        else:
-            pre_images[rel_p] = snap
+        pre_images[rel_p] = initial_snapshots.get(rel_p)
 
     return MutationResult(
         success=True,

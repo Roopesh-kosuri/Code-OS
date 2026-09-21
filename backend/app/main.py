@@ -146,17 +146,52 @@ async def _deferred_startup_tasks() -> None:
         logger.warning("Deferred startup catalog refresher: %s", exc)
 
     try:
-        # S3: Clean up leftover temp/pytest workspaces only (fast DB query).
+        # S3: Clean up leftover temp/pytest workspaces only (strictly inside system temp dir).
         # reconcile_workspace_index removed from startup — ChromaDB cold boot takes
         # 30-90s and makes startup appear hung. RAG is reconciled lazily on workspace open.
-        db = await get_db()
-        await db.execute(
-            "DELETE FROM workspaces WHERE path LIKE '%\\code_os_test_%' OR path LIKE '%/code_os_test_%' OR path LIKE '%\\pytest_of_%' OR path LIKE '%/pytest_of_%'"
-        )
-        await db.commit()
+        await cleanup_temporary_workspaces()
         logger.info("[startup] Temp workspace cleanup complete")
     except Exception as exc:
         logger.warning("Deferred startup temp cleanup: %s", exc)
+
+
+async def cleanup_temporary_workspaces(db=None) -> list[str]:
+    """Clean up leftover temp/pytest workspaces strictly located inside the system temp dir."""
+    import tempfile
+    if db is None:
+        db = await get_db()
+    temp_dir = os.path.realpath(tempfile.gettempdir()).lower()
+
+    if hasattr(db, "execute_fetchall"):
+        rows = await db.execute_fetchall("SELECT path FROM workspaces")
+    else:
+        res = db.execute("SELECT path FROM workspaces")
+        if asyncio.iscoroutine(res):
+            cur = await res
+            rows = await cur.fetchall()
+        else:
+            rows = res.fetchall()
+
+    to_delete = []
+    for row in rows:
+        p = row["path"] if hasattr(row, "keys") else row[0]
+        try:
+            norm_p = os.path.realpath(p).lower()
+            if os.path.commonpath([temp_dir, norm_p]) == temp_dir and norm_p != temp_dir:
+                basename = os.path.basename(norm_p)
+                if "code_os_test_" in basename or "pytest_of_" in basename or "code_os_test_" in norm_p or "pytest_of_" in norm_p:
+                    to_delete.append(p)
+        except Exception:
+            continue
+
+    if to_delete:
+        del_call = db.executemany("DELETE FROM workspaces WHERE path = ?", [(p,) for p in to_delete])
+        if asyncio.iscoroutine(del_call):
+            await del_call
+        commit_call = db.commit()
+        if asyncio.iscoroutine(commit_call):
+            await commit_call
+    return to_delete
 
 def _get_git_sha_and_build_time() -> tuple[str, str]:
     """Retrieve git commit SHA and build/start timestamp for operational traceability."""
@@ -621,7 +656,9 @@ async def system_readiness() -> ReadinessStatus:
 
 @app.get("/api/auth/token")
 async def get_session_token():
-    return {"token": get_token()}
+    from app.core.auth import TOKEN_TTL_SECONDS
+    token = get_token()
+    return {"active": bool(token), "expires_in": int(TOKEN_TTL_SECONDS)}
 
 
 class StreamTokenRequest(BaseModel):
