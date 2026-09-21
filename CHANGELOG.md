@@ -49,6 +49,5 @@
 - Checkpoint/undo system
 
 ## Known Limitations (S3/S4 from audit)
-- README still references v4.0.0 (fixed in v5.1.0)
-- /commit slash command git diff broken (fixed in v5.1.0)
-- Test files contain UTF-8 BOM (cosmetic, fixed in v5.1.0)
+- /commit slash command git diff broken (scheduled for v5.1.0)
+- Test files contain UTF-8 BOM (cosmetic, scheduled for v5.1.0)

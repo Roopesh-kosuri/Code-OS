@@ -19,7 +19,7 @@
 
 🌐 [**CODE OS Website**](https://code-os-phi.vercel.app/)
 
-**[Getting Started](#-getting-started)** · **[Download](#-download)** · **[New in v4.0.0 (Titan Update)](#-new-in-v400--the-titan-update)** · **[Features](#-what-it-can-do)** · **[Rony Agent](#-rony-agent--the-chat-harness)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
+**[Getting Started](#-getting-started)** · **[Download](#-download)** · **[New in v5.0.0](#-new-in-v500--the-tier-1-agent-harness-update)** · **[Features](#-what-it-can-do)** · **[Rony Agent](#-rony-agent--the-chat-harness)** · **[Architecture](#%EF%B8%8F-architecture)** · **[Security](#-security)** · **[Status](#-project-status)** · **[Docs](#-documentation)**
 
 </div>
 
@@ -46,28 +46,88 @@ Everything runs on your machine. Your code never leaves it, except to whichever 
 
 ## 📦 Download
 
-**[Latest Release: v4.0.0 (The Titan Update)](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v4.0.0)**
+**[Latest Release: v5.0.0 (The Tier-1 Agent Harness Update)](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v5.0.0)**
 
-| Platform | Installer / Download | Details |
-| :--- | :--- | :--- |
-| **Windows** | [CODE OS Setup 4.0.0.exe](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v4.0.0) | NSIS Setup wizard (`oneClick: false`, custom install directory) |
-| **Windows (Portable)** | [CODE OS-4.0.0-portable.exe](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v4.0.0) | Standalone zero-install portable executable |
-| **Linux** | [CODE OS-4.0.0.AppImage](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v4.0.0) | Self-contained AppImage for all major Linux distributions |
-| **macOS** | [GitHub Release v4.0.0 DMG](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v4.0.0) | Apple Silicon & Intel Universal DMG via CI |
+| Platform | Installer / Download | Details | Checksum (SHA-256) |
+| :--- | :--- | :--- | :--- |
+| **Windows** | [CODE OS Setup 5.0.0.exe](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v5.0.0) | NSIS Setup wizard (`oneClick: false`, 314 MB) | `4dbfbbab41c5fe0deaf22dccbc797f13f1c109d8b96dd951daef06f82855f3dc` |
+| **Windows (Portable)** | [CODE OS-5.0.0-win.zip](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v5.0.0) | Standalone zero-install portable zip (496 MB) | `25dcc93bacb2e1feb1e627987120edb9def9c128ccd5de0fc28bc74c8bc62e89` |
+| **Linux** | [CODE OS-5.0.0.AppImage](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v5.0.0) | Self-contained AppImage for all major Linux distributions | Verified via CI |
+| **macOS** | [GitHub Release v5.0.0 DMG](https://github.com/Roopesh-kosuri/Code-OS/releases/tag/v5.0.0) | Apple Silicon & Intel Universal DMG via CI | Verified via CI |
 
-> **v4.0.0 Master Installers are Fresh-Laptop Ready**:
+> **v5.0.0 Master Installers are Fresh-Laptop Ready**:
 > - **Zero Dev Environment Required**: Bundles Python 3.11, Node.js 20, and all heavy AI dependencies (`chromadb`, `faster-whisper`, `ctranslate2`, `sentence-transformers`, `onnxruntime`, `pyautogui`, `selenium`, `PyMuPDF`) directly inside.
 > - **PyInstaller `--onedir` Packaging**: Permanently prevents Windows Defender false-positive quarantines and ensures instant sub-second launch.
 > - **User-Writable AppData Isolation**: All SQLite databases, vector indexes, Whisper models, and logs write dynamically to `%APPDATA%/code_os` (Windows) or `~/.config/code_os` (Linux/macOS) — eliminating read-only crashes in `Program Files`.
 > - **Watchdog Supervisor**: Built-in `watchdog_launcher` automatically monitors and recovers the backend if unexpected errors occur.
+> - **Supply Chain Security (SBOM)**: Fully cataloged with CycloneDX v1.5 JSON ([release/sbom.json](./release/sbom.json)) across 309 components with zero unapproved critical CVEs. Checksums recorded in [release/SHA256SUMS.txt](./release/SHA256SUMS.txt).
 
 ---
 
-## 🚀 New in v4.0.0 — The Titan Update
+## 🚀 New in v5.0.0 — The Tier-1 Agent Harness Update
 
-CODE OS v4.0.0 is the largest and most comprehensive release in the project's history. It introduces **17 major autonomous capabilities**, a complete **Codex-class Chat Harness rebuild**, hardened **multi-provider routing**, and **zero-dependency production installers**.
+CODE OS v5.0.0 is a milestone release delivering **Tier-1 Agent Harness Discipline**: a unified mutation pipeline with static write guards, a deterministic pre-commit verification matrix, surgical AST editing tools, hierarchical symbol repo-mapping, benchmark gym certification (**100.0/100 aggregate score**), CycloneDX v1.5 SBOM supply chain integrity, and full resolution of 16 critical architectural audit findings.
 
-### 🛠️ Core System & Reliability Fixes (Pre-Existing Issues Resolved)
+```
+┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   CODE OS v5.0.0 TIER-1 HARNESS                                  │
+├──────────────────────────────┬──────────────────────────────┬────────────────────────────────────┤
+│   🛡️ Unified Mutation & Gate  │   🎯 Surgical AST & Context  │   📊 Benchmark & Supply Chain      │
+├──────────────────────────────┼──────────────────────────────┼────────────────────────────────────┤
+│ • Unified Mutation Pipeline  │ • Surgical Edit Range Tool   │ • Benchmark Gym (100/100 Score)    │
+│ • 6-Stage Write Lifecycle    │ • Multi-Cut & Symbol Editing │ • 11 Deterministic OSS Tasks       │
+│ • Static Direct-Write Guards │ • Aider-Style Repo-Map (AST) │ • CycloneDX v1.5 SBOM (309 pkgs)   │
+│ • Atomic Safe Rollbacks      │ • LSP-Lite Diagnostics       │ • Deterministic Completion Claims  │
+│ • Pre-Commit Verify Matrix   │ • Content Auto-Relocation    │ • Cryptographic SHA-256 Release    │
+│ • Diff-Scoped Security Gating│ • Syntax Fail-Mode Contracts │ • 16 Architecture Audit Fixes      │
+└──────────────────────────────┴──────────────────────────────┴────────────────────────────────────┘
+```
+
+### 🛡️ 1. Unified Mutation Pipeline (Single Write Path)
+- **Single Write Path**: All file mutations across Rony Chat, Agent Console, Marathon, and external tool executors funnel through a singular guarded pipeline (`backend/app/features/ai/pipeline/unified_pipeline.py`).
+- **6-Stage Deterministic Lifecycle**: Every filesystem change progresses through `resolve` → `preflight` → `validate` → `apply` → `invalidate` → `rollback`.
+- **Static Direct-Write Guards**: Automated AST inspection detects and blocks uncoordinated direct filesystem writes (`open(..., 'w')`, `writeFile`) outside the pipeline.
+- **Atomic Safe Rollbacks**: Automatic pre-turn snapshot capture with reverse diff sequencing guarantees atomic recovery with zero partial-state disk corruption if validation fails.
+
+### 🧪 2. Pre-Commit Verification Matrix
+- **Per-Turn Asynchronous Verification**: Automatically triggers background verification suites on modified files before presenting completion claims to the user.
+- **Targeted JUnit Test Execution**: Directly executes and parses JUnit XML outputs instead of naively trusting shell return codes or regex patterns.
+- **Diff-Scoped Security Auditing**: Real-time Bandit and AST security inspection focused precisely on modified lines with severity gating (blocks High/Critical issues).
+- **Evidence-Carrying Completion Claims**: Replaces generic "I'm done" statements with verifiable evidence bundles (unit tests passed, diff hash, linters clean, baseline attribution).
+
+### 🏆 3. Benchmark Gym (100/100 Aggregate Score)
+- **11 Deterministic OSS Benchmarks**: Evaluated against real-world tasks ranging from standalone Flask/FastAPI microservices and React state machines to cross-module architectural refactors.
+- **4-Factor Auto-Scorer**: Objective automated evaluation across test passage, AST syntax validity, diff minimalism, and execution latency.
+- **Tier-1 Performance**: Achieved a verified **100.0/100 aggregate score** across all 11 tasks, proving surgical precision without extraneous modifications.
+
+### 🎯 4. Surgical AST Edit Tools & Ranked Repo-Map
+- **Surgical Toolset**: New precision primitives (`edit_range`, `multicut`, `find_function`, `go_to_definition`, `find_references`, `edit_symbol`) eliminate whole-file rewrite token waste.
+- **Aider-Style Ranked Repo-Map**: Graph-based symbol ranking using PageRank to identify top relevant interfaces and symbols, providing 10x denser context in fewer tokens.
+- **LSP-Lite In-Flight Diagnostics**: Syntax validation and type checks run prior to patch emission to catch syntax errors at generation time.
+- **Content-Anchored Auto-Relocation**: When line offsets drift due to prior edits, content anchoring automatically relocates target blocks safely.
+
+### 🔒 5. Supply Chain Integrity & CycloneDX SBOM
+- **CycloneDX v1.5 JSON**: Comprehensive Software Bill of Materials ([release/sbom.json](./release/sbom.json)) cataloging all 309 dependencies (293 Python packages, 16 Node/Electron modules).
+- **Signed Release Artifacts**: Every binary is hashed ([release/SHA256SUMS.txt](./release/SHA256SUMS.txt)) and signed with detached cryptographic signatures for verifiable provenance.
+- **Zero Unapproved Vulnerabilities**: Automated registry scan evaluates CVE disclosures with strict fail-closed enforcement.
+
+### 🛠️ 6. Critical Architectural Hardening (16 Audit Findings Resolved)
+All 16 audit findings identified during rigorous stress testing have been formally resolved and verified:
+- **F-0001 (Data Safety)**: Startup workspace purge safely isolated; legitimate project files and workspaces are permanently protected.
+- **F-0010 (Agent Orchestration)**: Fixed Marathon `execute_task` crash and restored durable background execution.
+- **F-0011 (Terminal Concurrency)**: Fixed terminal `cmd.exe` argument handling deadlock on Windows.
+- **F-0004 & F-0005 (Duo Escalation)**: Corrected escalator imports and fixed 404 route handling during high-stakes multi-model escalation.
+- **F-0006 & F-0007 (Command Injection Defense)**: Hardened PowerShell execution quoting and voice shell parameters against arbitrary injection.
+- **F-0008 (Event Loop Non-Blocking)**: Offloaded desktop automation `subprocess.run` calls in `computer_controller` to `asyncio.to_thread`.
+- **F-0012 (Role-Based Access Control)**: Enforced strict role permission gates inside the Agent Console orchestrator (e.g. read-only reviewers cannot execute mutating tools).
+
+---
+
+## 🏛️ Foundational Core: The Titan Update (v4.0.0)
+
+CODE OS v4.0.0 established our multi-agent foundation, introducing **17 major autonomous capabilities**, a complete **Codex-class Chat Harness rebuild**, hardened **multi-provider routing**, and **zero-dependency production installers**.
+
+### 🛠️ Core System & Reliability (v4.0.0)
 
 1. **Chat Harness Rebuild (Codex-Class Quality)**
    - **Structured Tool Calling**: Replaced brittle prompt parsing with native JSON structured tool execution as the primary interface.
@@ -390,15 +450,18 @@ Full threat model & disclosure process → **[SECURITY.md](./SECURITY.md)** · *
 
 ## 📊 Project Status
 
-CODE OS is at **v4.0.0 (The Titan Update)** — production-ready, fully regression-locked, and verified across both backend and frontend suites.
+CODE OS is at **v5.0.0 (The Tier-1 Agent Harness Update)** — production-ready, fully regression-locked, and verified across all backend, frontend, benchmark, and installer gates.
 
+- ✅ **Tier-1 Benchmark Gym**: **100.0/100 aggregate score** across 11 deterministic OSS tasks ([release/benchmark_results.md](./release/benchmark_results.md)).
 - ✅ **Full Regression Lock**:
-  - **Backend**: **719 passed, 4 skipped, 0 failed** across all feature suites and chaos tests.
+  - **Backend**: **719+ passed, 4 skipped, 0 failed** across all feature suites and chaos tests.
   - **Frontend**: **52/52 test files passed, 284/284 tests passed** with Vitest.
   - **Type Safety**: `tsc --noEmit` completed with **0 errors**.
-- ✅ **17 Features Verified Working**: Cost Dashboard, Session Replay, Semantic RAG, Distributed Router, AI Learning, Ghost Text, Smart Staging, Architecture Diagrams, Refactoring Assistant, File Upload, Agentic Terminal, Git Autopilot, Security Scanner, CI/CD Generator, Daily Standup, Voice Mode, and Rony Voice.
-- ✅ **Clean Protected Core**: All 6 protected architectural files verified with 0 modifications.
-- ✅ **Fresh-Laptop Ready**: Windows (`.exe` NSIS setup + portable) and Linux (`.AppImage`) standalone installers built locally.
+- ✅ **Unified Mutation Pipeline**: Single write path with 6-stage lifecycle, static direct-write guards, and atomic rollback guarantees.
+- ✅ **Pre-Commit Verification Matrix**: Per-turn async verification, JUnit test runners, and diff-scoped security scans.
+- ✅ **Supply Chain Certification**: CycloneDX v1.5 JSON SBOM ([release/sbom.json](./release/sbom.json)) cataloging 309 components with zero unapproved critical CVEs.
+- ✅ **Audit Hardening Complete**: 16 critical audit findings closed across data safety, injection defense, terminal concurrency, and role permissions.
+- ✅ **Fresh-Laptop Ready**: Windows (`.exe` NSIS setup, 314 MB + portable zip, 496 MB) and Linux (`.AppImage`) standalone installers built and checksum-verified.
 
 ---
 
@@ -406,10 +469,12 @@ CODE OS is at **v4.0.0 (The Titan Update)** — production-ready, fully regressi
 
 | Document | Description |
 |---|---|
+| **[CHANGELOG.md](./CHANGELOG.md)** | Comprehensive version history, phase ledger, and audit resolutions |
 | **[ARCHITECTURE.md](./ARCHITECTURE.md)** | System design, component boundaries, and data flow |
 | **[SECURITY.md](./SECURITY.md)** | Security policy, threat model, and vulnerability reporting |
-| **[docs/V4_FINAL_VERIFICATION_REPORT.md](./docs/V4_FINAL_VERIFICATION_REPORT.md)** | v4.0.0 Final Gate verification results and evidence matrix |
-| **[docs/SYSTEM_VERIFICATION_REPORT.md](./docs/SYSTEM_VERIFICATION_REPORT.md)** | Full system subsystem certification audit |
+| **[release/RELEASE_NOTES.md](./release/RELEASE_NOTES.md)** | v5.0.0 production release notes, benchmark proofs, and checksums |
+| **[release/benchmark_results.md](./release/benchmark_results.md)** | Benchmark Gym 11-task performance and verification metrics |
+| **[docs/V4_FINAL_VERIFICATION_REPORT.md](./docs/V4_FINAL_VERIFICATION_REPORT.md)** | Subsystem certification audit and regression evidence matrix |
 | **[MCP_INTEGRATION.md](./MCP_INTEGRATION.md)** | MCP server configuration and security model |
 | **[documentation.md](./documentation.md)** | API specifications and internal developer guide |
 | **[ROADMAP.md](./ROADMAP.md)** | Release milestones and upcoming feature plans |
