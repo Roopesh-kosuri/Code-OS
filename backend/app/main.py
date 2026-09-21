@@ -284,7 +284,7 @@ async def lifespan(app: FastAPI):
     logger.info("backend stopped")
 
 
-VERSION: str = "5.0.0"  # CODE OS v5.0.0
+from app.core.version import VERSION
 
 app = FastAPI(title="CODE OS Backend", version=VERSION, lifespan=lifespan)
 _startup_timings["app_created"] = time.perf_counter()

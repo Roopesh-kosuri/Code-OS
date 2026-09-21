@@ -1,5 +1,7 @@
 appId: com.codeos.app
 productName: CODE OS
+extraMetadata:
+  version: "5.0.0"
 directories:
   output: release
 
