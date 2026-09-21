@@ -153,6 +153,24 @@ class TeamOrchestrator:
 
         return pending
 
+    async def execute_task(
+        self,
+        task: TeamTask,
+        handoffs: Optional[list[HandoffArtifact]] = None,
+    ) -> dict[str, Any]:
+        """Execute a single TeamTask directly using the orchestrator's task pipeline."""
+        prior_handoffs = handoffs or []
+        try:
+            await self._run_task_with_semaphore(task, prior_handoffs)
+        except Exception as exc:
+            return {"status": "failed", "error": str(exc), "token_usage": 0, "cost_usd": 0.0}
+        res = self.task_results.get(task.task_id) or {}
+        if isinstance(res, dict):
+            res.setdefault("status", task.status)
+            res.setdefault("error", task.error or "")
+            return res
+        return {"status": task.status, "error": task.error or "", "result": res}
+
     async def execute_dag(
         self,
         tasks: list[TeamTask],

@@ -294,16 +294,18 @@ class ComputerController:
 
         # Fallback via PowerShell
         if os.name == "nt":
-            ps_script = f"""
-            $w = (Get-Process | Where-Object {{$_.MainWindowTitle -like '*{title}*'}} | Select-Object -First 1).MainWindowHandle
-            if ($w) {{
+            ps_script = """
+            $t = $env:TARGET_WINDOW_TITLE
+            $w = (Get-Process | Where-Object {$_.MainWindowTitle -like "*$t*"} | Select-Object -First 1).MainWindowHandle
+            if ($w) {
                 $sig = '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);'
                 Add-Type -MemberDefinition $sig -Name Api -Namespace Win32
                 [Win32.Api]::SetForegroundWindow($w)
-            }}
+            }
             """
             try:
-                subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], timeout=5)
+                ps_env = dict(os.environ, TARGET_WINDOW_TITLE=title)
+                subprocess.run(["powershell", "-NoProfile", "-Command", ps_script], env=ps_env, timeout=5)
                 await asyncio.sleep(0.5)
                 return {"success": True, "focused": title}
             except Exception as e:

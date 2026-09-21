@@ -203,7 +203,10 @@ async def run_command(session_id: str, command: str, background: bool) -> tuple[
 
 
     if os.name == "nt":
-        args = [session.shell, "-NoLogo", "-NoProfile", "-Command", command]
+        if "cmd" in session.shell.lower():
+            args = [session.shell, "/c", command]
+        else:
+            args = [session.shell, "-NoLogo", "-NoProfile", "-Command", command]
     else:
         args = [session.shell, "-lc", command]
 

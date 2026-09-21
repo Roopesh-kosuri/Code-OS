@@ -29,8 +29,8 @@ async def _escalate_to_duo(
     task_description: str,
 ) -> AsyncIterator[str]:
     """Escalate a difficult task to the Duo Generator/Critic loop."""
-    from ..duo.service import start_session as duo_start_session, get_session as duo_get_session
-    from ..duo.schemas import DuoSessionRequest, ModelConfig
+    from ...duo.service import start_session as duo_start_session, get_session as duo_get_session
+    from ...duo.schemas import DuoSessionRequest, ModelConfig
     
     yield _sse_status("duo_escalation", "Starting Duo Loop adversarial refinement...")
     

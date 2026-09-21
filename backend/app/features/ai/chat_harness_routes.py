@@ -663,6 +663,7 @@ class EscalationDecisionRequest(BaseModel):
 
 
 @router.post("/escalation-decision")
+@router.post("/chat-agent/escalation-decision")
 async def handle_escalation_decision(payload: EscalationDecisionRequest) -> dict[str, Any]:
     """Resolve an escalation decision from the user ('continue' or 'escalate').
 

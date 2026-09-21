@@ -573,7 +573,7 @@ async def stream_chat(request: ChatRequest) -> AsyncIterator[str]:
         # Git intelligence: /commit diff aggregation
         if cmd == "/commit":
             try:
-                from ...git.service import diff as git_diff
+                from ..git.service import diff as git_diff
                 workspace_dir = request.workspace or (request.attached_paths[0] if request.attached_paths else "")
                 if workspace_dir:
                     diff_text = git_diff(workspace_dir)

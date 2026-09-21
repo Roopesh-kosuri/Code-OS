@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import sys
 import time
 import ctypes
@@ -147,7 +148,8 @@ def press_key(key_combination: str) -> dict[str, Any]:
 def open_application(app_name: str) -> dict[str, Any]:
     """Launch an application by executable name or standard Windows app."""
     _check_safety("open_application", {"app_name": app_name})
-    clean_name = app_name.strip().lower()
+    clean_name = re.split(r"[;&|\n\r]", app_name.strip().lower())[0].strip()
+    clean_name = re.sub(r"[^a-zA-Z0-9_\-\. ]", "", clean_name)
 
     # Common app mapping
     app_map = {
@@ -169,8 +171,7 @@ def open_application(app_name: str) -> dict[str, Any]:
 
     try:
         if sys.platform == "win32":
-            # Using start command
-            subprocess.Popen(f"start {executable}", shell=True)  # nosec B602
+            subprocess.Popen(["cmd.exe", "/c", "start", "", executable], shell=False)  # nosec B602
         else:
             subprocess.Popen([executable])
         return {"action": "open_application", "app_name": app_name, "status": "launched"}
@@ -184,12 +185,13 @@ def close_application(app_name: str) -> dict[str, Any]:
     if is_destructive_action("close_application", {"app_name": app_name}):
         pass
     _check_safety("close_application", {"app_name": app_name})
-    clean_name = app_name.strip().lower()
+    clean_name = re.split(r"[;&|\n\r]", app_name.strip().lower())[0].strip()
+    clean_name = re.sub(r"[^a-zA-Z0-9_\-\.]", "", clean_name)
     proc_name = clean_name if clean_name.endswith(".exe") else f"{clean_name}.exe"
 
     try:
         if sys.platform == "win32":
-            subprocess.run(f"taskkill /IM {proc_name} /F", shell=True, check=False)  # nosec B602
+            subprocess.run(["taskkill", "/IM", proc_name, "/F"], shell=False, check=False)  # nosec B602
         else:
             subprocess.run(["pkill", "-f", clean_name], check=False)
         return {"action": "close_application", "app_name": app_name, "status": "closed"}

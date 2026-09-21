@@ -151,7 +151,7 @@ async def _deferred_startup_tasks() -> None:
         # 30-90s and makes startup appear hung. RAG is reconciled lazily on workspace open.
         db = await get_db()
         await db.execute(
-            "DELETE FROM workspaces WHERE path LIKE '%temp%' OR path LIKE '%pytest%'"
+            "DELETE FROM workspaces WHERE path LIKE '%\\code_os_test_%' OR path LIKE '%/code_os_test_%' OR path LIKE '%\\pytest_of_%' OR path LIKE '%/pytest_of_%'"
         )
         await db.commit()
         logger.info("[startup] Temp workspace cleanup complete")
